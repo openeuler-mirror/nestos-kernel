@@ -64,12 +64,53 @@ static atomic_t huge_zero_refcount;
 struct page *huge_zero_page __read_mostly;
 unsigned long huge_zero_pfn __read_mostly = ~0UL;
 
+#ifdef CONFIG_MEMCG_THP
+DEFINE_STATIC_KEY_FALSE(cgroup_thp_enabled);
+#endif
+
 static inline bool file_thp_enabled(struct vm_area_struct *vma)
 {
 	return transhuge_vma_enabled(vma, vma->vm_flags) && vma->vm_file &&
 	       !inode_is_open_for_write(vma->vm_file->f_inode) &&
 	       (vma->vm_flags & VM_EXEC);
 }
+
+#ifdef CONFIG_MEMCG_THP
+ /*
+ * to be used on vmas which are known to support THP.
+ * Use transparent_hugepage_active otherwise
+ */
+static inline bool __transparent_hugepage_enabled(struct vm_area_struct *vma)
+{
+         struct mem_cgroup *memcg = get_mem_cgroup_from_mm(vma->vm_mm);
+ 
+         if (vma->vm_flags & VM_NOHUGEPAGE)
+                 return false;
+ 
+         if (vma_is_temporary_stack(vma))
+                 return false;
+ 
+         if (test_bit(MMF_DISABLE_THP, &vma->vm_mm->flags))
+                 return false;
+ 
+         if (mem_cgroup_thp_flag(memcg) & (1 << TRANSPARENT_HUGEPAGE_FLAG))
+                 return true;
+         /*
+          * For dax vmas, try to always use hugepage mappings. If the kernel does
+          * not support hugepages, fsdax mappings will fallback to PAGE_SIZE
+          * mappings, and device-dax namespaces, that try to guarantee a given
+          * mapping size, will fail to enable
+          */
+         if (vma_is_dax(vma))
+                 return true;
+ 
+         if (mem_cgroup_thp_flag(memcg) &
+                 (1 << TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG))
+                 return !!(vma->vm_flags & VM_HUGEPAGE);
+ 
+         return false;
+}
+#endif
 
 bool transparent_hugepage_active(struct vm_area_struct *vma)
 {
@@ -316,6 +357,32 @@ static ssize_t hpage_pmd_size_show(struct kobject *kobj,
 static struct kobj_attribute hpage_pmd_size_attr =
 	__ATTR_RO(hpage_pmd_size);
 
+#ifdef CONFIG_MEMCG_THP
+static ssize_t cgroup_enabled_show(struct kobject *kobj,
+               struct kobj_attribute *attr, char *buf)
+{
+       if (static_branch_unlikely(&cgroup_thp_enabled))
+               return sprintf(buf, "[enable] disable\n");
+       else
+               return sprintf(buf, "enable [disable]\n");
+
+}
+static ssize_t cgroup_enabled_store(struct kobject *kobj,
+               struct kobj_attribute *attr, const char *buf, size_t count)
+{
+       if (sysfs_streq(buf, "enable"))
+               static_branch_enable(&cgroup_thp_enabled);
+       else if (sysfs_streq(buf, "disable"))
+               static_branch_disable(&cgroup_thp_enabled);
+       else
+               return -EINVAL;
+
+       return count;
+}
+static struct kobj_attribute cgroup_enabled_attr =
+       __ATTR(cgroup_enabled, 0644, cgroup_enabled_show, cgroup_enabled_store);
+#endif
+
 static struct attribute *hugepage_attr[] = {
 	&enabled_attr.attr,
 	&defrag_attr.attr,
@@ -323,6 +390,9 @@ static struct attribute *hugepage_attr[] = {
 	&hpage_pmd_size_attr.attr,
 #ifdef CONFIG_SHMEM
 	&shmem_enabled_attr.attr,
+#endif
+#ifdef CONFIG_MEMCG_THP
+        &cgroup_enabled_attr.attr,
 #endif
 	NULL,
 };

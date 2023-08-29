@@ -30,6 +30,15 @@ struct page;
 struct mm_struct;
 struct kmem_cache;
 
+#ifdef CONFIG_MEMCG_THP
+/*
+ * Increase when sub cgroup enable transparent hugepage, decrease when
+ * sub cgroup disable transparent hugepage. Help decide whether to run
+ * khugepaged.
+ */
+extern atomic_t sub_thp_count;
+#endif
+
 /* Cgroup-specific page state, on top of universal node page state */
 enum memcg_stat_item {
 	MEMCG_SWAP = NR_VM_NODE_STAT_ITEMS,
@@ -370,6 +379,10 @@ struct mem_cgroup {
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	struct deferred_split deferred_split_queue;
+#endif
+
+#ifdef CONFIG_MEMCG_THP
+       unsigned long thp_flag;
 #endif
 
 #if defined(CONFIG_DYNAMIC_HUGETLB) && defined(CONFIG_X86_64)
@@ -1276,6 +1289,41 @@ void split_page_memcg(struct page *head, unsigned int nr);
 unsigned long mem_cgroup_soft_limit_reclaim(pg_data_t *pgdat, int order,
 						gfp_t gfp_mask,
 						unsigned long *total_scanned);
+
+#ifdef CONFIG_MEMCG_THP
+static inline unsigned long mem_cgroup_thp_flag(struct mem_cgroup *memcg)
+{
+       if (!static_branch_unlikely(&cgroup_thp_enabled))
+               return transparent_hugepage_flags;
+
+       if (unlikely(memcg == NULL) || mem_cgroup_disabled() ||
+           mem_cgroup_is_root(memcg))
+               return transparent_hugepage_flags;
+
+       return memcg->thp_flag;
+}
+
+static inline int memcg_sub_thp_enabled(void)
+{
+       if (!static_branch_unlikely(&cgroup_thp_enabled))
+               return 0;
+
+       return atomic_read(&sub_thp_count) != 0;
+}
+
+static inline void memcg_sub_thp_enable(struct mem_cgroup *memcg)
+{
+       if (!mem_cgroup_is_root(memcg))
+               atomic_inc(&sub_thp_count);
+}
+
+static inline void memcg_sub_thp_disable(struct mem_cgroup *memcg)
+{
+       if (!mem_cgroup_is_root(memcg))
+               atomic_dec(&sub_thp_count);
+}
+#endif
+
 /*
  * Test whether @memcg has children, dead or alive.  Note that this
  * function doesn't care whether @memcg has use_hierarchy enabled and
@@ -1701,6 +1749,27 @@ unsigned long mem_cgroup_soft_limit_reclaim(pg_data_t *pgdat, int order,
 static inline void memcg_print_bad_task(struct oom_control *oc)
 {
 }
+
+#ifdef CONFIG_MEMCG_THP
+static inline unsigned long mem_cgroup_thp_flag(struct mem_cgroup *memcg)
+{
+       return transparent_hugepage_flags;
+}
+
+static inline int memcg_sub_thp_enabled(void)
+{
+       return 0;
+}
+
+static inline void memcg_sub_thp_enable(struct mem_cgroup *memcg)
+{
+}
+
+static inline void memcg_sub_thp_disable(struct mem_cgroup *memcg)
+{
+}
+#endif
+
 #endif /* CONFIG_MEMCG */
 
 /* idx can be of type enum memcg_stat_item or node_stat_item */
