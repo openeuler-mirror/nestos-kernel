@@ -4616,6 +4616,37 @@ unlock:
 	return 0;
 }
 
+#ifdef CONFIG_MEMCG_THP
+inline bool __transparent_hugepage_enabled(struct vm_area_struct *vma)
+{
+        if (vma->vm_flags & VM_NOHUGEPAGE)
+                return false;
+
+        if (vma_is_temporary_stack(vma))
+                return false;
+
+        if (test_bit(MMF_DISABLE_THP, &vma->vm_mm->flags))
+                return false;
+
+        if (transparent_hugepage_flags & (1 << TRANSPARENT_HUGEPAGE_FLAG))
+                return true;
+         /*
+         * For dax vmas, try to always use hugepage mappings. If the kernel does
+         * not support hugepages, fsdax mappings will fallback to PAGE_SIZE
+         * mappings, and device-dax namespaces, that try to guarantee a given
+         * mapping size, will fail to enable
+         */
+        if (vma_is_dax(vma))
+                return true;
+
+        if (transparent_hugepage_flags &
+                                (1 << TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG))
+                return !!(vma->vm_flags & VM_HUGEPAGE);
+
+        return false;
+}
+#endif
+
 /*
  * By the time we get here, we already hold the mm semaphore
  *
