@@ -61,6 +61,7 @@
 #include <linux/mm.h>
 #include <linux/kasan.h>
 #include "../time/tick-internal.h"
+#include <linux/fault_event.h>
 
 #include "tree.h"
 #include "rcu.h"
