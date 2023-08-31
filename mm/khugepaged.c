@@ -452,7 +452,11 @@ static bool hugepage_vma_check(struct vm_area_struct *vma,
 		return shmem_huge_enabled(vma);
 
 	/* THP settings require madvise. */
+#ifndef CONFIG_MEMCG_THP
 	if (!(vm_flags & VM_HUGEPAGE) && !khugepaged_always())
+#else
+	if (!(vm_flags & VM_HUGEPAGE) && !khugepaged_always(vma))
+#endif
 		return false;
 
 	/* Only regular file is valid */
