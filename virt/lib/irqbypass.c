@@ -18,13 +18,18 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/hash.h>
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("IRQ bypass manager utility module");
 
-static LIST_HEAD(producers);
-static LIST_HEAD(consumers);
-static DEFINE_MUTEX(lock);
+#define IRQBYPASS_HASH_BITS 6
+#define IRQBYPASS_TABLE_SIZE (1 << IRQBYPASS_HASH_BITS)
+
+/* Use hash to optimize list traversal and lock contention */
+static struct list_head producers[IRQBYPASS_TABLE_SIZE];
+static struct list_head consumers[IRQBYPASS_TABLE_SIZE];
+static struct mutex locks[IRQBYPASS_TABLE_SIZE];
 
 /* @lock must be held when calling connect */
 static int __connect(struct irq_bypass_producer *prod,
@@ -86,6 +91,7 @@ int irq_bypass_register_producer(struct irq_bypass_producer *producer)
 	struct irq_bypass_producer *tmp;
 	struct irq_bypass_consumer *consumer;
 	int ret;
+	unsigned int hash;
 
 	if (!producer->token)
 		return -EINVAL;
@@ -95,16 +101,18 @@ int irq_bypass_register_producer(struct irq_bypass_producer *producer)
 	if (!try_module_get(THIS_MODULE))
 		return -ENODEV;
 
-	mutex_lock(&lock);
+	hash = hash_ptr(producer->token, IRQBYPASS_HASH_BITS);
 
-	list_for_each_entry(tmp, &producers, node) {
+	mutex_lock(&locks[hash]);
+
+	list_for_each_entry(tmp, &producers[hash], node) {
 		if (tmp->token == producer->token) {
 			ret = -EBUSY;
 			goto out_err;
 		}
 	}
 
-	list_for_each_entry(consumer, &consumers, node) {
+	list_for_each_entry(consumer, &consumers[hash], node) {
 		if (consumer->token == producer->token) {
 			ret = __connect(producer, consumer);
 			if (ret)
@@ -113,13 +121,13 @@ int irq_bypass_register_producer(struct irq_bypass_producer *producer)
 		}
 	}
 
-	list_add(&producer->node, &producers);
+	list_add(&producer->node, &producers[hash]);
 
-	mutex_unlock(&lock);
+	mutex_unlock(&locks[hash]);
 
 	return 0;
 out_err:
-	mutex_unlock(&lock);
+	mutex_unlock(&locks[hash]);
 	module_put(THIS_MODULE);
 	return ret;
 }
@@ -136,6 +144,7 @@ void irq_bypass_unregister_producer(struct irq_bypass_producer *producer)
 {
 	struct irq_bypass_producer *tmp;
 	struct irq_bypass_consumer *consumer;
+	unsigned int hash;
 
 	if (!producer->token)
 		return;
@@ -145,13 +154,15 @@ void irq_bypass_unregister_producer(struct irq_bypass_producer *producer)
 	if (!try_module_get(THIS_MODULE))
 		return; /* nothing in the list anyway */
 
-	mutex_lock(&lock);
+	hash = hash_ptr(producer->token, IRQBYPASS_HASH_BITS);
 
-	list_for_each_entry(tmp, &producers, node) {
+	mutex_lock(&locks[hash]);
+
+	list_for_each_entry(tmp, &producers[hash], node) {
 		if (tmp->token != producer->token)
 			continue;
 
-		list_for_each_entry(consumer, &consumers, node) {
+		list_for_each_entry(consumer, &consumers[hash], node) {
 			if (consumer->token == producer->token) {
 				__disconnect(producer, consumer);
 				break;
@@ -163,7 +174,7 @@ void irq_bypass_unregister_producer(struct irq_bypass_producer *producer)
 		break;
 	}
 
-	mutex_unlock(&lock);
+	mutex_unlock(&locks[hash]);
 
 	module_put(THIS_MODULE);
 }
@@ -181,6 +192,7 @@ int irq_bypass_register_consumer(struct irq_bypass_consumer *consumer)
 	struct irq_bypass_consumer *tmp;
 	struct irq_bypass_producer *producer;
 	int ret;
+	unsigned int hash;
 
 	if (!consumer->token ||
 	    !consumer->add_producer || !consumer->del_producer)
@@ -191,16 +203,18 @@ int irq_bypass_register_consumer(struct irq_bypass_consumer *consumer)
 	if (!try_module_get(THIS_MODULE))
 		return -ENODEV;
 
-	mutex_lock(&lock);
+	hash = hash_ptr(consumer->token, IRQBYPASS_HASH_BITS);
 
-	list_for_each_entry(tmp, &consumers, node) {
+	mutex_lock(&locks[hash]);
+
+	list_for_each_entry(tmp, &consumers[hash], node) {
 		if (tmp->token == consumer->token || tmp == consumer) {
 			ret = -EBUSY;
 			goto out_err;
 		}
 	}
 
-	list_for_each_entry(producer, &producers, node) {
+	list_for_each_entry(producer, &producers[hash], node) {
 		if (producer->token == consumer->token) {
 			ret = __connect(producer, consumer);
 			if (ret)
@@ -209,13 +223,13 @@ int irq_bypass_register_consumer(struct irq_bypass_consumer *consumer)
 		}
 	}
 
-	list_add(&consumer->node, &consumers);
+	list_add(&consumer->node, &consumers[hash]);
 
-	mutex_unlock(&lock);
+	mutex_unlock(&locks[hash]);
 
 	return 0;
 out_err:
-	mutex_unlock(&lock);
+	mutex_unlock(&locks[hash]);
 	module_put(THIS_MODULE);
 	return ret;
 }
@@ -232,6 +246,7 @@ void irq_bypass_unregister_consumer(struct irq_bypass_consumer *consumer)
 {
 	struct irq_bypass_consumer *tmp;
 	struct irq_bypass_producer *producer;
+	unsigned int hash;
 
 	if (!consumer->token)
 		return;
@@ -241,13 +256,14 @@ void irq_bypass_unregister_consumer(struct irq_bypass_consumer *consumer)
 	if (!try_module_get(THIS_MODULE))
 		return; /* nothing in the list anyway */
 
-	mutex_lock(&lock);
+	hash = hash_ptr(consumer->token, IRQBYPASS_HASH_BITS);
+	mutex_lock(&locks[hash]);
 
-	list_for_each_entry(tmp, &consumers, node) {
+	list_for_each_entry(tmp, &consumers[hash], node) {
 		if (tmp != consumer)
 			continue;
 
-		list_for_each_entry(producer, &producers, node) {
+		list_for_each_entry(producer, &producers[hash], node) {
 			if (producer->token == consumer->token) {
 				__disconnect(producer, consumer);
 				break;
@@ -259,8 +275,23 @@ void irq_bypass_unregister_consumer(struct irq_bypass_consumer *consumer)
 		break;
 	}
 
-	mutex_unlock(&lock);
+	mutex_unlock(&locks[hash]);
 
 	module_put(THIS_MODULE);
 }
 EXPORT_SYMBOL_GPL(irq_bypass_unregister_consumer);
+
+static int __init init_irqbypass(void)
+{
+	int i;
+
+	for (i = 0; i < IRQBYPASS_TABLE_SIZE; i++) {
+		INIT_LIST_HEAD(&producers[i]);
+		INIT_LIST_HEAD(&consumers[i]);
+		mutex_init(&locks[i]);
+	}
+
+	return 0;
+}
+
+module_init(init_irqbypass);
