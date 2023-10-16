@@ -293,6 +293,38 @@ int find_suitable_fallback(struct free_area *area, unsigned int order,
 #endif
 
 /*
+ * Reuse the bit above highest-possible page order (MAX_ORDER - 1) of
+ * page->private, to _temporarily_ indicate that the page is pre-zeroed.
+ *
+ * This bit is only used for pages newly allocated from buddy, neither
+ * buddy pages nor lru pages, etc., in the page allocation path.
+ *
+ * Specifically, this bit is set in __rmqueue_smallest(), and cleared in
+ * prep_new_page() or free_pcppages_bulk(). Setting this bit anywhere else
+ * is a bug.
+ */
+#ifdef CONFIG_PAGE_PREZERO
+#define PAGE_ZEROED	(1UL << (ilog2(MAX_ORDER - 1) + 1))
+#else
+#define PAGE_ZEROED	0
+#endif
+
+static inline bool page_zeroed(struct page *page)
+{
+	return page_private(page) & PAGE_ZEROED;
+}
+
+static inline void set_page_zeroed(struct page *page)
+{
+	page->private |= PAGE_ZEROED;
+}
+
+static inline void clear_page_zeroed(struct page *page)
+{
+	page->private &= ~PAGE_ZEROED;
+}
+
+/*
  * This function returns the order of a free page in the buddy system. In
  * general, page_zone(page)->lock must be held by the caller to prevent the
  * page from being allocated in parallel and returning garbage as the order.

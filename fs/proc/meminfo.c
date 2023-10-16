@@ -146,6 +146,10 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		    global_zone_page_state(NR_FREE_CMA_PAGES));
 #endif
 
+#ifdef CONFIG_PAGE_PREZERO
+	show_val_kb(m, "MemZeroed:      ",
+		    global_zone_page_state(NR_ZEROED_PAGES));
+#endif
 	hugetlb_report_meminfo(m);
 
 	arch_report_meminfo(m);

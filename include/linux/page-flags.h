@@ -191,6 +191,10 @@ enum pageflags {
 
 	/* Only valid for buddy pages. Used to track pages that are reported */
 	PG_reported = PG_uptodate,
+#ifdef CONFIG_PAGE_PREZERO
+	/* Only valid for buddy pages. Used to track pages that are zeroed */
+	PG_zeroed = PG_dirty,
+#endif
 };
 
 #ifndef __GENERATING_BOUNDS_H
@@ -397,6 +401,9 @@ static inline void SetPage##uname(struct page *page) {  }
 #define CLEARPAGEFLAG_NOOP(uname)					\
 static inline void ClearPage##uname(struct page *page) {  }
 
+#define __SETPAGEFLAG_NOOP(uname)					\
+static inline void __SetPage##uname(struct page *page) {  }
+
 #define __CLEARPAGEFLAG_NOOP(uname)					\
 static inline void __ClearPage##uname(struct page *page) {  }
 
@@ -552,6 +559,13 @@ __PAGEFLAG(Reported, reported, PF_NO_COMPOUND)
 PAGEFLAG(Pool, pool, PF_NO_TAIL)
 #else
 PAGEFLAG_FALSE(Pool)
+#endif
+#ifdef CONFIG_PAGE_PREZERO
+__PAGEFLAG(Zeroed, zeroed, PF_NO_COMPOUND)
+#else
+TESTPAGEFLAG_FALSE(Zeroed)
+__SETPAGEFLAG_NOOP(Zeroed)
+__CLEARPAGEFLAG_NOOP(Zeroed)
 #endif
 
 /*

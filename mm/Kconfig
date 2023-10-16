@@ -1001,4 +1001,17 @@ config EXTEND_HUGEPAGE_MAPPING
 
 source "mm/damon/Kconfig"
 
+config PAGE_PREZERO
+	bool "Clear page asynchronously"
+	depends on !INIT_ON_ALLOC_DEFAULT_ON
+	default n
+	help
+	  This feature enables per-node kernel threads to clear (zero) buddy
+	  pages asynchronously in advance to build a pool of pre-zeroed pages
+	  on each NUMA node, and speeds up __GFP_ZERO page allocation.
+
+	  Furthermore, the work of page clear can be offloaded and accelerated
+	  with accelerators like Intel DSA.  User may configure the DMA device
+	  on each NUMA node before enabling this feature.
+
 endmenu
