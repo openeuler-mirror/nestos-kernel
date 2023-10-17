@@ -96,6 +96,7 @@ static void split_map_pages(struct list_head *list)
 		order = page_private(page);
 		nr_pages = 1 << order;
 
+		set_page_private(page, 0);
 		post_alloc_hook(page, order, __GFP_MOVABLE);
 		if (order)
 			split_page(page, order);

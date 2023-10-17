@@ -190,6 +190,8 @@ struct dma_interleaved_template {
  *  transaction is marked with DMA_PREP_REPEAT will cause the new transaction
  *  to never be processed and stay in the issued queue forever. The flag is
  *  ignored if the previous transaction is not a repeated transaction.
+ * @DMA_PREP_NONTEMPORAL - tell the driver that the transaction shall
+ *  direct data writes to memory instead of CPU cache if hardware supports.
  */
 enum dma_ctrl_flags {
 	DMA_PREP_INTERRUPT = (1 << 0),
@@ -202,6 +204,7 @@ enum dma_ctrl_flags {
 	DMA_PREP_CMD = (1 << 7),
 	DMA_PREP_REPEAT = (1 << 8),
 	DMA_PREP_LOAD_EOT = (1 << 9),
+	DMA_PREP_NONTEMPORAL = (1 << 10),
 };
 
 /**

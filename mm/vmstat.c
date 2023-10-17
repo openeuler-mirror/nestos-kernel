@@ -1163,6 +1163,9 @@ const char * const vmstat_text[] = {
 	"nr_zspages",
 #endif
 	"nr_free_cma",
+#ifdef CONFIG_PAGE_PREZERO
+	"nr_zeroed_pages",
+#endif
 
 	/* enum numa_stat_item counters */
 #ifdef CONFIG_NUMA
@@ -1353,6 +1356,12 @@ const char * const vmstat_text[] = {
 #ifdef CONFIG_SWAP
 	"swap_ra",
 	"swap_ra_hit",
+#endif
+#ifdef CONFIG_PAGE_PREZERO
+	"prezero_alloc",
+	"prezero_alloc_pages",
+	"prezero_hw_clear",
+	"prezero_hw_clear_pages",
 #endif
 #endif /* CONFIG_VM_EVENT_COUNTERS || CONFIG_MEMCG */
 };
@@ -1601,6 +1610,34 @@ static const struct seq_operations pagetypeinfo_op = {
 	.show	= pagetypeinfo_show,
 };
 
+#ifdef CONFIG_PAGE_PREZERO
+static void zerobuddy_show_print(struct seq_file *m, pg_data_t *pgdat,
+						struct zone *zone)
+{
+	int order;
+
+	seq_printf(m, "Node %d, zone %8s ", pgdat->node_id, zone->name);
+	for (order = 0; order < MAX_ORDER; ++order)
+		seq_printf(m, "%6lu ", zone->free_area[order].nr_zeroed);
+	seq_putc(m, '\n');
+}
+
+static int zerobuddy_show(struct seq_file *m, void *arg)
+{
+	pg_data_t *pgdat = (pg_data_t *)arg;
+
+	walk_zones_in_node(m, pgdat, true, false, zerobuddy_show_print);
+	return 0;
+}
+
+static const struct seq_operations zerobuddy_op = {
+	.start	= frag_start,
+	.next	= frag_next,
+	.stop	= frag_stop,
+	.show	= zerobuddy_show,
+};
+#endif
+
 static bool is_zone_first_populated(pg_data_t *pgdat, struct zone *zone)
 {
 	int zid;
@@ -1629,6 +1666,9 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 	}
 	seq_printf(m,
 		   "\n  pages free     %lu"
+#ifdef CONFIG_PAGE_PREZERO
+		   "\n        zeroed   %lu"
+#endif
 		   "\n        min      %lu"
 		   "\n        low      %lu"
 		   "\n        high     %lu"
@@ -1637,6 +1677,9 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 		   "\n        managed  %lu"
 		   "\n        cma      %lu",
 		   zone_page_state(zone, NR_FREE_PAGES),
+#ifdef CONFIG_PAGE_PREZERO
+		   zone_page_state(zone, NR_ZEROED_PAGES),
+#endif
 		   min_wmark_pages(zone),
 		   low_wmark_pages(zone),
 		   high_wmark_pages(zone),
@@ -2052,6 +2095,9 @@ void __init init_mm_internals(void)
 	proc_create_seq("pagetypeinfo", 0400, NULL, &pagetypeinfo_op);
 	proc_create_seq("vmstat", 0444, NULL, &vmstat_op);
 	proc_create_seq("zoneinfo", 0444, NULL, &zoneinfo_op);
+#ifdef CONFIG_PAGE_PREZERO
+	proc_create_seq("zerobuddyinfo", 0444, NULL, &zerobuddy_op);
+#endif
 #endif
 }
 
