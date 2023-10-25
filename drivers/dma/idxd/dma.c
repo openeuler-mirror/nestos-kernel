@@ -116,7 +116,7 @@ idxd_dma_prep_interrupt(struct dma_chan *c, unsigned long flags)
 	if (wq->state != IDXD_WQ_ENABLED)
 		return NULL;
 
-	op_flag_setup(flags, &desc_flags);
+	op_flag_setup(flags, &desc_flags,wq);
 	desc = idxd_alloc_desc(wq, IDXD_OP_BLOCK);
 	if (IS_ERR(desc))
 		return NULL;
@@ -142,7 +142,7 @@ idxd_dma_submit_memcpy(struct dma_chan *c, dma_addr_t dma_dest,
 	if (len > idxd->max_xfer_bytes)
 		return NULL;
 
-	op_flag_setup(flags, &desc_flags);
+	op_flag_setup(flags, &desc_flags,wq);
 	desc = idxd_alloc_desc(wq, IDXD_OP_BLOCK);
 	if (IS_ERR(desc))
 		return NULL;
