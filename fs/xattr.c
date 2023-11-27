@@ -16,7 +16,9 @@
 #include <linux/namei.h>
 #include <linux/security.h>
 #include <linux/evm.h>
+#ifdef CONFIG_IMA_DIGEST_LIST
 #include <linux/ima.h>
+#endif
 #include <linux/syscalls.h>
 #include <linux/export.h>
 #include <linux/fsnotify.h>
@@ -475,7 +477,9 @@ __vfs_removexattr_locked(struct dentry *dentry, const char *name,
 
 	if (!error) {
 		fsnotify_xattr(dentry);
+#ifdef CONFIG_IMA_DIGEST_LIST
 		ima_inode_post_removexattr(dentry, name);
+#endif
 		evm_inode_post_removexattr(dentry, name);
 	}
 
@@ -1051,7 +1055,7 @@ static int xattr_list_one(char **buffer, ssize_t *remaining_size,
 ssize_t simple_xattr_list(struct inode *inode, struct simple_xattrs *xattrs,
 			  char *buffer, size_t size)
 {
-	bool trusted = capable(CAP_SYS_ADMIN);
+	bool trusted = ns_capable_noaudit(&init_user_ns, CAP_SYS_ADMIN);
 	struct simple_xattr *xattr;
 	ssize_t remaining_size = size;
 	int err = 0;

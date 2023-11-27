@@ -18,7 +18,8 @@ extern int ima_bprm_check(struct linux_binprm *bprm);
 extern int ima_file_check(struct file *file, int mask);
 extern void ima_post_create_tmpfile(struct inode *inode);
 extern void ima_file_free(struct file *file);
-extern int ima_file_mmap(struct file *file, unsigned long prot);
+extern int ima_file_mmap(struct file *file, unsigned long reqprot,
+			 unsigned long prot, unsigned long flags);
 extern int ima_file_mprotect(struct vm_area_struct *vma, unsigned long prot);
 extern int ima_load_data(enum kernel_load_data_id id, bool contents);
 extern int ima_post_load_data(char *buf, loff_t size,
@@ -70,7 +71,8 @@ static inline void ima_file_free(struct file *file)
 	return;
 }
 
-static inline int ima_file_mmap(struct file *file, unsigned long prot)
+static inline int ima_file_mmap(struct file *file, unsigned long reqprot,
+				unsigned long prot, unsigned long flags)
 {
 	return 0;
 }
@@ -144,13 +146,17 @@ extern bool is_ima_appraise_enabled(void);
 extern void ima_inode_post_setattr(struct dentry *dentry);
 extern int ima_inode_setxattr(struct dentry *dentry, const char *xattr_name,
 		       const void *xattr_value, size_t xattr_value_len);
+#ifdef CONFIG_IMA_DIGEST_LIST
 extern void ima_inode_post_setxattr(struct dentry *dentry,
 				    const char *xattr_name,
 				    const void *xattr_value,
 				    size_t xattr_value_len);
+#endif
 extern int ima_inode_removexattr(struct dentry *dentry, const char *xattr_name);
+#ifdef CONFIG_IMA_DIGEST_LIST
 extern void ima_inode_post_removexattr(struct dentry *dentry,
 				       const char *xattr_name);
+#endif
 #else
 static inline bool is_ima_appraise_enabled(void)
 {
@@ -170,12 +176,14 @@ static inline int ima_inode_setxattr(struct dentry *dentry,
 	return 0;
 }
 
+#ifdef CONFIG_IMA_DIGEST_LIST
 static inline void ima_inode_post_setxattr(struct dentry *dentry,
 					   const char *xattr_name,
 					   const void *xattr_value,
 					   size_t xattr_value_len)
 {
 }
+#endif
 
 static inline int ima_inode_removexattr(struct dentry *dentry,
 					const char *xattr_name)
@@ -183,10 +191,12 @@ static inline int ima_inode_removexattr(struct dentry *dentry,
 	return 0;
 }
 
+#ifdef CONFIG_IMA_DIGEST_LIST
 static inline void ima_inode_post_removexattr(struct dentry *dentry,
 					      const char *xattr_name)
 {
 }
+#endif
 #endif /* CONFIG_IMA_APPRAISE */
 
 #if defined(CONFIG_IMA_APPRAISE) && defined(CONFIG_INTEGRITY_TRUSTED_KEYRING)

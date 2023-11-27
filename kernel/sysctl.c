@@ -71,7 +71,6 @@
 #include <linux/coredump.h>
 #include <linux/latencytop.h>
 #include <linux/pid.h>
-#include <linux/fault_event.h>
 
 #include "../lib/kstrtox.h"
 
@@ -682,71 +681,6 @@ static int do_proc_dointvec(struct ctl_table *table, int write,
 			buffer, lenp, ppos, conv, data);
 }
 
-int setup_pagecache_limit(void)
-{
-	/* reclaim $ADDITIONAL_RECLAIM_PAGES more than limit. */
-	vm_pagecache_limit_reclaim_ratio = vm_pagecache_limit_ratio + ADDITIONAL_RECLAIM_RATIO;
-
-	if (vm_pagecache_limit_reclaim_ratio > 100)
-		vm_pagecache_limit_reclaim_ratio = 100;
-	if (vm_pagecache_limit_ratio == 0)
-		vm_pagecache_limit_reclaim_ratio = 0;
-
-	vm_pagecache_limit_pages = vm_pagecache_limit_ratio * totalram_pages() / 100;
-	vm_pagecache_limit_reclaim_pages = vm_pagecache_limit_reclaim_ratio * totalram_pages() / 100;
-	return 0;
-}
-
-static int pc_limit_proc_dointvec(struct ctl_table *table, int write,
-		     void __user *buffer, size_t *lenp, loff_t *ppos)
-{
-	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
-	if (write && !ret)
-		ret = setup_pagecache_limit();
-	return ret;
-}
-
-static int pc_reclaim_limit_proc_dointvec(struct ctl_table *table, int write,
-		     void __user *buffer, size_t *lenp, loff_t *ppos)
-{
-	int pre_reclaim_ratio = vm_pagecache_limit_reclaim_ratio;
-	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
-
-	if (write && vm_pagecache_limit_ratio == 0)
-		return -EINVAL;
-
-	if (write && !ret) {
-		if (vm_pagecache_limit_reclaim_ratio - vm_pagecache_limit_ratio < ADDITIONAL_RECLAIM_RATIO) {
-			vm_pagecache_limit_reclaim_ratio = pre_reclaim_ratio;
-			return -EINVAL;
-		}
-		vm_pagecache_limit_reclaim_pages = vm_pagecache_limit_reclaim_ratio * totalram_pages() / 100;
-	}
-	return ret;
-}
-
-static int pc_limit_async_handler(struct ctl_table *table, int write,
-		     void __user *buffer, size_t *lenp, loff_t *ppos)
-{
-	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
-
-	if (write && vm_pagecache_limit_ratio == 0)
-		return -EINVAL;
-
-	if (write && !ret) {
-		if (vm_pagecache_limit_async > 0) {
-			if (kpagecache_limitd_run()) {
-				vm_pagecache_limit_async = 0;
-				return -EINVAL;
-			}
-		}
-		else {
-			kpagecache_limitd_stop();
-		}
-	}
-	return ret;
-}
-
 static int do_proc_douintvec_w(unsigned int *tbl_data,
 			       struct ctl_table *table,
 			       void *buffer,
@@ -1131,6 +1065,65 @@ int proc_douintvec_minmax(struct ctl_table *table, int write,
 	return do_proc_douintvec(table, write, buffer, lenp, ppos,
 				 do_proc_douintvec_minmax_conv, &param);
 }
+
+/**
+ * proc_dou8vec_minmax - read a vector of unsigned chars with min/max values
+ * @table: the sysctl table
+ * @write: %TRUE if this is a write to the sysctl file
+ * @buffer: the user buffer
+ * @lenp: the size of the user buffer
+ * @ppos: file position
+ *
+ * Reads/writes up to table->maxlen/sizeof(u8) unsigned chars
+ * values from/to the user buffer, treated as an ASCII string. Negative
+ * strings are not allowed.
+ *
+ * This routine will ensure the values are within the range specified by
+ * table->extra1 (min) and table->extra2 (max).
+ *
+ * Returns 0 on success or an error on write when the range check fails.
+ */
+int proc_dou8vec_minmax(struct ctl_table *table, int write,
+			void *buffer, size_t *lenp, loff_t *ppos)
+{
+	struct ctl_table tmp;
+	unsigned int min = 0, max = 255U, val;
+	u8 *data = table->data;
+	struct do_proc_douintvec_minmax_conv_param param = {
+		.min = &min,
+		.max = &max,
+	};
+	int res;
+
+	/* Do not support arrays yet. */
+	if (table->maxlen != sizeof(u8))
+		return -EINVAL;
+
+	if (table->extra1) {
+		min = *(unsigned int *) table->extra1;
+		if (min > 255U)
+			return -EINVAL;
+	}
+	if (table->extra2) {
+		max = *(unsigned int *) table->extra2;
+		if (max > 255U)
+			return -EINVAL;
+	}
+
+	tmp = *table;
+
+	tmp.maxlen = sizeof(val);
+	tmp.data = &val;
+	val = READ_ONCE(*data);
+	res = do_proc_douintvec(&tmp, write, buffer, lenp, ppos,
+				do_proc_douintvec_minmax_conv, &param);
+	if (res)
+		return res;
+	if (write)
+		WRITE_ONCE(*data, val);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(proc_dou8vec_minmax);
 
 static int do_proc_dopipe_max_size_conv(unsigned long *lvalp,
 					unsigned int *valp,
@@ -1680,6 +1673,12 @@ int proc_dointvec_minmax(struct ctl_table *table, int write,
 
 int proc_douintvec_minmax(struct ctl_table *table, int write,
 			  void *buffer, size_t *lenp, loff_t *ppos)
+{
+	return -ENOSYS;
+}
+
+int proc_dou8vec_minmax(struct ctl_table *table, int write,
+			void *buffer, size_t *lenp, loff_t *ppos)
 {
 	return -ENOSYS;
 }
@@ -2271,17 +2270,6 @@ static struct ctl_table kern_table[] = {
 		.proc_handler	= proc_dointvec,
 	},
 #endif
-#ifdef CONFIG_SMP
-	{
-		.procname	= "oops_all_cpu_backtrace",
-		.data		= &sysctl_oops_all_cpu_backtrace,
-		.maxlen		= sizeof(int),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE,
-	},
-#endif /* CONFIG_SMP */
 	{
 		.procname	= "panic_on_oops",
 		.data		= &panic_on_oops,
@@ -2432,30 +2420,6 @@ static struct ctl_table kern_table[] = {
 		.extra2		= SYSCTL_ONE,
 	},
 #endif /* CONFIG_SMP */
-	{
-		.procname	= "unrecovered_softlockup_thresh_cpus",
-		.data		= &sysctl_unrecovered_softlockup_thresh_cpus,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= SYSCTL_ZERO,
-	},
-	{
-		.procname	= "unrecovered_softlockup_sample_seconds",
-		.data		= &sysctl_unrecovered_softlockup_sample_interval,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= SYSCTL_ZERO,
-	},
-	{
-		.procname	= "unrecovered_softlockup_thresh_times",
-		.data		= &sysctl_unrecovered_softlockup_thresh_times,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= SYSCTL_ZERO,
-	},
 #endif
 #ifdef CONFIG_HARDLOCKUP_DETECTOR
 	{
@@ -2839,46 +2803,8 @@ static struct ctl_table kern_table[] = {
 		.extra2		= &one_hundred,
 	},
 #endif
-        {
-                .procname       = "fault_event_enable",
-                .data           = &sysctl_fault_event_enable,
-                .maxlen         = sizeof(unsigned int),
-                .mode           = 0644,
-                .proc_handler   = proc_dointvec_minmax,
-                .extra1         = SYSCTL_ZERO,
-                .extra2         = SYSCTL_ONE,
-        },
-#if defined CONFIG_PRINTK
-        {
-                .procname       = "fault_event_print",
-                .data           = &sysctl_fault_event_print,
-                .maxlen         = sizeof(unsigned int),
-                .mode           = 0644,
-                .proc_handler   = proc_dointvec_minmax,
-                .extra1         = SYSCTL_ZERO,
-                .extra2         = SYSCTL_ONE,
-        },
-#endif
-        {
-                .procname       = "panic_on_fatal_event",
-                .data           = &sysctl_panic_on_fatal_event,
-                .maxlen         = sizeof(unsigned int),
-                .mode           = 0644,
-                .proc_handler   = proc_dointvec_minmax,
-            	.extra1         = SYSCTL_ZERO,
-                .extra2         = SYSCTL_ONE,
-        },
 	{ }
 };
-
-static int pc_limit_proc_dointvec(struct ctl_table *table, int write,
-		     void __user *buffer, size_t *lenp, loff_t *ppos);
-
-static int pc_reclaim_limit_proc_dointvec(struct ctl_table *table, int write,
-		     void __user *buffer, size_t *lenp, loff_t *ppos);
-
-static int pc_limit_async_handler(struct ctl_table *table, int write,
- 		     void __user *buffer, size_t *lenp, loff_t *ppos);
 
 static struct ctl_table vm_table[] = {
 	{
@@ -3011,38 +2937,6 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= &two_hundred,
-	},
-	{
-		.procname	= "pagecache_limit_ratio",
-		.data		= &vm_pagecache_limit_ratio,
-		.maxlen		= sizeof(vm_pagecache_limit_ratio),
-		.mode		= 0644,
-		.proc_handler	= &pc_limit_proc_dointvec,
-		.extra1		= SYSCTL_ZERO,
-		.extra2		= &one_hundred,
-	},
-	{
-		.procname	= "pagecache_limit_reclaim_ratio",
-		.data		= &vm_pagecache_limit_reclaim_ratio,
-		.maxlen		= sizeof(vm_pagecache_limit_reclaim_ratio),
-		.mode		= 0644,
-		.proc_handler	= &pc_reclaim_limit_proc_dointvec,
-		.extra1		= SYSCTL_ZERO,
-		.extra2		= &one_hundred,
-	},
-	{
-		.procname	= "pagecache_limit_ignore_dirty",
-		.data		= &vm_pagecache_ignore_dirty,
-		.maxlen		= sizeof(vm_pagecache_ignore_dirty),
-		.mode		= 0644,
-		.proc_handler	= &proc_dointvec,
-	},
-	{
-		.procname	= "pagecache_limit_async",
-		.data		= &vm_pagecache_limit_async,
-		.maxlen		= sizeof(vm_pagecache_limit_async),
-		.mode		= 0644,
-		.proc_handler	= &pc_limit_async_handler,
 	},
 #ifdef CONFIG_NUMA
 	{

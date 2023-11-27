@@ -337,7 +337,7 @@ static irqreturn_t hisi_i2c_irq(int irq, void *context)
 	/*
 	 * Don't handle the interrupt if cltr->completion is NULL. We may
 	 * reach here because the interrupt is spurious or the transfer is
-	 * started by another port rather than us.
+	 * started by another port (e.g. firmware) rather than us.
 	 */
 	if (!ctlr->completion)
 		return IRQ_NONE;

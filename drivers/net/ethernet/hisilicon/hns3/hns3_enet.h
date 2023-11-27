@@ -471,6 +471,15 @@ struct hns3_tx_spare {
 	u32 len;
 };
 
+struct hns3_arp_reply {
+	__be32 dest_ip;
+	__be32 src_ip;
+	u8 dest_hw[ETH_ALEN];
+	u8 src_hw[ETH_ALEN];
+	u8 has_vlan;
+	__be16 vlan_tci;
+};
+
 struct hns3_enet_ring {
 	struct hns3_desc *desc; /* dma map address space */
 	struct hns3_desc_cb *desc_cb;
@@ -495,6 +504,11 @@ struct hns3_enet_ring {
 	 */
 	int next_to_clean;
 	u32 flag;          /* ring attribute */
+
+#define HNS3_APR_REPLY_LTH 32
+	struct hns3_arp_reply arp_reply[HNS3_APR_REPLY_LTH];
+	int arp_reply_head;
+	int arp_reply_tail;
 
 	int pending_buf;
 	union {
@@ -746,6 +760,9 @@ static inline unsigned int hns3_page_order(struct hns3_enet_ring *ring)
 	return 0;
 }
 
+#define hns3_ubl_supported(handle) \
+	hnae3_dev_ubl_supported((struct hnae3_ae_dev *)pci_get_drvdata((handle)->pdev))
+
 #define hns3_page_size(_ring) (PAGE_SIZE << hns3_page_order(_ring))
 
 /* iterator for handling rings in ring group */
@@ -771,11 +788,13 @@ void hns3_ethtool_set_ops(struct net_device *netdev);
 int hns3_set_channels(struct net_device *netdev,
 		      struct ethtool_channels *ch);
 
+u32 hns3_get_l3_type(struct hns3_nic_priv *priv, u32 l234info, u32 ol_info);
 void hns3_clean_tx_ring(struct hns3_enet_ring *ring, int budget);
 int hns3_init_all_ring(struct hns3_nic_priv *priv);
 int hns3_nic_reset_all_ring(struct hnae3_handle *h);
 void hns3_fini_ring(struct hns3_enet_ring *ring);
 netdev_tx_t hns3_nic_net_xmit(struct sk_buff *skb, struct net_device *netdev);
+bool hns3_unic_port_dev_check(const struct net_device *dev);
 bool hns3_is_phys_func(struct pci_dev *pdev);
 int hns3_clean_rx_ring(
 		struct hns3_enet_ring *ring, int budget,
@@ -814,4 +833,5 @@ void hns3_cq_period_mode_init(struct hns3_nic_priv *priv,
 
 void hns3_external_lb_prepare(struct net_device *ndev, bool if_running);
 void hns3_external_lb_restore(struct net_device *ndev, bool if_running);
+bool hns3_is_page_pool_enabled(void);
 #endif

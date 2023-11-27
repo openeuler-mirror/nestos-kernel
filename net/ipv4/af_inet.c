@@ -729,6 +729,7 @@ int inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	lock_sock(sock->sk);
 	err = __inet_stream_connect(sock, uaddr, addr_len, flags, 0);
 	release_sock(sock->sk);
+	trace_connect_ret(&err);
 	return err;
 }
 EXPORT_SYMBOL(inet_stream_connect);
@@ -894,7 +895,7 @@ int inet_shutdown(struct socket *sock, int how)
 		   EPOLLHUP, even on eg. unconnected UDP sockets -- RR */
 		fallthrough;
 	default:
-		sk->sk_shutdown |= how;
+		WRITE_ONCE(sk->sk_shutdown, sk->sk_shutdown | how);
 		if (sk->sk_prot->shutdown)
 			sk->sk_prot->shutdown(sk, how);
 		break;

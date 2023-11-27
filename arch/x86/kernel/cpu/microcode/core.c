@@ -42,7 +42,11 @@
 
 #define DRIVER_VERSION	"2.2"
 
+#ifdef CONFIG_MICROCODE_HYGON
+static const struct microcode_ops	*microcode_ops;
+#else
 static struct microcode_ops	*microcode_ops;
+#endif
 static bool dis_ucode_ldr = true;
 
 bool initrd_gone;
@@ -55,7 +59,7 @@ LIST_HEAD(microcode_cache);
  * All non cpu-hotplug-callback call sites use:
  *
  * - microcode_mutex to synchronize with each other;
- * - get/put_online_cpus() to synchronize with
+ * - cpus_read_lock/unlock() to synchronize with
  *   the cpu-hotplug-callback call sites.
  *
  * We guarantee that only a single cpu is being
@@ -129,7 +133,8 @@ static bool __init check_loader_disabled_bsp(void)
 	if (native_cpuid_ecx(1) & BIT(31))
 		return *res;
 
-	if (x86_cpuid_vendor() == X86_VENDOR_AMD) {
+	if (x86_cpuid_vendor() == X86_VENDOR_AMD ||
+	    x86_cpuid_vendor() == X86_VENDOR_HYGON) {
 		if (amd_check_current_patch_level())
 			return *res;
 	}
@@ -179,6 +184,10 @@ void __init load_ucode_bsp(void)
 		intel = false;
 		break;
 
+	case X86_VENDOR_HYGON:
+		intel = false;
+		break;
+
 	default:
 		return;
 	}
@@ -219,6 +228,9 @@ void load_ucode_ap(void)
 		if (x86_family(cpuid_1_eax) >= 0x10)
 			load_ucode_amd_ap(cpuid_1_eax);
 		break;
+	case X86_VENDOR_HYGON:
+		load_ucode_amd_ap(cpuid_1_eax);
+		break;
 	default:
 		break;
 	}
@@ -237,6 +249,9 @@ static int __init save_microcode_in_initrd(void)
 	case X86_VENDOR_AMD:
 		if (c->x86 >= 0x10)
 			ret = save_microcode_in_initrd_amd(cpuid_eax(1));
+		break;
+	case X86_VENDOR_HYGON:
+		ret = save_microcode_in_initrd_amd(cpuid_eax(1));
 		break;
 	default:
 		break;
@@ -330,6 +345,9 @@ void reload_early_microcode(void)
 	case X86_VENDOR_AMD:
 		if (family >= 0x10)
 			reload_ucode_amd();
+		break;
+	case X86_VENDOR_HYGON:
+		reload_ucode_amd();
 		break;
 	default:
 		break;
@@ -431,7 +449,7 @@ static ssize_t microcode_write(struct file *file, const char __user *buf,
 		return ret;
 	}
 
-	get_online_cpus();
+	cpus_read_lock();
 	mutex_lock(&microcode_mutex);
 
 	if (do_microcode_update(buf, len) == 0)
@@ -441,7 +459,7 @@ static ssize_t microcode_write(struct file *file, const char __user *buf,
 		perf_check_microcode();
 
 	mutex_unlock(&microcode_mutex);
-	put_online_cpus();
+	cpus_read_unlock();
 
 	return ret;
 }
@@ -485,6 +503,7 @@ static void __exit microcode_dev_exit(void)
 /* fake device for request_firmware */
 static struct platform_device	*microcode_pdev;
 
+#ifdef CONFIG_MICROCODE_LATE_LOADING
 /*
  * Late loading dance. Why the heavy-handed stomp_machine effort?
  *
@@ -599,16 +618,27 @@ wait_for_siblings:
  */
 static int microcode_reload_late(void)
 {
-	int ret;
+	int old = boot_cpu_data.microcode, ret;
+	struct cpuinfo_x86 prev_info;
 
 	atomic_set(&late_cpus_in,  0);
 	atomic_set(&late_cpus_out, 0);
 
-	ret = stop_machine_cpuslocked(__reload_late, NULL, cpu_online_mask);
-	if (ret == 0)
-		microcode_check();
+	/*
+	 * Take a snapshot before the microcode update in order to compare and
+	 * check whether any bits changed after an update.
+	 */
+	store_cpu_caps(&prev_info);
 
-	pr_info("Reload completed, microcode revision: 0x%x\n", boot_cpu_data.microcode);
+	ret = stop_machine_cpuslocked(__reload_late, NULL, cpu_online_mask);
+	if (!ret) {
+		pr_info("Reload succeeded, microcode revision: 0x%x -> 0x%x\n",
+			old, boot_cpu_data.microcode);
+		microcode_check(&prev_info);
+	} else {
+		pr_info("Reload failed, current microcode revision: 0x%x\n",
+			boot_cpu_data.microcode);
+	}
 
 	return ret;
 }
@@ -629,7 +659,7 @@ static ssize_t reload_store(struct device *dev,
 	if (val != 1)
 		return size;
 
-	get_online_cpus();
+	cpus_read_lock();
 
 	ret = check_online_cpus();
 	if (ret)
@@ -644,13 +674,16 @@ static ssize_t reload_store(struct device *dev,
 	mutex_unlock(&microcode_mutex);
 
 put:
-	put_online_cpus();
+	cpus_read_unlock();
 
 	if (ret == 0)
 		ret = size;
 
 	return ret;
 }
+
+static DEVICE_ATTR_WO(reload);
+#endif
 
 static ssize_t version_show(struct device *dev,
 			struct device_attribute *attr, char *buf)
@@ -668,7 +701,6 @@ static ssize_t pf_show(struct device *dev,
 	return sprintf(buf, "0x%x\n", uci->cpu_sig.pf);
 }
 
-static DEVICE_ATTR_WO(reload);
 static DEVICE_ATTR(version, 0444, version_show, NULL);
 static DEVICE_ATTR(processor_flags, 0444, pf_show, NULL);
 
@@ -821,7 +853,9 @@ static int mc_cpu_down_prep(unsigned int cpu)
 }
 
 static struct attribute *cpu_root_microcode_attrs[] = {
+#ifdef CONFIG_MICROCODE_LATE_LOADING
 	&dev_attr_reload.attr,
+#endif
 	NULL
 };
 
@@ -842,6 +876,8 @@ int __init microcode_init(void)
 		microcode_ops = init_intel_microcode();
 	else if (c->x86_vendor == X86_VENDOR_AMD)
 		microcode_ops = init_amd_microcode();
+	else if (c->x86_vendor == X86_VENDOR_HYGON)
+		microcode_ops = init_hygon_microcode();
 	else
 		pr_err("no support for this CPU vendor\n");
 
@@ -853,14 +889,14 @@ int __init microcode_init(void)
 	if (IS_ERR(microcode_pdev))
 		return PTR_ERR(microcode_pdev);
 
-	get_online_cpus();
+	cpus_read_lock();
 	mutex_lock(&microcode_mutex);
 
 	error = subsys_interface_register(&mc_cpu_interface);
 	if (!error)
 		perf_check_microcode();
 	mutex_unlock(&microcode_mutex);
-	put_online_cpus();
+	cpus_read_unlock();
 
 	if (error)
 		goto out_pdev;
@@ -892,13 +928,13 @@ int __init microcode_init(void)
 			   &cpu_root_microcode_group);
 
  out_driver:
-	get_online_cpus();
+	cpus_read_lock();
 	mutex_lock(&microcode_mutex);
 
 	subsys_interface_unregister(&mc_cpu_interface);
 
 	mutex_unlock(&microcode_mutex);
-	put_online_cpus();
+	cpus_read_unlock();
 
  out_pdev:
 	platform_device_unregister(microcode_pdev);

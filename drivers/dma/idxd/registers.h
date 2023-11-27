@@ -88,7 +88,6 @@ union engine_cap_reg {
 #define IDXD_OPCAP_NOOP			0x0001
 #define IDXD_OPCAP_BATCH			0x0002
 #define IDXD_OPCAP_MEMMOVE		0x0008
-#define IDXD_OPCAP_MEMFILL		BIT(DSA_OPCODE_MEMFILL)
 struct opcap {
 	u64 bits[4];
 };

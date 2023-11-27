@@ -1325,7 +1325,7 @@ static inline void uclamp_idle_reset(struct rq *rq, enum uclamp_id clamp_id,
 	if (!(rq->uclamp_flags & UCLAMP_FLAG_IDLE))
 		return;
 
-	WRITE_ONCE(rq->uclamp[clamp_id].value, clamp_value);
+	uclamp_rq_set(rq, clamp_id, clamp_value);
 }
 
 static inline
@@ -1503,8 +1503,8 @@ static inline void uclamp_rq_inc_id(struct rq *rq, struct task_struct *p,
 	if (bucket->tasks == 1 || uc_se->value > bucket->value)
 		bucket->value = uc_se->value;
 
-	if (uc_se->value > READ_ONCE(uc_rq->value))
-		WRITE_ONCE(uc_rq->value, uc_se->value);
+	if (uc_se->value > uclamp_rq_get(rq, clamp_id))
+		uclamp_rq_set(rq, clamp_id, uc_se->value);
 }
 
 /*
@@ -1570,7 +1570,7 @@ static inline void uclamp_rq_dec_id(struct rq *rq, struct task_struct *p,
 	if (likely(bucket->tasks))
 		return;
 
-	rq_clamp = READ_ONCE(uc_rq->value);
+	rq_clamp = uclamp_rq_get(rq, clamp_id);
 	/*
 	 * Defensive programming: this should never happen. If it happens,
 	 * e.g. due to future modification, warn and fixup the expected value.
@@ -1578,7 +1578,7 @@ static inline void uclamp_rq_dec_id(struct rq *rq, struct task_struct *p,
 	SCHED_WARN_ON(bucket->value > rq_clamp);
 	if (bucket->value >= rq_clamp) {
 		bkt_clamp = uclamp_rq_max_value(rq, clamp_id, uc_se->value);
-		WRITE_ONCE(uc_rq->value, bkt_clamp);
+		uclamp_rq_set(rq, clamp_id, bkt_clamp);
 	}
 }
 
@@ -1957,6 +1957,9 @@ static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 
 void activate_task(struct rq *rq, struct task_struct *p, int flags)
 {
+	if (task_on_rq_migrating(p))
+		flags |= ENQUEUE_MIGRATED;
+
 	enqueue_task(rq, p, flags);
 
 	p->on_rq = TASK_ON_RQ_QUEUED;
@@ -3617,6 +3620,17 @@ static void __init init_schedstats(void)
 	set_schedstats(__sched_schedstats);
 }
 
+#ifdef CONFIG_QOS_SCHED
+DEFINE_STATIC_KEY_TRUE(__qos_sched_switch);
+
+static int __init no_qos_sched_switch_setup(char *__unused)
+{
+	static_branch_disable(&__qos_sched_switch);
+	return 1;
+}
+__setup("noqossched", no_qos_sched_switch_setup);
+#endif
+
 #ifdef CONFIG_PROC_SYSCTL
 int sysctl_schedstats(struct ctl_table *table, int write, void *buffer,
 		size_t *lenp, loff_t *ppos)
@@ -4696,8 +4710,7 @@ static noinline void __schedule_bug(struct task_struct *prev)
 		pr_err("Preemption disabled at:");
 		print_ip_sym(KERN_ERR, preempt_disable_ip);
 	}
-	if (panic_on_warn)
-		panic("scheduling while atomic\n");
+	check_panic_on_warn("scheduling while atomic");
 
 	dump_stack();
 	add_taint(TAINT_WARN, LOCKDEP_STILL_OK);
@@ -5781,11 +5794,11 @@ static int __init setup_preempt_mode(char *str)
 	int mode = sched_dynamic_mode(str);
 	if (mode < 0) {
 		pr_warn("Dynamic Preempt: unsupported mode: %s\n", str);
-		return 1;
+		return 0;
 	}
 
 	sched_dynamic_update(mode);
-	return 0;
+	return 1;
 }
 __setup("preempt=", setup_preempt_mode);
 
@@ -7151,14 +7164,14 @@ SYSCALL_DEFINE3(sched_getaffinity, pid_t, pid, unsigned int, len,
 	if (len & (sizeof(unsigned long)-1))
 		return -EINVAL;
 
-	if (!alloc_cpumask_var(&mask, GFP_KERNEL))
+	if (!zalloc_cpumask_var(&mask, GFP_KERNEL))
 		return -ENOMEM;
 
 	ret = sched_getaffinity(pid, mask);
 	if (ret == 0) {
 		unsigned int retlen = min(len, cpumask_size());
 
-		if (copy_to_user(user_mask_ptr, mask, retlen))
+		if (copy_to_user(user_mask_ptr, cpumask_bits(mask), retlen))
 			ret = -EFAULT;
 		else
 			ret = retlen;
@@ -8050,6 +8063,10 @@ int sched_cpu_deactivate(unsigned int cpu)
 
 	ret = cpuset_cpu_inactive(cpu);
 	if (ret) {
+#ifdef CONFIG_SCHED_SMT
+		if (cpumask_weight(cpu_smt_mask(cpu)) == 2)
+			static_branch_inc_cpuslocked(&sched_smt_present);
+#endif
 		set_cpu_active(cpu, true);
 		return ret;
 	}
@@ -8195,6 +8212,9 @@ void __init sched_init(void)
 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
 		init_cfs_bandwidth(&root_task_group.cfs_bandwidth);
 #endif /* CONFIG_FAIR_GROUP_SCHED */
+#ifdef CONFIG_QOS_SCHED_SMT_EXPELLER
+		root_task_group.smt_expell = TG_SMT_EXPELL;
+#endif
 #ifdef CONFIG_RT_GROUP_SCHED
 		root_task_group.rt_se = (struct sched_rt_entity **)ptr;
 		ptr += nr_cpu_ids * sizeof(void **);
@@ -8548,6 +8568,16 @@ static inline int alloc_qos_sched_group(struct task_group *tg,
 					struct task_group *parent)
 {
 	tg->qos_level = parent->qos_level;
+
+#ifdef CONFIG_QOS_SCHED_SMT_EXPELLER
+	tg->smt_expell = parent->smt_expell;
+#endif
+	tg->qos_level_mutex = kzalloc(sizeof(struct mutex), GFP_KERNEL);
+
+	if (!tg->qos_level_mutex)
+		return 0;
+
+	mutex_init(tg->qos_level_mutex);
 
 	return 1;
 }
@@ -9452,6 +9482,36 @@ static u64 cpu_rt_period_read_uint(struct cgroup_subsys_state *css,
 }
 #endif /* CONFIG_RT_GROUP_SCHED */
 
+#ifdef CONFIG_QOS_SCHED_SMT_EXPELLER
+static int cpu_smt_expell_write(struct cgroup_subsys_state *css,
+			 struct cftype *cftype, s64 smt_expell)
+{
+	struct task_group *tg = css_tg(css);
+
+	if (!tg->se[0])
+		return -EINVAL;
+
+	if (smt_expell != TG_SMT_NONE && smt_expell != TG_SMT_EXPELL)
+		return -EINVAL;
+
+	/*
+	 * a. This attribute takes effect with a delay, and it will not take
+	 *    effect until the next cfs task is selected.
+	 * b. This property creates temporary state inconsistencies, which may
+	 *    result in an invalid smt expell, but overall works fine.
+	 */
+	tg->smt_expell = smt_expell;
+
+	return 0;
+}
+
+static inline s64 cpu_smt_expell_read(struct cgroup_subsys_state *css,
+			       struct cftype *cft)
+{
+	return css_tg(css)->smt_expell;
+}
+#endif
+
 #ifdef CONFIG_QOS_SCHED
 static int tg_change_scheduler(struct task_group *tg, void *data)
 {
@@ -9462,6 +9522,7 @@ static int tg_change_scheduler(struct task_group *tg, void *data)
 	s64 qos_level = *(s64 *)data;
 	struct cgroup_subsys_state *css = &tg->css;
 
+	mutex_lock(tg->qos_level_mutex);
 	tg->qos_level = qos_level;
 	if (is_offline_level(qos_level))
 		policy = SCHED_IDLE;
@@ -9470,9 +9531,16 @@ static int tg_change_scheduler(struct task_group *tg, void *data)
 
 	param.sched_priority = 0;
 	css_task_iter_start(css, 0, &it);
-	while ((tsk = css_task_iter_next(&it)))
+	while ((tsk = css_task_iter_next(&it))) {
+		if (unlikely(rt_task(tsk) || dl_task(tsk))) {
+			pr_warn("skip %s/%d when setting qos_level\n", tsk->comm, tsk->pid);
+			continue;
+		}
+
 		sched_setscheduler(tsk, policy, &param);
+	}
 	css_task_iter_end(&it);
+	mutex_unlock(tg->qos_level_mutex);
 
 	return 0;
 }
@@ -9655,8 +9723,17 @@ static struct cftype cpu_legacy_files[] = {
 #ifdef CONFIG_QOS_SCHED
 	{
 		.name = "qos_level",
+		.flags = CFTYPE_NOT_ON_ROOT,
 		.read_s64 = cpu_qos_read,
 		.write_s64 = cpu_qos_write,
+	},
+#endif
+#ifdef CONFIG_QOS_SCHED_SMT_EXPELLER
+	{
+		.name = "smt_expell",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_s64 = cpu_smt_expell_read,
+		.write_s64 = cpu_smt_expell_write,
 	},
 #endif
 #ifdef CONFIG_BPF_SCHED

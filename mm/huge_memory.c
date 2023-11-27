@@ -34,7 +34,6 @@
 #include <linux/numa.h>
 #include <linux/page_owner.h>
 #include <linux/dynamic_hugetlb.h>
-#include <linux/prezero.h>
 
 #include <asm/tlb.h>
 #include <asm/pgalloc.h>
@@ -65,53 +64,12 @@ static atomic_t huge_zero_refcount;
 struct page *huge_zero_page __read_mostly;
 unsigned long huge_zero_pfn __read_mostly = ~0UL;
 
-#ifdef CONFIG_MEMCG_THP
-DEFINE_STATIC_KEY_FALSE(cgroup_thp_enabled);
-#endif
-
 static inline bool file_thp_enabled(struct vm_area_struct *vma)
 {
 	return transhuge_vma_enabled(vma, vma->vm_flags) && vma->vm_file &&
 	       !inode_is_open_for_write(vma->vm_file->f_inode) &&
 	       (vma->vm_flags & VM_EXEC);
 }
-
-#ifdef CONFIG_MEMCG_THP
- /*
- * to be used on vmas which are known to support THP.
- * Use transparent_hugepage_active otherwise
- */
-static inline bool __transparent_hugepage_enabled(struct vm_area_struct *vma)
-{
-         struct mem_cgroup *memcg = get_mem_cgroup_from_mm(vma->vm_mm);
- 
-         if (vma->vm_flags & VM_NOHUGEPAGE)
-                 return false;
- 
-         if (vma_is_temporary_stack(vma))
-                 return false;
- 
-         if (test_bit(MMF_DISABLE_THP, &vma->vm_mm->flags))
-                 return false;
- 
-         if (mem_cgroup_thp_flag(memcg) & (1 << TRANSPARENT_HUGEPAGE_FLAG))
-                 return true;
-         /*
-          * For dax vmas, try to always use hugepage mappings. If the kernel does
-          * not support hugepages, fsdax mappings will fallback to PAGE_SIZE
-          * mappings, and device-dax namespaces, that try to guarantee a given
-          * mapping size, will fail to enable
-          */
-         if (vma_is_dax(vma))
-                 return true;
- 
-         if (mem_cgroup_thp_flag(memcg) &
-                 (1 << TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG))
-                 return !!(vma->vm_flags & VM_HUGEPAGE);
- 
-         return false;
-}
-#endif
 
 bool transparent_hugepage_active(struct vm_area_struct *vma)
 {
@@ -358,32 +316,6 @@ static ssize_t hpage_pmd_size_show(struct kobject *kobj,
 static struct kobj_attribute hpage_pmd_size_attr =
 	__ATTR_RO(hpage_pmd_size);
 
-#ifdef CONFIG_MEMCG_THP
-static ssize_t cgroup_enabled_show(struct kobject *kobj,
-               struct kobj_attribute *attr, char *buf)
-{
-       if (static_branch_unlikely(&cgroup_thp_enabled))
-               return sprintf(buf, "[enable] disable\n");
-       else
-               return sprintf(buf, "enable [disable]\n");
-
-}
-static ssize_t cgroup_enabled_store(struct kobject *kobj,
-               struct kobj_attribute *attr, const char *buf, size_t count)
-{
-       if (sysfs_streq(buf, "enable"))
-               static_branch_enable(&cgroup_thp_enabled);
-       else if (sysfs_streq(buf, "disable"))
-               static_branch_disable(&cgroup_thp_enabled);
-       else
-               return -EINVAL;
-
-       return count;
-}
-static struct kobj_attribute cgroup_enabled_attr =
-       __ATTR(cgroup_enabled, 0644, cgroup_enabled_show, cgroup_enabled_store);
-#endif
-
 static struct attribute *hugepage_attr[] = {
 	&enabled_attr.attr,
 	&defrag_attr.attr,
@@ -391,9 +323,6 @@ static struct attribute *hugepage_attr[] = {
 	&hpage_pmd_size_attr.attr,
 #ifdef CONFIG_SHMEM
 	&shmem_enabled_attr.attr,
-#endif
-#ifdef CONFIG_MEMCG_THP
-        &cgroup_enabled_attr.attr,
 #endif
 	NULL,
 };
@@ -663,7 +592,7 @@ out:
 EXPORT_SYMBOL_GPL(thp_get_unmapped_area);
 
 static vm_fault_t __do_huge_pmd_anonymous_page(struct vm_fault *vmf,
-			struct page *page, gfp_t gfp, bool zeroed)
+			struct page *page, gfp_t gfp)
 {
 	struct vm_area_struct *vma = vmf->vma;
 	pgtable_t pgtable;
@@ -686,9 +615,7 @@ static vm_fault_t __do_huge_pmd_anonymous_page(struct vm_fault *vmf,
 		goto release;
 	}
 
-	if (!zeroed)
-		clear_huge_page(page, vmf->address, HPAGE_PMD_NR);
-
+	clear_huge_page(page, vmf->address, HPAGE_PMD_NR);
 	/*
 	 * The memory barrier inside __SetPageUptodate makes sure that
 	 * clear_huge_page writes become visible before the set_pmd_at()
@@ -801,7 +728,6 @@ vm_fault_t do_huge_pmd_anonymous_page(struct vm_fault *vmf)
 	gfp_t gfp;
 	struct page *page;
 	unsigned long haddr = vmf->address & HPAGE_PMD_MASK;
-	bool zeroed = false;
 
 	if (!transhuge_vma_suitable(vma, haddr))
 		return VM_FAULT_FALLBACK;
@@ -848,19 +774,13 @@ vm_fault_t do_huge_pmd_anonymous_page(struct vm_fault *vmf)
 		return ret;
 	}
 	gfp = alloc_hugepage_direct_gfpmask(vma);
-
-	if (prezero_enabled()) {
-		gfp |= __GFP_ZERO;
-		zeroed = true;
-	}
-
 	page = alloc_hugepage_vma(gfp, vma, haddr, HPAGE_PMD_ORDER);
 	if (unlikely(!page)) {
 		count_vm_event(THP_FAULT_FALLBACK);
 		return VM_FAULT_FALLBACK;
 	}
 	prep_transhuge_page(page);
-	return __do_huge_pmd_anonymous_page(vmf, page, gfp, zeroed);
+	return __do_huge_pmd_anonymous_page(vmf, page, gfp);
 }
 
 static void insert_pfn_pmd(struct vm_area_struct *vma, unsigned long addr,
@@ -2091,7 +2011,7 @@ static void __split_huge_zero_page_pmd(struct vm_area_struct *vma,
 {
 	struct mm_struct *mm = vma->vm_mm;
 	pgtable_t pgtable;
-	pmd_t _pmd;
+	pmd_t _pmd, old_pmd;
 	int i;
 
 	/*
@@ -2102,7 +2022,7 @@ static void __split_huge_zero_page_pmd(struct vm_area_struct *vma,
 	 *
 	 * See Documentation/vm/mmu_notifier.rst
 	 */
-	pmdp_huge_clear_flush(vma, haddr, pmd);
+	old_pmd = pmdp_huge_clear_flush(vma, haddr, pmd);
 
 	pgtable = pgtable_trans_huge_withdraw(mm, pmd);
 	pmd_populate(mm, &_pmd, pgtable);
@@ -2111,6 +2031,8 @@ static void __split_huge_zero_page_pmd(struct vm_area_struct *vma,
 		pte_t *pte, entry;
 		entry = pfn_pte(my_zero_pfn(haddr), vma->vm_page_prot);
 		entry = pte_mkspecial(entry);
+		if (pmd_uffd_wp(old_pmd))
+			entry = pte_mkuffd_wp(entry);
 		pte = pte_offset_map(&_pmd, haddr);
 		VM_BUG_ON(!pte_none(*pte));
 		set_pte_at(mm, haddr, pte, entry);
@@ -2919,6 +2841,9 @@ void deferred_split_huge_page(struct page *page)
 	 * swap cache before calling try_to_unmap().
 	 */
 	if (PageSwapCache(page))
+		return;
+
+	if (!list_empty(page_deferred_list(page)))
 		return;
 
 	spin_lock_irqsave(&ds_queue->split_queue_lock, flags);

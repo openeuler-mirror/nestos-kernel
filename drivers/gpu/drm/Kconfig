@@ -315,6 +315,8 @@ source "drivers/gpu/drm/ast/Kconfig"
 
 source "drivers/gpu/drm/loongson/Kconfig"
 
+source "drivers/gpu/drm/inspur/Kconfig"
+
 source "drivers/gpu/drm/mgag200/Kconfig"
 
 source "drivers/gpu/drm/armada/Kconfig"
@@ -394,6 +396,8 @@ source "drivers/gpu/drm/mcde/Kconfig"
 source "drivers/gpu/drm/tidss/Kconfig"
 
 source "drivers/gpu/drm/xlnx/Kconfig"
+
+source "drivers/gpu/drm/phytium/Kconfig"
 
 # Keep legacy drivers last
 

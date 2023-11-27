@@ -460,8 +460,17 @@ struct task_group {
 #else
 	KABI_RESERVE(1)
 #endif
+
+#ifdef CONFIG_QOS_SCHED_SMT_EXPELLER
+	KABI_USE(2, long smt_expell)
+#else
 	KABI_RESERVE(2)
+#endif
+#ifdef CONFIG_QOS_SCHED
+	KABI_USE(3, struct mutex *qos_level_mutex)
+#else
 	KABI_RESERVE(3)
+#endif
 	KABI_RESERVE(4)
 };
 
@@ -1197,6 +1206,19 @@ enum task_qos_level {
 };
 #endif
 void init_qos_hrtimer(int cpu);
+#endif
+
+#ifdef CONFIG_QOS_SCHED_SMT_EXPELLER
+enum tg_smt_status {
+	TG_SMT_NONE = 0, //task group without smt expell capability.
+	TG_SMT_EXPELL = 1, //online task group with smt expell capability.
+};
+
+enum cpu_smt_status {
+	CPU_SMT_NONE = 0,     //current is online task without smt expell capibility.
+	CPU_SMT_EXPELLED = 1, //curent is offline task or idle.
+	CPU_SMT_EXPELLER = 2, //current is online task with smt expell capibility.
+};
 #endif
 
 struct sched_group;
@@ -2799,6 +2821,23 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags) {}
 #ifdef CONFIG_UCLAMP_TASK
 unsigned long uclamp_eff_value(struct task_struct *p, enum uclamp_id clamp_id);
 
+static inline unsigned long uclamp_rq_get(struct rq *rq,
+					  enum uclamp_id clamp_id)
+{
+	return READ_ONCE(rq->uclamp[clamp_id].value);
+}
+
+static inline void uclamp_rq_set(struct rq *rq, enum uclamp_id clamp_id,
+				 unsigned int value)
+{
+	WRITE_ONCE(rq->uclamp[clamp_id].value, value);
+}
+
+static inline bool uclamp_rq_is_idle(struct rq *rq)
+{
+	return rq->uclamp_flags & UCLAMP_FLAG_IDLE;
+}
+
 /**
  * uclamp_rq_util_with - clamp @util with @rq and @p effective uclamp values.
  * @rq:		The rq to clamp against. Must not be NULL.
@@ -2834,12 +2873,12 @@ unsigned long uclamp_rq_util_with(struct rq *rq, unsigned long util,
 		 * Ignore last runnable task's max clamp, as this task will
 		 * reset it. Similarly, no need to read the rq's min clamp.
 		 */
-		if (rq->uclamp_flags & UCLAMP_FLAG_IDLE)
+		if (uclamp_rq_is_idle(rq))
 			goto out;
 	}
 
-	min_util = max_t(unsigned long, min_util, READ_ONCE(rq->uclamp[UCLAMP_MIN].value));
-	max_util = max_t(unsigned long, max_util, READ_ONCE(rq->uclamp[UCLAMP_MAX].value));
+	min_util = max_t(unsigned long, min_util, uclamp_rq_get(rq, UCLAMP_MIN));
+	max_util = max_t(unsigned long, max_util, uclamp_rq_get(rq, UCLAMP_MAX));
 out:
 	/*
 	 * Since CPU's {min,max}_util clamps are MAX aggregated considering
@@ -2865,6 +2904,15 @@ static inline bool uclamp_is_used(void)
 	return static_branch_likely(&sched_uclamp_used);
 }
 #else /* CONFIG_UCLAMP_TASK */
+static inline unsigned long uclamp_eff_value(struct task_struct *p,
+					     enum uclamp_id clamp_id)
+{
+	if (clamp_id == UCLAMP_MIN)
+		return 0;
+
+	return SCHED_CAPACITY_SCALE;
+}
+
 static inline
 unsigned long uclamp_rq_util_with(struct rq *rq, unsigned long util,
 				  struct task_struct *p)
@@ -2873,6 +2921,25 @@ unsigned long uclamp_rq_util_with(struct rq *rq, unsigned long util,
 }
 
 static inline bool uclamp_is_used(void)
+{
+	return false;
+}
+
+static inline unsigned long uclamp_rq_get(struct rq *rq,
+					  enum uclamp_id clamp_id)
+{
+	if (clamp_id == UCLAMP_MIN)
+		return 0;
+
+	return SCHED_CAPACITY_SCALE;
+}
+
+static inline void uclamp_rq_set(struct rq *rq, enum uclamp_id clamp_id,
+				 unsigned int value)
+{
+}
+
+static inline bool uclamp_rq_is_idle(struct rq *rq)
 {
 	return false;
 }
@@ -3061,8 +3128,20 @@ static inline int is_offline_level(long qos_level)
 #endif
 
 #ifdef CONFIG_QOS_SCHED_SMT_EXPELLER
-static inline int task_has_qos_idle_policy(struct task_struct *p)
+static inline int is_expeller_level(struct task_group *tg)
 {
+	return !is_offline_level(tg->qos_level) &&
+		tg->smt_expell == TG_SMT_EXPELL;
+}
+#endif
+
+#ifdef CONFIG_QOS_SCHED_SMT_EXPELLER
+static __always_inline int task_has_qos_idle_policy(struct task_struct *p)
+{
+	if (!qos_sched_enabled() ||
+	    !static_branch_likely(&qos_smt_expell_switch))
+		return 0;
+
 	return qos_idle_policy(task_group(p)->qos_level) && p->policy == SCHED_IDLE;
 }
 #endif

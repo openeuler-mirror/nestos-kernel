@@ -32,7 +32,6 @@
  */
 #include <linux/acpi.h>
 #include <linux/module.h>
-#include <linux/pci.h>
 #include <rdma/ib_addr.h>
 #include <rdma/ib_smi.h>
 #include <rdma/ib_user_verbs.h>
@@ -45,7 +44,6 @@
 #include "hns_roce_hem.h"
 #include "hns_roce_hw_v2.h"
 #include "hns_roce_dca.h"
-#include "hns_roce_debugfs.h"
 
 static struct net_device *hns_roce_get_netdev(struct ib_device *ib_dev,
 					      u8 port_num)
@@ -61,7 +59,7 @@ static struct net_device *hns_roce_get_netdev(struct ib_device *ib_dev,
 	rcu_read_lock();
 
 	if (!ndev)
-		ndev = hr_dev->iboe.netdevs[port_num - 1];
+		ndev = get_hr_netdev(hr_dev, port_num - 1);
 
 	if (ndev)
 		dev_hold(ndev);
@@ -120,10 +118,12 @@ static int hns_roce_del_gid(const struct ib_gid_attr *attr, void **context)
 
 static enum ib_port_state get_upper_port_state(struct hns_roce_dev *hr_dev)
 {
+	struct net_device *net_dev = get_hr_netdev(hr_dev, 0);
 	struct hns_roce_bond_group *bond_grp;
+	u8 bus_num = get_hr_bus_num(hr_dev);
 	struct net_device *upper;
 
-	bond_grp = hns_roce_get_bond_grp(hr_dev);
+	bond_grp = hns_roce_get_bond_grp(net_dev, bus_num);
 	upper = bond_grp ? bond_grp->upper_dev : NULL;
 	if (upper)
 		return get_port_state(upper);
@@ -198,7 +198,8 @@ static int hns_roce_netdev_event(struct notifier_block *self,
 	hr_dev = container_of(self, struct hns_roce_dev, iboe.nb);
 	iboe = &hr_dev->iboe;
 	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_BOND) {
-		bond_grp = hns_roce_get_bond_grp(hr_dev);
+		bond_grp = hns_roce_get_bond_grp(get_hr_netdev(hr_dev, 0),
+						 get_hr_bus_num(hr_dev));
 		upper = bond_grp ? bond_grp->upper_dev : NULL;
 	}
 
@@ -217,19 +218,45 @@ static int hns_roce_netdev_event(struct notifier_block *self,
 
 static int hns_roce_setup_mtu_mac(struct hns_roce_dev *hr_dev)
 {
+	struct net_device *net_dev;
 	int ret;
 	u8 i;
 
 	for (i = 0; i < hr_dev->caps.num_ports; i++) {
 		hr_dev->iboe.port_state[i] = IB_PORT_DOWN;
-
-		ret = hns_roce_set_mac(hr_dev, i,
-				       hr_dev->iboe.netdevs[i]->dev_addr);
+		net_dev = get_hr_netdev(hr_dev, i);
+		ret = hns_roce_set_mac(hr_dev, i, net_dev->dev_addr);
 		if (ret)
 			return ret;
 	}
 
 	return 0;
+}
+
+static int set_attrx(struct hns_roce_dev *hr_dev, struct ib_udata *uhw)
+{
+	struct hns_roce_ib_query_device_resp resp = {};
+	size_t uhw_outlen;
+
+	if (!uhw || !uhw->outlen)
+		return 0;
+
+	uhw_outlen = uhw->outlen;
+	resp.len = sizeof(resp.comp_mask) + sizeof(resp.len);
+	if (uhw_outlen < resp.len)
+		return -EINVAL;
+
+	if (uhw->inlen && !ib_is_udata_cleared(uhw, 0, uhw->inlen))
+		return -EINVAL;
+
+	if (uhw_outlen >= offsetofend(typeof(resp), hw_id)) {
+		resp.len += sizeof(resp.hw_id);
+		resp.hw_id.chip_id = hr_dev->chip_id;
+		resp.hw_id.die_id = hr_dev->die_id;
+		resp.hw_id.func_id = hr_dev->func_id;
+	}
+
+	return ib_copy_to_udata(uhw, &resp, resp.len);
 }
 
 static int hns_roce_query_device(struct ib_device *ib_dev,
@@ -279,7 +306,7 @@ static int hns_roce_query_device(struct ib_device *ib_dev,
 	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_XRC)
 		props->device_cap_flags |= IB_DEVICE_XRC;
 
-	return 0;
+	return set_attrx(hr_dev, uhw);
 }
 
 static int hns_roce_query_port(struct ib_device *ib_dev, u8 port_num,
@@ -310,7 +337,7 @@ static int hns_roce_query_port(struct ib_device *ib_dev, u8 port_num,
 
 	net_dev = hr_dev->hw->get_bond_netdev(hr_dev);
 	if (!net_dev)
-		net_dev = hr_dev->iboe.netdevs[port];
+		net_dev = get_hr_netdev(hr_dev, port);
 	if (!net_dev) {
 		spin_unlock_irqrestore(&hr_dev->iboe.lock, flags);
 		dev_err(dev, "Find netdev %u failed!\n", port);
@@ -497,6 +524,43 @@ static u32 get_udca_max_qps(struct hns_roce_dev *hr_dev,
 	return qp_num;
 }
 
+static void hns_roce_get_uctx_config(struct hns_roce_dev *hr_dev,
+				struct hns_roce_ucontext *context,
+				struct hns_roce_ib_alloc_ucontext *ucmd,
+				struct hns_roce_ib_alloc_ucontext_resp *resp)
+{
+	if (hr_dev->pci_dev->revision >= PCI_REVISION_ID_HIP09)
+		context->config = ucmd->config & HNS_ROCE_EXSGE_FLAGS;
+
+	if (context->config & HNS_ROCE_EXSGE_FLAGS) {
+		resp->config |= HNS_ROCE_RSP_EXSGE_FLAGS;
+		resp->max_inline_data = hr_dev->caps.max_sq_inline;
+	}
+
+	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_RQ_INLINE) {
+		context->config |= ucmd->config & HNS_ROCE_RQ_INLINE_FLAGS;
+		if (context->config & HNS_ROCE_RQ_INLINE_FLAGS)
+			resp->config |= HNS_ROCE_RSP_RQ_INLINE_FLAGS;
+	}
+
+	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_CQE_INLINE) {
+		context->config |= ucmd->config & HNS_ROCE_CQE_INLINE_FLAGS;
+		if (context->config & HNS_ROCE_CQE_INLINE_FLAGS)
+			resp->config |= HNS_ROCE_RSP_CQE_INLINE_FLAGS;
+	}
+
+	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_DCA_MODE) {
+		context->config |= ucmd->config & HNS_ROCE_UCTX_CONFIG_DCA;
+		if (context->config & HNS_ROCE_UCTX_CONFIG_DCA)
+			resp->config |= HNS_ROCE_UCTX_RSP_DCA_FLAGS;
+	}
+
+	if (ucmd->config & HNS_ROCE_UCTX_DYN_QP_PGSZ) {
+		context->config |= HNS_ROCE_UCTX_DYN_QP_PGSZ;
+		resp->config |=  HNS_ROCE_UCTX_RSP_DYN_QP_PGSZ;
+	}
+}
+
 static int hns_roce_alloc_ucontext(struct ib_ucontext *uctx,
 				   struct ib_udata *udata)
 {
@@ -517,30 +581,7 @@ static int hns_roce_alloc_ucontext(struct ib_ucontext *uctx,
 	if (ret)
 		goto error_fail_uar_alloc;
 
-	if (hr_dev->pci_dev->revision >= PCI_REVISION_ID_HIP09)
-		context->config = ucmd.config & HNS_ROCE_EXSGE_FLAGS;
-
-	if (context->config & HNS_ROCE_EXSGE_FLAGS) {
-		resp.config |= HNS_ROCE_RSP_EXSGE_FLAGS;
-		resp.max_inline_data = hr_dev->caps.max_sq_inline;
-	}
-
-	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_RQ_INLINE) {
-		context->config |= ucmd.config & HNS_ROCE_RQ_INLINE_FLAGS;
-		if (context->config & HNS_ROCE_RQ_INLINE_FLAGS)
-			resp.config |= HNS_ROCE_RSP_RQ_INLINE_FLAGS;
-	}
-
-	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_CQE_INLINE) {
-		context->config |= ucmd.config & HNS_ROCE_CQE_INLINE_FLAGS;
-		if (context->config & HNS_ROCE_CQE_INLINE_FLAGS)
-			resp.config |= HNS_ROCE_RSP_CQE_INLINE_FLAGS;
-	}
-
-	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_DCA_MODE) {
-		context->config |= ucmd.config & HNS_ROCE_UCTX_CONFIG_DCA;
-		resp.config |= HNS_ROCE_UCTX_RSP_DCA_FLAGS;
-	}
+	hns_roce_get_uctx_config(hr_dev, context, &ucmd, &resp);
 
 	ret = hns_roce_uar_alloc(hr_dev, &context->uar);
 	if (ret)
@@ -673,10 +714,9 @@ static int hns_roce_mmap(struct ib_ucontext *uctx, struct vm_area_struct *vma)
 			goto out;
 		}
 
-		ret = remap_pfn_range(vma, vma->vm_start,
-				      page_to_pfn(hr_dev->reset_page),
-				      PAGE_SIZE, vma->vm_page_prot);
-		goto out;
+		prot = vma->vm_page_prot;
+		pfn = page_to_pfn(hr_dev->reset_page);
+		break;
 	default:
 		ret = -EINVAL;
 		goto out;
@@ -717,6 +757,8 @@ static int hns_roce_port_immutable(struct ib_device *ib_dev, u8 port_num,
 
 	if (to_hr_dev(ib_dev)->mac_type == HNAE3_MAC_ROH)
 		immutable->core_cap_flags = RDMA_CORE_PORT_IBA_ROCE_UDP_ENCAP;
+	else if (to_hr_dev(ib_dev)->pci_dev->device == HNAE3_DEV_ID_RDMA_OVER_UBL_VF)
+		immutable->core_cap_flags = RDMA_CORE_PORT_IBA_ROCE_UDP_ENCAP;
 	else if (to_hr_dev(ib_dev)->caps.flags & HNS_ROCE_CAP_FLAG_ROCE_V1_V2)
 		immutable->core_cap_flags = RDMA_CORE_PORT_IBA_ROCE |
 					    RDMA_CORE_PORT_IBA_ROCE_UDP_ENCAP;
@@ -743,30 +785,10 @@ static void hns_roce_get_fw_ver(struct ib_device *device, char *str)
 		 sub_minor);
 }
 
-#define HNS_ROCE_DFX_STATS(ename, cname) \
-	[HNS_ROCE_DFX_##ename##_CNT] = cname
-
 #define HNS_ROCE_HW_CNT(ename, cname) \
-	[HNS_ROCE_DFX_CNT_TOTAL + HNS_ROCE_HW_##ename##_CNT] = cname
+	[HNS_ROCE_HW_##ename##_CNT] = cname
 
 static const char *const hns_roce_port_stats_descs[] = {
-	HNS_ROCE_DFX_STATS(AEQE, "aeqe"),
-	HNS_ROCE_DFX_STATS(CEQE, "ceqe"),
-	HNS_ROCE_DFX_STATS(CMDS, "cmds"),
-	HNS_ROCE_DFX_STATS(CMDS_ERR, "cmds_err"),
-	HNS_ROCE_DFX_STATS(MBX_POSTED, "posted_mbx"),
-	HNS_ROCE_DFX_STATS(MBX_POLLED, "polled_mbx"),
-	HNS_ROCE_DFX_STATS(MBX_EVENT, "mbx_event"),
-	HNS_ROCE_DFX_STATS(QP_CREATE_ERR, "qp_create_err"),
-	HNS_ROCE_DFX_STATS(QP_MODIFY_ERR, "qp_modify_err"),
-	HNS_ROCE_DFX_STATS(CQ_CREATE_ERR, "cq_create_err"),
-	HNS_ROCE_DFX_STATS(SRQ_CREATE_ERR, "srq_create_err"),
-	HNS_ROCE_DFX_STATS(XRCD_ALLOC_ERR, "xrcd_alloc_err"),
-	HNS_ROCE_DFX_STATS(MR_REG_ERR, "mr_reg_err"),
-	HNS_ROCE_DFX_STATS(MR_REREG_ERR, "mr_rereg_err"),
-	HNS_ROCE_DFX_STATS(AH_CREATE_ERR, "ah_create_err"),
-	HNS_ROCE_DFX_STATS(MMAP_ERR, "mmap_err"),
-	HNS_ROCE_DFX_STATS(UCTX_ALLOC_ERR, "uctx_alloc_err"),
 	HNS_ROCE_HW_CNT(RX_RC_PKT, "rx_rc_pkt"),
 	HNS_ROCE_HW_CNT(RX_UC_PKT, "rx_uc_pkt"),
 	HNS_ROCE_HW_CNT(RX_UD_PKT, "rx_ud_pkt"),
@@ -795,21 +817,14 @@ static struct rdma_hw_stats *hns_roce_alloc_hw_port_stats(struct ib_device *devi
 							  u8 port_num)
 {
 	struct hns_roce_dev *hr_dev = to_hr_dev(device);
-	int num_counters;
 
 	if (port_num > hr_dev->caps.num_ports) {
 		ibdev_err(device, "invalid port num.\n");
 		return NULL;
 	}
 
-	if (hr_dev->pci_dev->revision >= PCI_REVISION_ID_HIP09 &&
-	    !hr_dev->is_vf)
-		num_counters = ARRAY_SIZE(hns_roce_port_stats_descs);
-	else
-		num_counters = HNS_ROCE_DFX_CNT_TOTAL;
-
 	return rdma_alloc_hw_stats_struct(hns_roce_port_stats_descs,
-					  num_counters,
+					  ARRAY_SIZE(hns_roce_port_stats_descs),
 					  RDMA_HW_STATS_DEFAULT_LIFESPAN);
 }
 
@@ -818,9 +833,8 @@ static int hns_roce_get_hw_stats(struct ib_device *device,
 				 u8 port, int index)
 {
 	struct hns_roce_dev *hr_dev = to_hr_dev(device);
-	int hw_counters = HNS_ROCE_HW_CNT_TOTAL;
+	int num_counters = HNS_ROCE_HW_CNT_TOTAL;
 	int ret;
-	int i;
 
 	if (port == 0)
 		return 0;
@@ -828,45 +842,53 @@ static int hns_roce_get_hw_stats(struct ib_device *device,
 	if (port > hr_dev->caps.num_ports)
 		return -EINVAL;
 
-	for (i = 0; i < HNS_ROCE_DFX_CNT_TOTAL; i++)
-		stats->value[i] = atomic64_read(&hr_dev->dfx_cnt[i]);
-
-	if (hr_dev->pci_dev->revision <= PCI_REVISION_ID_HIP08 ||
-	    hr_dev->is_vf)
-		return HNS_ROCE_DFX_CNT_TOTAL;
-
-	hw_counters = HNS_ROCE_HW_CNT_TOTAL;
-	ret = hr_dev->hw->query_hw_counter(hr_dev,
-					&stats->value[HNS_ROCE_DFX_CNT_TOTAL],
-					port, &hw_counters);
+	ret = hr_dev->hw->query_hw_counter(hr_dev, stats->value, port,
+					   &num_counters);
 	if (ret) {
 		ibdev_err(device, "failed to query hw counter, ret = %d.\n",
 			  ret);
 		return ret;
 	}
 
-	return hw_counters + HNS_ROCE_DFX_CNT_TOTAL;
+	return num_counters;
 }
 
 static void hns_roce_unregister_device(struct hns_roce_dev *hr_dev,
 				       bool bond_cleanup)
 {
+	struct net_device *net_dev = get_hr_netdev(hr_dev, 0);
 	struct hns_roce_ib_iboe *iboe = &hr_dev->iboe;
 	struct hns_roce_v2_priv *priv = hr_dev->priv;
 	struct hns_roce_bond_group *bond_grp;
+	u8 bus_num = get_hr_bus_num(hr_dev);
+	int i;
 
-	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_BOND) {
-		unregister_netdevice_notifier(&hr_dev->bond_nb);
-		bond_grp = hns_roce_get_bond_grp(hr_dev);
-		if (bond_grp) {
-			if (bond_cleanup)
-				hns_roce_cleanup_bond(bond_grp);
-			else if (priv->handle->rinfo.reset_state ==
-				 HNS_ROCE_STATE_RST_UNINIT)
-				bond_grp->main_hr_dev = NULL;
+	if (!(hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_BOND))
+		goto normal_unregister;
+
+	unregister_netdevice_notifier(&hr_dev->bond_nb);
+	bond_grp = hns_roce_get_bond_grp(net_dev, bus_num);
+	if (!bond_grp)
+		goto normal_unregister;
+
+	if (bond_cleanup) {
+		/* To avoid the loss of other slave devices when main_hr_dev
+		 * is unregistered, re-initialized the remaining slaves before
+		 * the bond resources cleanup.
+		 */
+		bond_grp->bond_state = HNS_ROCE_BOND_NOT_BONDED;
+		for (i = 0; i < ROCE_BOND_FUNC_MAX; i++) {
+			net_dev = bond_grp->bond_func_info[i].net_dev;
+			if (net_dev && net_dev != iboe->netdevs[0])
+				hns_roce_bond_init_client(bond_grp, i);
 		}
+		hns_roce_cleanup_bond(bond_grp);
+	} else if (priv->handle->rinfo.reset_state ==
+		   HNS_ROCE_STATE_RST_UNINIT) {
+		bond_grp->main_hr_dev = NULL;
 	}
 
+normal_unregister:
 	hr_dev->active = false;
 	unregister_netdevice_notifier(&iboe->nb);
 	ib_unregister_device(&hr_dev->ib_dev);
@@ -910,14 +932,17 @@ static const struct ib_device_ops hns_roce_dev_ops = {
 	.query_pkey = hns_roce_query_pkey,
 	.query_port = hns_roce_query_port,
 	.reg_user_mr = hns_roce_reg_user_mr,
-	.alloc_hw_stats = hns_roce_alloc_hw_port_stats,
-	.get_hw_stats = hns_roce_get_hw_stats,
 	.init_port = hns_roce_create_port_files,
 
 	INIT_RDMA_OBJ_SIZE(ib_ah, hns_roce_ah, ibah),
 	INIT_RDMA_OBJ_SIZE(ib_cq, hns_roce_cq, ib_cq),
 	INIT_RDMA_OBJ_SIZE(ib_pd, hns_roce_pd, ibpd),
 	INIT_RDMA_OBJ_SIZE(ib_ucontext, hns_roce_ucontext, ibucontext),
+};
+
+static const struct ib_device_ops hns_roce_dev_hw_stats_ops = {
+	.alloc_hw_stats = hns_roce_alloc_hw_port_stats,
+	.get_hw_stats = hns_roce_get_hw_stats,
 };
 
 static const struct ib_device_ops hns_roce_dev_mr_ops = {
@@ -961,11 +986,12 @@ static const struct ib_device_ops hns_roce_dev_restrack_ops = {
 
 static int hns_roce_register_device(struct hns_roce_dev *hr_dev)
 {
-	int ret;
 	struct hns_roce_ib_iboe *iboe = NULL;
-	struct ib_device *ib_dev = NULL;
 	struct device *dev = hr_dev->dev;
+	struct ib_device *ib_dev = NULL;
+	struct net_device *net_dev;
 	unsigned int i;
+	int ret;
 
 	iboe = &hr_dev->iboe;
 	spin_lock_init(&iboe->lock);
@@ -1041,6 +1067,10 @@ static int hns_roce_register_device(struct hns_roce_dev *hr_dev)
 		ib_set_device_ops(ib_dev, &hns_roce_dev_xrcd_ops);
 	}
 
+	if (hr_dev->pci_dev->revision >= PCI_REVISION_ID_HIP09 &&
+	    !hr_dev->is_vf)
+		ib_set_device_ops(ib_dev, &hns_roce_dev_hw_stats_ops);
+
 	ib_set_device_ops(ib_dev, hr_dev->hw->hns_roce_dev_ops);
 	ib_set_device_ops(ib_dev, &hns_roce_dev_ops);
 	ib_set_device_ops(ib_dev, &hns_roce_dev_restrack_ops);
@@ -1049,11 +1079,11 @@ static int hns_roce_register_device(struct hns_roce_dev *hr_dev)
 		ib_dev->driver_def = hns_roce_uapi_defs;
 
 	for (i = 0; i < hr_dev->caps.num_ports; i++) {
-		if (!hr_dev->iboe.netdevs[i])
+		net_dev = get_hr_netdev(hr_dev, i);
+		if (!net_dev)
 			continue;
 
-		ret = ib_device_set_netdev(ib_dev, hr_dev->iboe.netdevs[i],
-					   i + 1);
+		ret = ib_device_set_netdev(ib_dev, net_dev, i + 1);
 		if (ret)
 			return ret;
 	}
@@ -1180,7 +1210,7 @@ static int hns_roce_init_hem(struct hns_roce_dev *hr_dev)
 		ret = hns_roce_init_hem_table(hr_dev, &hr_dev->qpc_timer_table,
 					      HEM_TYPE_QPC_TIMER,
 					      hr_dev->caps.qpc_timer_entry_sz,
-					      hr_dev->caps.num_qpc_timer);
+					      hr_dev->caps.qpc_timer_bt_num);
 		if (ret) {
 			dev_err(dev,
 				"Failed to init QPC timer memory, aborting.\n");
@@ -1279,6 +1309,12 @@ static int hns_roce_setup_hca(struct hns_roce_dev *hr_dev)
 	INIT_LIST_HEAD(&hr_dev->uctx_list);
 	spin_lock_init(&hr_dev->uctx_list_lock);
 
+	INIT_LIST_HEAD(&hr_dev->mtr_unfree_list);
+	spin_lock_init(&hr_dev->mtr_unfree_list_lock);
+
+	INIT_LIST_HEAD(&hr_dev->umem_unfree_list);
+	spin_lock_init(&hr_dev->umem_unfree_list_lock);
+
 	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_CQ_RECORD_DB ||
 	    hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_QP_RECORD_DB) {
 		INIT_LIST_HEAD(&hr_dev->pgdir_list);
@@ -1366,10 +1402,40 @@ void hns_roce_handle_device_err(struct hns_roce_dev *hr_dev)
 	spin_unlock_irqrestore(&hr_dev->qp_list_lock, flags);
 }
 
+static void hns_roce_register_poe_ch(struct hns_roce_dev *hr_dev)
+{
+	struct hns_roce_poe_ch *poe_ch;
+
+	if (!poe_is_supported(hr_dev) || hr_dev->caps.poe_ch_num <= 0)
+		goto out;
+
+	poe_ch = kvcalloc(hr_dev->caps.poe_ch_num,
+			  sizeof(struct hns_roce_poe_ch), GFP_KERNEL);
+	if (!poe_ch)
+		goto out;
+
+	hr_dev->poe_ctx.poe_num = hr_dev->caps.poe_ch_num;
+	hr_dev->poe_ctx.poe_ch = poe_ch;
+	return;
+
+out:
+	hr_dev->poe_ctx.poe_num = 0;
+	hr_dev->poe_ctx.poe_ch = NULL;
+
+}
+
+static void hns_roce_unregister_poe_ch(struct hns_roce_dev *hr_dev)
+{
+	if (!poe_is_supported(hr_dev) || hr_dev->caps.poe_ch_num <= 0)
+		return;
+
+	kvfree(hr_dev->poe_ctx.poe_ch);
+}
+
 static int hns_roce_alloc_dfx_cnt(struct hns_roce_dev *hr_dev)
 {
-	hr_dev->dfx_cnt = kcalloc(HNS_ROCE_DFX_CNT_TOTAL, sizeof(atomic64_t),
-				  GFP_KERNEL);
+	hr_dev->dfx_cnt = kvcalloc(HNS_ROCE_DFX_CNT_TOTAL, sizeof(atomic64_t),
+				   GFP_KERNEL);
 	if (!hr_dev->dfx_cnt)
 		return -ENOMEM;
 
@@ -1378,7 +1444,7 @@ static int hns_roce_alloc_dfx_cnt(struct hns_roce_dev *hr_dev)
 
 static void hns_roce_dealloc_dfx_cnt(struct hns_roce_dev *hr_dev)
 {
-	kfree(hr_dev->dfx_cnt);
+	kvfree(hr_dev->dfx_cnt);
 }
 
 int hns_roce_init(struct hns_roce_dev *hr_dev)
@@ -1389,8 +1455,10 @@ int hns_roce_init(struct hns_roce_dev *hr_dev)
 	hr_dev->is_reset = false;
 
 	ret = hns_roce_alloc_dfx_cnt(hr_dev);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "Alloc dfx_cnt failed!\n");
 		return ret;
+	}
 
 	if (hr_dev->hw->cmq_init) {
 		ret = hr_dev->hw->cmq_init(hr_dev);
@@ -1450,6 +1518,7 @@ int hns_roce_init(struct hns_roce_dev *hr_dev)
 	if (ret)
 		goto error_failed_register_device;
 
+	hns_roce_register_poe_ch(hr_dev);
 	hns_roce_register_debugfs(hr_dev);
 
 	return 0;
@@ -1487,10 +1556,13 @@ void hns_roce_exit(struct hns_roce_dev *hr_dev, bool bond_cleanup)
 	hns_roce_unregister_sysfs(hr_dev);
 	hns_roce_unregister_device(hr_dev, bond_cleanup);
 	hns_roce_unregister_debugfs(hr_dev);
+	hns_roce_unregister_poe_ch(hr_dev);
 
 	if (hr_dev->hw->hw_exit)
 		hr_dev->hw->hw_exit(hr_dev);
 	hns_roce_teardown_hca(hr_dev);
+	hns_roce_free_unfree_umem(hr_dev);
+	hns_roce_free_unfree_mtr(hr_dev);
 	hns_roce_cleanup_hem(hr_dev);
 
 	if (hr_dev->cmd_mod)
@@ -1501,6 +1573,8 @@ void hns_roce_exit(struct hns_roce_dev *hr_dev, bool bond_cleanup)
 	if (hr_dev->hw->cmq_exit)
 		hr_dev->hw->cmq_exit(hr_dev);
 	hns_roce_dealloc_dfx_cnt(hr_dev);
+	if (hr_dev->notify_tbl)
+		kvfree(hr_dev->notify_tbl);
 }
 
 MODULE_LICENSE("Dual BSD/GPL");

@@ -512,6 +512,15 @@ config MEMCG_QOS
 
 	  If unsure, say "n".
 
+config MEMCG_SWAP_QOS
+	bool "Enable Memory Cgroup Swap Control"
+	depends on MEMCG_SWAP
+	depends on X86 || ARM64
+	default n
+	help
+	  memcg swap control include memory force swapin, swapfile control
+	  and swap limit.
+
 config ETMEM_SCAN
 	tristate "module: etmem page scan for etmem support"
 	depends on ETMEM
@@ -965,7 +974,7 @@ config PID_RESERVE
 config MEMORY_RELIABLE
 	bool "Support for memory reliable"
 	depends on NEED_MULTIPLE_NODES
-	depends on ARM64
+	depends on ARM64 || X86_64
 	default n
 	help
 	  Memory reliable is based on mirror memory. It has the following
@@ -1000,18 +1009,5 @@ config EXTEND_HUGEPAGE_MAPPING
 	  Introduce vmalloc/vmap/remap interfaces that handle only hugepages.
 
 source "mm/damon/Kconfig"
-
-config PAGE_PREZERO
-	bool "Clear page asynchronously"
-	depends on !INIT_ON_ALLOC_DEFAULT_ON
-	default n
-	help
-	  This feature enables per-node kernel threads to clear (zero) buddy
-	  pages asynchronously in advance to build a pool of pre-zeroed pages
-	  on each NUMA node, and speeds up __GFP_ZERO page allocation.
-
-	  Furthermore, the work of page clear can be offloaded and accelerated
-	  with accelerators like Intel DSA.  User may configure the DMA device
-	  on each NUMA node before enabling this feature.
 
 endmenu

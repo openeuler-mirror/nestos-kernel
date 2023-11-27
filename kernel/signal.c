@@ -46,7 +46,6 @@
 #include <linux/livepatch.h>
 #include <linux/cgroup.h>
 #include <linux/audit.h>
-#include <linux/fault_event.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
@@ -1051,7 +1050,8 @@ static void complete_signal(int sig, struct task_struct *p, enum pid_type type)
 			t = p;
 			do {
 #ifdef CONFIG_QOS_SCHED
-				sched_move_offline_task(t);
+				if (qos_sched_enabled())
+					sched_move_offline_task(t);
 #endif
 				task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK);
 				sigaddset(&t->pending.signal, SIGKILL);
@@ -2730,11 +2730,6 @@ relock:
 		current->flags |= PF_SIGNALED;
 
 		if (sig_kernel_coredump(signr)) {
-			char msg[32];
-			sprintf(msg, "sig%d exit", signr);
-			report_fault_event(smp_processor_id(), current,
-					NORMAL_FAULT, FE_SIGNAL, msg);
-
 			if (print_fatal_signals)
 				print_fatal_signal(ksig->info.si_signo);
 			proc_coredump_connector(current);
@@ -2756,10 +2751,6 @@ relock:
 		 */
 		if (current->flags & PF_IO_WORKER)
 			goto out;
-
-		if (ksig->info.si_signo == SIGKILL && ksig->info.si_code == SI_KERNEL)
-			report_fault_event(smp_processor_id(), current,
-					NORMAL_FAULT, FE_SIGNAL, "sigkill kernel");
 
 		/*
 		 * Death signals, no core dump.

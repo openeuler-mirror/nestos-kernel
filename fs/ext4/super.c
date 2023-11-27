@@ -46,7 +46,6 @@
 #include <linux/part_stat.h>
 #include <linux/kthread.h>
 #include <linux/freezer.h>
-#include <linux/fault_event.h>
 
 #include "ext4.h"
 #include "ext4_extents.h"	/* Needed for trace points definition */
@@ -56,9 +55,11 @@
 #include "mballoc.h"
 #include "fsmap.h"
 
+#ifdef CONFIG_EXT4_ERROR_REPORT
 #include <uapi/linux/netlink.h>
 #include <net/sock.h>
 #include <net/net_namespace.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ext4.h>
@@ -91,8 +92,10 @@ static void ext4_unregister_li_request(struct super_block *sb);
 static void ext4_clear_request_list(void);
 static struct inode *ext4_get_journal_inode(struct super_block *sb,
 					    unsigned int journal_inum);
+#ifdef CONFIG_EXT4_ERROR_REPORT
 static void ext4_netlink_send_info(struct super_block *sb, int ext4_errno);
 static struct sock *ext4nl;
+#endif
 
 /*
  * Lock ordering
@@ -617,6 +620,7 @@ static void save_error_info(struct super_block *sb, int error,
 	spin_unlock(&sbi->s_error_lock);
 }
 
+#ifdef CONFIG_EXT4_ERROR_REPORT
 static void ext4_netlink_send_info(struct super_block *sb, int ext4_errno)
 {
 	int size;
@@ -652,6 +656,7 @@ nlmsg_failure:
 			kfree_skb(skb);
 	}
 }
+#endif
 
 /* Deal with the reporting of failure conditions on a filesystem such as
  * inconsistencies detected or read IO failures.
@@ -714,11 +719,16 @@ static void ext4_handle_error(struct super_block *sb, bool force_ro, int error,
 			sb->s_id);
 	}
 
+#ifdef CONFIG_EXT4_ERROR_REPORT
 	if (sb_rdonly(sb))
 		return;
 
 	if (continue_fs)
 		goto out;
+#else
+	if (sb_rdonly(sb) || continue_fs)
+		return;
+#endif
 
 
 	ext4_msg(sb, KERN_CRIT, "Remounting filesystem read-only");
@@ -728,8 +738,10 @@ static void ext4_handle_error(struct super_block *sb, bool force_ro, int error,
 	 */
 	smp_wmb();
 	sb->s_flags |= SB_RDONLY;
+#ifdef CONFIG_EXT4_ERROR_REPORT
 out:
 	ext4_netlink_send_info(sb, force_ro ? 2 : 1);
+#endif
 }
 
 static void flush_stashed_error_work(struct work_struct *work)
@@ -795,9 +807,6 @@ void __ext4_error(struct super_block *sb, const char *function,
 
 	trace_ext4_error(sb, function, line);
 	if (ext4_error_ratelimit(sb)) {
-		report_fault_event(smp_processor_id(), current,
-			NORMAL_FAULT, FE_EXT4_ERR, "ext4-fs error");
-
 		va_start(args, fmt);
 		vaf.fmt = fmt;
 		vaf.va = &args;
@@ -821,9 +830,6 @@ void __ext4_error_inode(struct inode *inode, const char *function,
 
 	trace_ext4_error(inode->i_sb, function, line);
 	if (ext4_error_ratelimit(inode->i_sb)) {
-		report_fault_event(smp_processor_id(), current,
-			NORMAL_FAULT, FE_EXT4_ERR, "ext4-fs error");
-
 		va_start(args, fmt);
 		vaf.fmt = fmt;
 		vaf.va = &args;
@@ -857,9 +863,6 @@ void __ext4_error_file(struct file *file, const char *function,
 
 	trace_ext4_error(inode->i_sb, function, line);
 	if (ext4_error_ratelimit(inode->i_sb)) {
-		report_fault_event(smp_processor_id(), current,
-			NORMAL_FAULT, FE_EXT4_ERR, "ext4-fs error");
-
 		path = file_path(file, pathname, sizeof(pathname));
 		if (IS_ERR(path))
 			path = "(unknown)";
@@ -943,9 +946,6 @@ void __ext4_std_error(struct super_block *sb, const char *function,
 		return;
 
 	if (ext4_error_ratelimit(sb)) {
-		report_fault_event(smp_processor_id(), current,
-			NORMAL_FAULT, FE_EXT4_ERR, "ext4-fs error");
-
 		errstr = ext4_decode_error(sb, errno, nbuf);
 		printk(KERN_CRIT "EXT4-fs error (device %s) in %s:%d: %s\n",
 		       sb->s_id, function, line, errstr);
@@ -987,9 +987,6 @@ void __ext4_warning(struct super_block *sb, const char *function,
 	if (!ext4_warning_ratelimit(sb))
 		return;
 
-	report_fault_event(smp_processor_id(), current,
-		SLIGHT_FAULT, FE_EXT4_ERR, "ext4-fs warning");
-
 	va_start(args, fmt);
 	vaf.fmt = fmt;
 	vaf.va = &args;
@@ -1006,9 +1003,6 @@ void __ext4_warning_inode(const struct inode *inode, const char *function,
 
 	if (!ext4_warning_ratelimit(inode->i_sb))
 		return;
-
-	report_fault_event(smp_processor_id(), current,
-		SLIGHT_FAULT, FE_EXT4_ERR, "ext4-fs warning");
 
 	va_start(args, fmt);
 	vaf.fmt = fmt;
@@ -1034,9 +1028,6 @@ __acquires(bitlock)
 
 	trace_ext4_error(sb, function, line);
 	if (ext4_error_ratelimit(sb)) {
-		report_fault_event(smp_processor_id(), current,
-			NORMAL_FAULT, FE_EXT4_ERR, "ext4-fs error");
-
 		va_start(args, fmt);
 		vaf.fmt = fmt;
 		vaf.va = &args;
@@ -1088,6 +1079,8 @@ void ext4_mark_group_bitmap_corrupted(struct super_block *sb,
 	struct ext4_group_desc *gdp = ext4_get_group_desc(sb, group, NULL);
 	int ret;
 
+	if (!grp || !gdp)
+		return;
 	if (flags & EXT4_GROUP_INFO_BBITMAP_CORRUPT) {
 		ret = ext4_test_and_set_bit(EXT4_GROUP_INFO_BBITMAP_CORRUPT_BIT,
 					    &grp->bb_state);
@@ -1357,6 +1350,7 @@ static struct inode *ext4_alloc_inode(struct super_block *sb)
 		return NULL;
 
 	inode_set_iversion(&ei->vfs_inode, 1);
+	ei->i_flags = 0;
 	spin_lock_init(&ei->i_raw_lock);
 	INIT_LIST_HEAD(&ei->i_prealloc_list);
 	atomic_set(&ei->i_prealloc_active, 0);
@@ -4870,9 +4864,11 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	needs_recovery = (es->s_last_orphan != 0 ||
 			  ext4_has_feature_journal_needs_recovery(sb));
 
-	if (ext4_has_feature_mmp(sb) && !sb_rdonly(sb))
-		if (ext4_multi_mount_protect(sb, le64_to_cpu(es->s_mmp_block)))
+	if (ext4_has_feature_mmp(sb) && !sb_rdonly(sb)) {
+		err = ext4_multi_mount_protect(sb, le64_to_cpu(es->s_mmp_block));
+		if (err)
 			goto failed_mount3a;
+	}
 
 	/*
 	 * The first inode we look at is the journal inode.  Don't try
@@ -4886,30 +4882,31 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 		   ext4_has_feature_journal_needs_recovery(sb)) {
 		ext4_msg(sb, KERN_ERR, "required journal recovery "
 		       "suppressed and not mounted read-only");
-		goto failed_mount_wq;
+		goto failed_mount3a;
 	} else {
 		/* Nojournal mode, all journal mount options are illegal */
-		if (test_opt2(sb, EXPLICIT_JOURNAL_CHECKSUM)) {
-			ext4_msg(sb, KERN_ERR, "can't mount with "
-				 "journal_checksum, fs mounted w/o journal");
-			goto failed_mount_wq;
-		}
 		if (test_opt(sb, JOURNAL_ASYNC_COMMIT)) {
 			ext4_msg(sb, KERN_ERR, "can't mount with "
 				 "journal_async_commit, fs mounted w/o journal");
-			goto failed_mount_wq;
+			goto failed_mount3a;
+		}
+
+		if (test_opt2(sb, EXPLICIT_JOURNAL_CHECKSUM)) {
+			ext4_msg(sb, KERN_ERR, "can't mount with "
+				 "journal_checksum, fs mounted w/o journal");
+			goto failed_mount3a;
 		}
 		if (sbi->s_commit_interval != JBD2_DEFAULT_MAX_COMMIT_AGE*HZ) {
 			ext4_msg(sb, KERN_ERR, "can't mount with "
 				 "commit=%lu, fs mounted w/o journal",
 				 sbi->s_commit_interval / HZ);
-			goto failed_mount_wq;
+			goto failed_mount3a;
 		}
 		if (EXT4_MOUNT_DATA_FLAGS &
 		    (sbi->s_mount_opt ^ sbi->s_def_mount_opt)) {
 			ext4_msg(sb, KERN_ERR, "can't mount with "
 				 "data=, fs mounted w/o journal");
-			goto failed_mount_wq;
+			goto failed_mount3a;
 		}
 		sbi->s_def_mount_opt &= ~EXT4_MOUNT_JOURNAL_CHECKSUM;
 		clear_opt(sb, JOURNAL_CHECKSUM);
@@ -5366,7 +5363,7 @@ static struct inode *ext4_get_journal_inode(struct super_block *sb,
 
 	jbd_debug(2, "Journal inode found at %p: %lld bytes\n",
 		  journal_inode, journal_inode->i_size);
-	if (!S_ISREG(journal_inode->i_mode)) {
+	if (!S_ISREG(journal_inode->i_mode) || IS_ENCRYPTED(journal_inode)) {
 		ext4_msg(sb, KERN_ERR, "invalid journal inode");
 		iput(journal_inode);
 		return NULL;
@@ -5963,11 +5960,12 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	unsigned long old_sb_flags, vfs_flags;
 	struct ext4_mount_options old_opts;
-	int enable_quota = 0;
 	ext4_group_t g;
 	unsigned int journal_ioprio = DEFAULT_JOURNAL_IOPRIO;
 	int err = 0;
+	int enable_rw = 0;
 #ifdef CONFIG_QUOTA
+	int enable_quota = 0;
 	int i, j;
 	char *to_free[EXT4_MAXQUOTAS];
 #endif
@@ -6171,14 +6169,16 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 			if (err)
 				goto restore_opts;
 
-			sb->s_flags &= ~SB_RDONLY;
-			if (ext4_has_feature_mmp(sb))
-				if (ext4_multi_mount_protect(sb,
-						le64_to_cpu(es->s_mmp_block))) {
-					err = -EROFS;
+			enable_rw = 1;
+			if (ext4_has_feature_mmp(sb)) {
+				err = ext4_multi_mount_protect(sb,
+						le64_to_cpu(es->s_mmp_block));
+				if (err)
 					goto restore_opts;
-				}
+			}
+#ifdef CONFIG_QUOTA
 			enable_quota = 1;
+#endif
 		}
 	}
 
@@ -6212,9 +6212,6 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 	}
 
 #ifdef CONFIG_QUOTA
-	/* Release old quota file names */
-	for (i = 0; i < EXT4_MAXQUOTAS; i++)
-		kfree(old_opts.s_qf_names[i]);
 	if (enable_quota) {
 		if (sb_any_quota_suspended(sb))
 			dquot_resume(sb, -1);
@@ -6224,9 +6221,15 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 				goto restore_opts;
 		}
 	}
+	/* Release old quota file names */
+	for (i = 0; i < EXT4_MAXQUOTAS; i++)
+		kfree(old_opts.s_qf_names[i]);
 #endif
 	if (!test_opt(sb, BLOCK_VALIDITY) && sbi->s_system_blks)
 		ext4_release_system_zone(sb);
+
+	if (enable_rw)
+		sb->s_flags &= ~SB_RDONLY;
 
 	if (!ext4_has_feature_mmp(sb) || sb_rdonly(sb))
 		ext4_stop_mmpd(sbi);
@@ -6243,6 +6246,13 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 	return 0;
 
 restore_opts:
+	/*
+	 * If there was a failing r/w to ro transition, we may need to
+	 * re-enable quota
+	 */
+	if ((sb->s_flags & SB_RDONLY) && !(old_sb_flags & SB_RDONLY) &&
+	    sb_any_quota_suspended(sb))
+		dquot_resume(sb, -1);
 	percpu_down_write(&sbi->s_writepages_rwsem);
 	sb->s_flags = old_sb_flags;
 	sbi->s_mount_opt = old_opts.s_mount_opt;
@@ -6879,7 +6889,9 @@ wait_queue_head_t ext4__ioend_wq[EXT4_WQ_HASH_SZ];
 static int __init ext4_init_fs(void)
 {
 	int i, err;
+#ifdef CONFIG_EXT4_ERROR_REPORT
 	struct netlink_kernel_cfg cfg = {.groups = NL_EXT4_ERROR_GROUP,};
+#endif
 
 	ratelimit_state_init(&ext4_mount_msg_ratelimit, 30 * HZ, 64);
 	ext4_li_info = NULL;
@@ -6932,9 +6944,11 @@ static int __init ext4_init_fs(void)
 	if (err)
 		goto out;
 
+#ifdef CONFIG_EXT4_ERROR_REPORT
 	ext4nl = netlink_kernel_create(&init_net, NETLINK_FILESYSTEM, &cfg);
 	if (!ext4nl)
 		printk(KERN_ERR "EXT4-fs: Cannot create netlink socket.\n");
+#endif
 	return 0;
 out:
 	unregister_as_ext2();
@@ -6975,7 +6989,9 @@ static void __exit ext4_exit_fs(void)
 	ext4_exit_post_read_processing();
 	ext4_exit_es();
 	ext4_exit_pending();
+#ifdef CONFIG_EXT4_ERROR_REPORT
 	netlink_kernel_release(ext4nl);
+#endif
 }
 
 MODULE_AUTHOR("Remy Card, Stephen Tweedie, Andrew Morton, Andreas Dilger, Theodore Ts'o and others");

@@ -87,6 +87,7 @@ struct iscsi_internal {
 };
 
 static atomic_t iscsi_session_nr; /* sysfs session id for next new session */
+static struct workqueue_struct *iscsi_eh_timer_workq;
 
 static struct workqueue_struct *iscsi_conn_cleanup_workq;
 
@@ -1556,6 +1557,7 @@ static int iscsi_setup_host(struct transport_container *tc, struct device *dev,
 	struct iscsi_cls_host *ihost = shost->shost_data;
 
 	memset(ihost, 0, sizeof(*ihost));
+	atomic_set(&ihost->nr_scans, 0);
 	mutex_init(&ihost->mutex);
 
 	iscsi_bsg_host_add(shost, ihost);
@@ -1745,6 +1747,25 @@ void iscsi_host_for_each_session(struct Scsi_Host *shost,
 }
 EXPORT_SYMBOL_GPL(iscsi_host_for_each_session);
 
+/**
+ * iscsi_scan_finished - helper to report when running scans are done
+ * @shost: scsi host
+ * @time: scan run time
+ *
+ * This function can be used by drives like qla4xxx to report to the scsi
+ * layer when the scans it kicked off at module load time are done.
+ */
+int iscsi_scan_finished(struct Scsi_Host *shost, unsigned long time)
+{
+	struct iscsi_cls_host *ihost = shost->shost_data;
+	/*
+	 * qla4xxx will have kicked off some session unblocks before calling
+	 * scsi_scan_host, so just wait for them to complete.
+	 */
+	return !atomic_read(&ihost->nr_scans);
+}
+EXPORT_SYMBOL_GPL(iscsi_scan_finished);
+
 struct iscsi_scan_data {
 	unsigned int channel;
 	unsigned int id;
@@ -1813,6 +1834,8 @@ static void iscsi_scan_session(struct work_struct *work)
 {
 	struct iscsi_cls_session *session =
 			container_of(work, struct iscsi_cls_session, scan_work);
+	struct Scsi_Host *shost = iscsi_session_to_shost(session);
+	struct iscsi_cls_host *ihost = shost->shost_data;
 	struct iscsi_scan_data scan_data;
 
 	scan_data.channel = 0;
@@ -1821,6 +1844,7 @@ static void iscsi_scan_session(struct work_struct *work)
 	scan_data.rescan = SCSI_SCAN_RESCAN;
 
 	iscsi_user_scan_session(&session->dev, &scan_data);
+	atomic_dec(&ihost->nr_scans);
 }
 
 /**
@@ -1891,16 +1915,30 @@ static void __iscsi_unblock_session(struct work_struct *work)
 	struct iscsi_cls_session *session =
 			container_of(work, struct iscsi_cls_session,
 				     unblock_work);
+	struct Scsi_Host *shost = iscsi_session_to_shost(session);
+	struct iscsi_cls_host *ihost = shost->shost_data;
 	unsigned long flags;
 
 	ISCSI_DBG_TRANS_SESSION(session, "Unblocking session\n");
-
-	cancel_delayed_work_sync(&session->recovery_work);
+	/*
+	 * The recovery and unblock work get run from the same workqueue,
+	 * so try to cancel it if it was going to run after this unblock.
+	 */
+	cancel_delayed_work(&session->recovery_work);
 	spin_lock_irqsave(&session->lock, flags);
 	session->state = ISCSI_SESSION_LOGGED_IN;
 	spin_unlock_irqrestore(&session->lock, flags);
 	/* start IO */
 	scsi_target_unblock(&session->dev, SDEV_RUNNING);
+	/*
+	 * Only do kernel scanning if the driver is properly hooked into
+	 * the async scanning code (drivers like iscsi_tcp do login and
+	 * scanning from userspace).
+	 */
+	if (shost->hostt->scan_finished) {
+		if (scsi_queue_work(shost, &session->scan_work))
+			atomic_inc(&ihost->nr_scans);
+	}
 	ISCSI_DBG_TRANS_SESSION(session, "Completed unblocking session\n");
 }
 
@@ -1912,10 +1950,9 @@ static void __iscsi_unblock_session(struct work_struct *work)
  */
 void iscsi_unblock_session(struct iscsi_cls_session *session)
 {
-	if (!cancel_work_sync(&session->block_work))
-		cancel_delayed_work_sync(&session->recovery_work);
+	flush_work(&session->block_work);
 
-	queue_work(session->workq, &session->unblock_work);
+	queue_work(iscsi_eh_timer_workq, &session->unblock_work);
 	/*
 	 * Blocking the session can be done from any context so we only
 	 * queue the block work. Make sure the unblock work has completed
@@ -1939,14 +1976,14 @@ static void __iscsi_block_session(struct work_struct *work)
 	scsi_target_block(&session->dev);
 	ISCSI_DBG_TRANS_SESSION(session, "Completed SCSI target blocking\n");
 	if (session->recovery_tmo >= 0)
-		queue_delayed_work(session->workq,
+		queue_delayed_work(iscsi_eh_timer_workq,
 				   &session->recovery_work,
 				   session->recovery_tmo * HZ);
 }
 
 void iscsi_block_session(struct iscsi_cls_session *session)
 {
-	queue_work(session->workq, &session->block_work);
+	queue_work(iscsi_eh_timer_workq, &session->block_work);
 }
 EXPORT_SYMBOL_GPL(iscsi_block_session);
 
@@ -2034,18 +2071,11 @@ EXPORT_SYMBOL_GPL(iscsi_alloc_session);
 
 int iscsi_add_session(struct iscsi_cls_session *session, unsigned int target_id)
 {
-	struct Scsi_Host *shost = iscsi_session_to_shost(session);
 	unsigned long flags;
 	int id = 0;
 	int err;
 
 	session->sid = atomic_add_return(1, &iscsi_session_nr);
-
-	session->workq = alloc_workqueue("iscsi_ctrl_%d:%d",
-			WQ_SYSFS | WQ_MEM_RECLAIM | WQ_UNBOUND, 0,
-			shost->host_no, session->sid);
-	if (!session->workq)
-		return -ENOMEM;
 
 	if (target_id == ISCSI_MAX_TARGET) {
 		id = ida_simple_get(&iscsi_sess_ida, 0, 0, GFP_KERNEL);
@@ -2053,8 +2083,7 @@ int iscsi_add_session(struct iscsi_cls_session *session, unsigned int target_id)
 		if (id < 0) {
 			iscsi_cls_session_printk(KERN_ERR, session,
 					"Failure in Target ID Allocation\n");
-			err = id;
-			goto destroy_wq;
+			return id;
 		}
 		session->target_id = (unsigned int)id;
 		session->ida_used = true;
@@ -2088,8 +2117,7 @@ release_dev:
 release_ida:
 	if (session->ida_used)
 		ida_simple_remove(&iscsi_sess_ida, session->target_id);
-destroy_wq:
-	destroy_workqueue(session->workq);
+
 	return err;
 }
 EXPORT_SYMBOL_GPL(iscsi_add_session);
@@ -2159,9 +2187,9 @@ void iscsi_remove_session(struct iscsi_cls_session *session)
 		list_del(&session->sess_list);
 	spin_unlock_irqrestore(&sesslock, flags);
 
-	if (!cancel_work_sync(&session->block_work))
-		cancel_delayed_work_sync(&session->recovery_work);
-	cancel_work_sync(&session->unblock_work);
+	flush_work(&session->block_work);
+	flush_work(&session->unblock_work);
+	cancel_delayed_work_sync(&session->recovery_work);
 	/*
 	 * If we are blocked let commands flow again. The lld or iscsi
 	 * layer should set up the queuecommand to fail commands.
@@ -2173,10 +2201,7 @@ void iscsi_remove_session(struct iscsi_cls_session *session)
 	spin_unlock_irqrestore(&session->lock, flags);
 
 	scsi_target_unblock(&session->dev, SDEV_TRANSPORT_OFFLINE);
-	/*
-	 * qla4xxx can perform it's own scans when it runs in kernel only
-	 * mode. Make sure to flush those scans.
-	 */
+	/* flush running scans then delete devices */
 	flush_work(&session->scan_work);
 	/* flush running unbind operations */
 	flush_work(&session->unbind_work);
@@ -2191,8 +2216,6 @@ void iscsi_remove_session(struct iscsi_cls_session *session)
 					 "for session. Error %d.\n", err);
 
 	transport_unregister_device(&session->dev);
-
-	destroy_workqueue(session->workq);
 
 	ISCSI_DBG_TRANS_SESSION(session, "Completing session removal\n");
 	device_del(&session->dev);
@@ -4004,7 +4027,8 @@ iscsi_if_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh, uint32_t *group)
 	case ISCSI_UEVENT_UNBIND_SESSION:
 		session = iscsi_session_lookup(ev->u.d_session.sid);
 		if (session)
-			queue_work(session->workq, &session->unbind_work);
+			scsi_queue_work(iscsi_session_to_shost(session),
+					&session->unbind_work);
 		else
 			err = -EINVAL;
 		break;
@@ -4877,6 +4901,7 @@ iscsi_register_transport(struct iscsi_transport *tt)
 	INIT_LIST_HEAD(&priv->list);
 	priv->iscsi_transport = tt;
 	priv->t.user_scan = iscsi_user_scan;
+	priv->t.create_work_queue = 1;
 
 	priv->dev.class = &iscsi_transport_class;
 	dev_set_name(&priv->dev, "%s", tt->name);
@@ -5011,16 +5036,26 @@ static __init int iscsi_transport_init(void)
 		goto unregister_flashnode_bus;
 	}
 
+	iscsi_eh_timer_workq = alloc_workqueue("%s",
+			WQ_SYSFS | __WQ_LEGACY | WQ_MEM_RECLAIM | WQ_UNBOUND,
+			1, "iscsi_eh");
+	if (!iscsi_eh_timer_workq) {
+		err = -ENOMEM;
+		goto release_nls;
+	}
+
 	iscsi_conn_cleanup_workq = alloc_workqueue("%s",
 			WQ_SYSFS | WQ_MEM_RECLAIM | WQ_UNBOUND, 0,
 			"iscsi_conn_cleanup");
 	if (!iscsi_conn_cleanup_workq) {
 		err = -ENOMEM;
-		goto release_nls;
+		goto destroy_wq;
 	}
 
 	return 0;
 
+destroy_wq:
+	destroy_workqueue(iscsi_eh_timer_workq);
 release_nls:
 	netlink_kernel_release(nls);
 unregister_flashnode_bus:
@@ -5043,6 +5078,7 @@ unregister_transport_class:
 static void __exit iscsi_transport_exit(void)
 {
 	destroy_workqueue(iscsi_conn_cleanup_workq);
+	destroy_workqueue(iscsi_eh_timer_workq);
 	netlink_kernel_release(nls);
 	bus_unregister(&iscsi_flashnode_bus);
 	transport_class_unregister(&iscsi_connection_class);

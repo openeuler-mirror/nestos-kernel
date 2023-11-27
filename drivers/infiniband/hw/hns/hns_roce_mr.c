@@ -83,7 +83,11 @@ static void free_mr_key(struct hns_roce_dev *hr_dev, struct hns_roce_mr *mr)
 {
 	unsigned long obj = key_to_hw_index(mr->key);
 
-	hns_roce_table_put(hr_dev, &hr_dev->mr_table.mtpt_table, obj);
+	/* this resource will be freed when the driver is uninstalled, so
+	 * no memory leak will occur.
+	 */
+	if (!mr->delayed_destroy_flag)
+		hns_roce_table_put(hr_dev, &hr_dev->mr_table.mtpt_table, obj);
 	ida_free(&hr_dev->mr_table.mtpt_ida.ida, (int)obj);
 }
 
@@ -94,6 +98,10 @@ static int alloc_mr_pbl(struct hns_roce_dev *hr_dev, struct hns_roce_mr *mr,
 	bool is_fast = mr->type == MR_TYPE_FRMR;
 	struct hns_roce_buf_attr buf_attr = {};
 	int err;
+
+	mr->mtr_node = kvmalloc(sizeof(*mr->mtr_node), GFP_KERNEL);
+	if (!mr->mtr_node)
+		return -ENOMEM;
 
 	mr->pbl_hop_num = is_fast ? 1 : hr_dev->caps.pbl_hop_num;
 	buf_attr.page_shift = is_fast ? PAGE_SHIFT :
@@ -113,6 +121,7 @@ static int alloc_mr_pbl(struct hns_roce_dev *hr_dev, struct hns_roce_mr *mr,
 				  udata, start);
 	if (err) {
 		ibdev_err(ibdev, "failed to alloc pbl mtr, ret = %d.\n", err);
+		kvfree(mr->mtr_node);
 		return err;
 	}
 
@@ -124,7 +133,12 @@ static int alloc_mr_pbl(struct hns_roce_dev *hr_dev, struct hns_roce_mr *mr,
 
 static void free_mr_pbl(struct hns_roce_dev *hr_dev, struct hns_roce_mr *mr)
 {
-	hns_roce_mtr_destroy(hr_dev, &mr->pbl_mtr);
+	if (mr->delayed_destroy_flag && mr->type != MR_TYPE_DMA) {
+		hns_roce_add_unfree_mtr(mr->mtr_node, hr_dev, &mr->pbl_mtr);
+	} else {
+		hns_roce_mtr_destroy(hr_dev, &mr->pbl_mtr);
+		kvfree(mr->mtr_node);
+	}
 }
 
 static void hns_roce_mr_free(struct hns_roce_dev *hr_dev, struct hns_roce_mr *mr)
@@ -139,6 +153,8 @@ static void hns_roce_mr_free(struct hns_roce_dev *hr_dev, struct hns_roce_mr *mr
 		if (ret)
 			ibdev_warn(ibdev, "failed to destroy mpt, ret = %d.\n",
 				   ret);
+		if (ret == -EBUSY)
+			mr->delayed_destroy_flag = true;
 	}
 
 	free_mr_pbl(hr_dev, mr);
@@ -599,7 +615,7 @@ static int mtr_map_region(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 	while (offset < end && npage < max_count) {
 		count = 0;
 		mtts = hns_roce_hem_list_find_mtt(hr_dev, &mtr->hem_list,
-						  offset, &count, NULL);
+						  offset, &count);
 		if (!mtts)
 			return -ENOBUFS;
 
@@ -871,7 +887,7 @@ int hns_roce_mtr_find(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 		mtt_count = 0;
 		mtts = hns_roce_hem_list_find_mtt(hr_dev, &mtr->hem_list,
 						  start_index + total,
-						  &mtt_count, NULL);
+						  &mtt_count);
 		if (!mtts || !mtt_count)
 			goto done;
 
@@ -1073,40 +1089,40 @@ static int mtr_init_buf_cfg(struct hns_roce_dev *hr_dev,
 
 static u64 cal_pages_per_l1ba(unsigned int ba_per_bt, unsigned int hopnum)
 {
-	return int_pow(ba_per_bt, hopnum - 1);
+       return int_pow(ba_per_bt, hopnum - 1);
 }
 
 static unsigned int cal_best_bt_pg_sz(struct hns_roce_dev *hr_dev,
-				      struct hns_roce_mtr *mtr,
-				      unsigned int pg_shift)
+                                     struct hns_roce_mtr *mtr,
+                                     unsigned int pg_shift)
 {
-	unsigned long cap = hr_dev->caps.page_size_cap;
-	struct hns_roce_buf_region *re;
-	unsigned int pgs_per_l1ba;
-	unsigned int ba_per_bt;
-	unsigned int ba_num;
-	int i;
+       unsigned long cap = hr_dev->caps.page_size_cap;
+       struct hns_roce_buf_region *re;
+       unsigned int pgs_per_l1ba;
+       unsigned int ba_per_bt;
+       unsigned int ba_num;
+       int i;
 
-	for_each_set_bit_from(pg_shift, &cap, sizeof(cap) * BITS_PER_BYTE) {
-		if (!(BIT(pg_shift) & cap))
-			continue;
+       for_each_set_bit_from(pg_shift, &cap, sizeof(cap) * BITS_PER_BYTE) {
+               if (!(BIT(pg_shift) & cap))
+                       continue;
 
-		ba_per_bt = BIT(pg_shift) / BA_BYTE_LEN;
-		ba_num = 0;
-		for (i = 0; i < mtr->hem_cfg.region_count; i++) {
-			re = &mtr->hem_cfg.region[i];
-			if (re->hopnum == 0)
-				continue;
+               ba_per_bt = BIT(pg_shift) / BA_BYTE_LEN;
+               ba_num = 0;
+               for (i = 0; i < mtr->hem_cfg.region_count; i++) {
+                       re = &mtr->hem_cfg.region[i];
+                       if (re->hopnum == 0)
+                               continue;
 
-			pgs_per_l1ba = cal_pages_per_l1ba(ba_per_bt, re->hopnum);
-			ba_num += DIV_ROUND_UP(re->count, pgs_per_l1ba);
-		}
+                       pgs_per_l1ba = cal_pages_per_l1ba(ba_per_bt, re->hopnum);
+                       ba_num += DIV_ROUND_UP(re->count, pgs_per_l1ba);
+               }
 
-		if (ba_num <= ba_per_bt)
-			return pg_shift;
-	}
+               if (ba_num <= ba_per_bt)
+                       return pg_shift;
+       }
 
-	return 0;
+       return 0;
 }
 
 static int mtr_alloc_mtt(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
@@ -1216,4 +1232,76 @@ void hns_roce_mtr_destroy(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr)
 
 	/* free buffers */
 	mtr_free_bufs(hr_dev, mtr);
+}
+
+static void hns_roce_copy_mtr(struct hns_roce_mtr *new_mtr, struct hns_roce_mtr *old_mtr)
+{
+	struct list_head *new_head, *old_head;
+	int i, j;
+
+	memcpy(new_mtr, old_mtr, sizeof(*old_mtr));
+
+	for (i = 0; i < HNS_ROCE_MAX_BT_REGION; i++)
+		for (j = 0; j < HNS_ROCE_MAX_BT_LEVEL; j++) {
+			new_head = &new_mtr->hem_list.mid_bt[i][j];
+			old_head = &old_mtr->hem_list.mid_bt[i][j];
+			list_replace(old_head, new_head);
+		}
+
+	new_head = &new_mtr->hem_list.root_bt;
+	old_head = &old_mtr->hem_list.root_bt;
+	list_replace(old_head, new_head);
+
+	new_head = &new_mtr->hem_list.btm_bt;
+	old_head = &old_mtr->hem_list.btm_bt;
+	list_replace(old_head, new_head);
+}
+
+void hns_roce_add_unfree_mtr(struct hns_roce_mtr_node *pos,
+			     struct hns_roce_dev *hr_dev,
+			     struct hns_roce_mtr *mtr)
+{
+	hns_roce_copy_mtr(&pos->mtr, mtr);
+
+	spin_lock(&hr_dev->mtr_unfree_list_lock);
+	list_add_tail(&pos->list, &hr_dev->mtr_unfree_list);
+	spin_unlock(&hr_dev->mtr_unfree_list_lock);
+}
+
+void hns_roce_free_unfree_mtr(struct hns_roce_dev *hr_dev)
+{
+	struct hns_roce_mtr_node *pos, *next;
+
+	spin_lock(&hr_dev->mtr_unfree_list_lock);
+	list_for_each_entry_safe(pos, next, &hr_dev->mtr_unfree_list, list) {
+		list_del(&pos->list);
+		hns_roce_mtr_destroy(hr_dev, &pos->mtr);
+		kvfree(pos);
+	}
+	spin_unlock(&hr_dev->mtr_unfree_list_lock);
+}
+
+void hns_roce_add_unfree_umem(struct hns_roce_user_db_page *user_page,
+			      struct hns_roce_dev *hr_dev)
+{
+	struct hns_roce_umem_node *pos = user_page->umem_node;
+
+	pos->umem = user_page->umem;
+
+	spin_lock(&hr_dev->umem_unfree_list_lock);
+	list_add_tail(&pos->list, &hr_dev->umem_unfree_list);
+	spin_unlock(&hr_dev->umem_unfree_list_lock);
+}
+
+void hns_roce_free_unfree_umem(struct hns_roce_dev *hr_dev)
+{
+	struct hns_roce_umem_node *pos, *next;
+
+	spin_lock(&hr_dev->umem_unfree_list_lock);
+	list_for_each_entry_safe(pos, next, &hr_dev->umem_unfree_list, list) {
+		list_del(&pos->list);
+		ib_umem_release(pos->umem);
+		kvfree(pos);
+	}
+	spin_unlock(&hr_dev->mtr_unfree_list_lock);
 }

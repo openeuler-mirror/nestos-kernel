@@ -91,6 +91,7 @@ enum hclge_opcode_type {
 	HCLGE_OPC_DFX_RCB_REG		= 0x004D,
 	HCLGE_OPC_DFX_TQP_REG		= 0x004E,
 	HCLGE_OPC_DFX_SSU_REG_2		= 0x004F,
+	HCLGE_OPC_DFX_GEN_REG		= 0x7038,
 
 	HCLGE_OPC_QUERY_DEV_SPECS	= 0x0050,
 	HCLGE_OPC_GET_QUEUE_ERR_VF      = 0x0067,
@@ -153,6 +154,7 @@ enum hclge_opcode_type {
 	HCLGE_OPC_TM_INTERNAL_STS	= 0x0850,
 	HCLGE_OPC_TM_INTERNAL_CNT	= 0x0851,
 	HCLGE_OPC_TM_INTERNAL_STS_1	= 0x0852,
+	HCLGE_OPC_TM_TC_RATE_LIMIT_CFG	= 0x0871,
 	HCLGE_OPC_TM_FLUSH		= 0x0872,
 
 	/* Packet buffer allocate commands */
@@ -245,6 +247,9 @@ enum hclge_opcode_type {
 	HCLGE_OPC_QCN_AJUST_INIT	= 0x1A07,
 	HCLGE_OPC_QCN_DFX_CNT_STATUS    = 0x1A08,
 
+	/* SCC commands */
+	HCLGE_OPC_QUERY_SCC_VER		= 0x1A84,
+
 	/* Mailbox command */
 	HCLGEVF_OPC_MBX_PF_TO_VF	= 0x2000,
 	HCLGEVF_OPC_MBX_VF_TO_PF	= 0x2001,
@@ -309,6 +314,13 @@ enum hclge_opcode_type {
 
 	/* Query link diagnosis info command */
 	HCLGE_OPC_QUERY_LINK_DIAGNOSIS	= 0x702A,
+
+	/* UB commands */
+	HCLGE_OPC_COMM_GET_FUNC_GUID	= 0xA001,
+	HCLGE_OPC_ADD_IP_TBL		= 0xA100,
+	HCLGE_OPC_DEL_IP_TBL		= 0xA101,
+	HCLGE_OPC_COMM_CFG_FUNC_GUID	= 0xA122,
+	HCLGE_OPC_CFG_MC_GUID_CMD	= 0xA123,
 };
 
 enum hclge_comm_cmd_return_status {
@@ -352,6 +364,7 @@ enum HCLGE_COMM_CAP_BITS {
 	HCLGE_COMM_CAP_WOL_B = 28,
 	HCLGE_COMM_CAP_NOTIFY_PKT_B = 29,
 	HCLGE_COMM_CAP_TM_FLUSH_B = 31,
+	HCLGE_COMM_CAP_ERR_MOD_GEN_REG_B = 32,
 };
 
 enum HCLGE_COMM_API_CAP_BITS {
@@ -389,6 +402,11 @@ struct hclge_comm_query_version_cmd {
 	__le32 hardware;
 	__le32 api_caps;
 	__le32 caps[HCLGE_COMM_QUERY_CAP_LENGTH]; /* capabilities of device */
+};
+
+struct hclge_comm_query_scc_cmd {
+	__le32 scc_version;
+	u8 rsv[20];
 };
 
 #define HCLGE_DESC_DATA_LEN		6

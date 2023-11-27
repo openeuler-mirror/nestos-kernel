@@ -670,6 +670,9 @@ static void show_smap_vma_flags(struct seq_file *m, struct vm_area_struct *vma)
 		[ilog2(VM_MTE)]		= "mt",
 		[ilog2(VM_MTE_ALLOWED)]	= "",
 #endif
+#ifdef CONFIG_ARM64_PBHA
+		[ilog2(VM_PBHA_BIT0)]	= "p0",
+#endif
 #ifdef CONFIG_ARCH_HAS_PKEYS
 		/* These come out via ProtectionKey: */
 		[ilog2(VM_PKEY_BIT0)]	= "",
@@ -722,9 +725,7 @@ static int smaps_hugetlb_range(pte_t *pte, unsigned long hmask,
 			page = device_private_entry_to_page(swpent);
 	}
 	if (page) {
-		int mapcount = page_mapcount(page);
-
-		if (mapcount >= 2)
+		if (page_mapcount(page) >= 2 || hugetlb_pmd_shared(pte))
 			mss->shared_hugetlb += huge_page_size(hstate_vma(vma));
 		else
 			mss->private_hugetlb += huge_page_size(hstate_vma(vma));
@@ -1913,15 +1914,20 @@ static int mm_idle_open(struct inode *inode, struct file *file)
 	}
 
 	mm = proc_mem_open(inode, PTRACE_MODE_READ);
-	if (IS_ERR(mm))
+	if (IS_ERR(mm)) {
+		module_put(module);
 		return PTR_ERR(mm);
+	}
 
 	file->private_data = mm;
 
 	if (proc_page_scan_operations.open)
-		return proc_page_scan_operations.open(inode, file);
+		ret = proc_page_scan_operations.open(inode, file);
 
-	return 0;
+	if (ret != 0)
+		module_put(module);
+
+	return ret;
 }
 
 static int mm_idle_release(struct inode *inode, struct file *file)
@@ -2006,15 +2012,20 @@ static int mm_swap_open(struct inode *inode, struct file *file)
 	}
 
 	mm = proc_mem_open(inode, PTRACE_MODE_READ);
-	if (IS_ERR(mm))
+	if (IS_ERR(mm)) {
+		module_put(module);
 		return PTR_ERR(mm);
+	}
 
 	file->private_data = mm;
 
 	if (proc_swap_pages_operations.open)
-		return proc_swap_pages_operations.open(inode, file);
+		ret = proc_swap_pages_operations.open(inode, file);
 
-	return 0;
+	if (ret != 0)
+		module_put(module);
+
+	return ret;
 }
 
 static int mm_swap_release(struct inode *inode, struct file *file)

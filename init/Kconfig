@@ -47,6 +47,18 @@ config CLANG_VERSION
 	int
 	default $(shell,$(srctree)/scripts/clang-version.sh $(CC))
 
+config AS_IS_GNU
+	def_bool $(success,test "$(as-name)" = GNU)
+
+config AS_IS_LLVM
+	def_bool $(success,test "$(as-name)" = LLVM)
+
+config AS_VERSION
+	int
+	# Use clang version if this is the integrated assembler
+	default CLANG_VERSION if AS_IS_LLVM
+	default $(as-version)
+
 config LLD_VERSION
 	int
 	default $(shell,$(srctree)/scripts/lld-version.sh $(LD))
@@ -603,6 +615,7 @@ config TASK_IO_ACCOUNTING
 
 config PSI
 	bool "Pressure stall information tracking"
+	select KERNFS
 	help
 	  Collect metrics that indicate how overcommitted the CPU, memory,
 	  and IO capacity are in the system.
@@ -927,13 +940,6 @@ config MEMCG_MEMFS_INFO
 	  charged in given memory cgroup. The files infomations can be printed
 	  through interface "memory.memfs_files_info" or printed when OOM is
 	  triggered.
-
-config MEMCG_THP
-       bool "Transparent hugepage controller"
-       depends on MEMCG && TRANSPARENT_HUGEPAGE
-       default n
-       help
-         Provides control transparent hugepage in a cgroup.
 
 config BLK_CGROUP
 	bool "IO controller"

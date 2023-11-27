@@ -804,11 +804,9 @@ static int hns3_pmu_find_related_event_idx(struct hns3_pmu *hns3_pmu,
 		if (!hns3_pmu_cmp_event(sibling, event))
 			continue;
 
-		/* Related events is used in group, else we use index 0 event as related event */
+		/* Related events is used in group */
 		if (sibling->group_leader == event->group_leader)
 			return idx;
-		else
-			return 0;
 	}
 
 	/* No related event and all hardware events are used up */
@@ -1008,13 +1006,12 @@ static bool
 hns3_pmu_is_enabled_port_tc_mode(struct perf_event *event,
 				 struct hns3_pmu_event_attr *pmu_event)
 {
-	u16 bdf = hns3_pmu_get_bdf(event);
 	u8 tc_id = hns3_pmu_get_tc(event);
 
 	if (!(pmu_event->filter_support & HNS3_PMU_FILTER_SUPPORT_PORT_TC))
 		return false;
 
-	return (tc_id != HNS3_PMU_FILTER_ALL_TC) && (!bdf);
+	return tc_id != HNS3_PMU_FILTER_ALL_TC;
 }
 
 static bool
@@ -1566,7 +1563,7 @@ static int hns3_pmu_init_pmu(struct pci_dev *pdev, struct hns3_pmu *hns3_pmu)
 	ret = perf_pmu_register(&hns3_pmu->pmu, hns3_pmu->pmu.name, -1);
 	if (ret) {
 		pci_err(pdev, "failed to register perf PMU, ret = %d.\n", ret);
-		cpuhp_state_remove_instance(hns3_pmu_online, &hns3_pmu->node);
+		cpuhp_state_remove_instance_nocalls(hns3_pmu_online, &hns3_pmu->node);
 	}
 
 	return ret;
@@ -1577,7 +1574,7 @@ static void hns3_pmu_uninit_pmu(struct pci_dev *pdev)
 	struct hns3_pmu *hns3_pmu = pci_get_drvdata(pdev);
 
 	perf_pmu_unregister(&hns3_pmu->pmu);
-	cpuhp_state_remove_instance(hns3_pmu_online, &hns3_pmu->node);
+	cpuhp_state_remove_instance_nocalls(hns3_pmu_online, &hns3_pmu->node);
 }
 
 static int hns3_pmu_init_dev(struct pci_dev *pdev)

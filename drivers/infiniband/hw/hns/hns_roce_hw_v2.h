@@ -41,8 +41,9 @@
 #define HNS_ROCE_V2_ABNORMAL_VEC_NUM		1
 #define HNS_ROCE_V2_MAX_SRQWQE_SEGS		0x1000000
 #define HNS_ROCE_V2_MAX_IDX_SEGS		0x1000000
+#define HNS_ROCE_V2_MAX_XRCD_NUM		0x1000000
 
-#define HNS_ROCE_V2_QP_ACK_TIMEOUT_OFS_HIP08    10
+#define HNS_ROCE_V2_QP_ACK_TIMEOUT_OFS_HIP08	10
 
 #define HNS_ROCE_V3_SCCC_SZ			64
 #define HNS_ROCE_V3_GMV_ENTRY_SZ		32
@@ -199,9 +200,12 @@ enum hns_roce_opcode_type {
 	HNS_ROCE_OPC_CFG_LDCP_PARAM			= 0x1A81,
 	HNS_ROCE_OPC_CFG_HC3_PARAM			= 0x1A82,
 	HNS_ROCE_OPC_CFG_DIP_PARAM			= 0x1A83,
+	HNS_ROCE_OPC_QUERY_HW_ID			= 0x7032,
 	HNS_ROCE_OPC_QUERY_HW_VER			= 0x8000,
 	HNS_ROCE_OPC_CFG_GLOBAL_PARAM			= 0x8001,
 	HNS_ROCE_OPC_ALLOC_PF_RES			= 0x8004,
+	HNS_ROCE_OPC_CFG_POE_ADDR			= 0x801B,
+	HNS_ROCE_OPC_CFG_POE_ATTR			= 0x801C,
 	HNS_ROCE_OPC_QUERY_COUNTER                      = 0x8206,
 	HNS_ROCE_OPC_QUERY_PF_RES			= 0x8400,
 	HNS_ROCE_OPC_ALLOC_VF_RES			= 0x8401,
@@ -287,32 +291,54 @@ struct hns_roce_v2_cq_context {
 #define HNS_ROCE_V2_CQ_DEFAULT_BURST_NUM 0x0
 #define HNS_ROCE_V2_CQ_DEFAULT_INTERVAL	0x0
 
+#define CQC_NOTIFY_ADDR_0_S 12
+#define CQC_NOTIFY_ADDR_0_M GENMASK(19, 12)
+#define CQC_NOTIFY_ADDR_1_S 20
+#define CQC_NOTIFY_ADDR_1_M GENMASK(29, 20)
+#define CQC_NOTIFY_ADDR_2_S 30
+#define CQC_NOTIFY_ADDR_2_M GENMASK(33, 30)
+#define CQC_NOTIFY_ADDR_3_S 34
+#define CQC_NOTIFY_ADDR_3_M GENMASK(41, 34)
+#define CQC_NOTIFY_ADDR_4_S 42
+#define CQC_NOTIFY_ADDR_4_M GENMASK(49, 42)
+#define CQC_NOTIFY_ADDR_5_S 50
+#define CQC_NOTIFY_ADDR_5_M GENMASK(57, 50)
+#define CQC_NOTIFY_ADDR_6_S 58
+#define CQC_NOTIFY_ADDR_6_M GENMASK(63, 58)
+
 #define CQC_FIELD_LOC(h, l) FIELD_LOC(struct hns_roce_v2_cq_context, h, l)
 
 #define CQC_CQ_ST CQC_FIELD_LOC(1, 0)
 #define CQC_POLL CQC_FIELD_LOC(2, 2)
 #define CQC_SE CQC_FIELD_LOC(3, 3)
 #define CQC_OVER_IGNORE CQC_FIELD_LOC(4, 4)
+#define CQC_NOTIFY_MODE CQC_FIELD_LOC(4, 4)
 #define CQC_ARM_ST CQC_FIELD_LOC(7, 6)
 #define CQC_SHIFT CQC_FIELD_LOC(12, 8)
 #define CQC_CMD_SN CQC_FIELD_LOC(14, 13)
 #define CQC_CEQN CQC_FIELD_LOC(23, 15)
+#define CQC_NOTIFY_ADDR_0 CQC_FIELD_LOC(31, 24)
 #define CQC_CQN CQC_FIELD_LOC(55, 32)
 #define CQC_POE_EN CQC_FIELD_LOC(56, 56)
 #define CQC_POE_NUM CQC_FIELD_LOC(58, 57)
 #define CQC_CQE_SIZE CQC_FIELD_LOC(60, 59)
 #define CQC_CQ_CNT_MODE CQC_FIELD_LOC(61, 61)
+#define CQC_NOTIFY_DEVICE_EN CQC_FIELD_LOC(62, 62)
 #define CQC_STASH CQC_FIELD_LOC(63, 63)
 #define CQC_CQE_CUR_BLK_ADDR_L CQC_FIELD_LOC(95, 64)
 #define CQC_CQE_CUR_BLK_ADDR_H CQC_FIELD_LOC(115, 96)
 #define CQC_POE_QID CQC_FIELD_LOC(125, 116)
+#define CQC_NOTIFY_ADDR_1 CQC_FIELD_LOC(125, 116)
 #define CQC_CQE_HOP_NUM CQC_FIELD_LOC(127, 126)
 #define CQC_CQE_NEX_BLK_ADDR_L CQC_FIELD_LOC(159, 128)
 #define CQC_CQE_NEX_BLK_ADDR_H CQC_FIELD_LOC(179, 160)
+#define CQC_NOTIFY_ADDR_2 CQC_FIELD_LOC(183, 180)
 #define CQC_CQE_BAR_PG_SZ CQC_FIELD_LOC(187, 184)
 #define CQC_CQE_BUF_PG_SZ CQC_FIELD_LOC(191, 188)
 #define CQC_CQ_PRODUCER_IDX CQC_FIELD_LOC(215, 192)
+#define CQC_NOTIFY_ADDR_3 CQC_FIELD_LOC(223, 216)
 #define CQC_CQ_CONSUMER_IDX CQC_FIELD_LOC(247, 224)
+#define CQC_NOTIFY_ADDR_4 CQC_FIELD_LOC(255, 248)
 #define CQC_CQE_BA_L CQC_FIELD_LOC(287, 256)
 #define CQC_CQE_BA_H CQC_FIELD_LOC(316, 288)
 #define CQC_POE_QID_H_0 CQC_FIELD_LOC(319, 317)
@@ -320,11 +346,14 @@ struct hns_roce_v2_cq_context {
 #define CQC_CQE_DB_RECORD_ADDR_L CQC_FIELD_LOC(351, 321)
 #define CQC_CQE_DB_RECORD_ADDR_H CQC_FIELD_LOC(383, 352)
 #define CQC_CQE_CNT CQC_FIELD_LOC(407, 384)
+#define CQC_NOTIFY_ADDR_5 CQC_FIELD_LOC(415, 408)
 #define CQC_CQ_MAX_CNT CQC_FIELD_LOC(431, 416)
 #define CQC_CQ_PERIOD CQC_FIELD_LOC(447, 432)
 #define CQC_CQE_REPORT_TIMER CQC_FIELD_LOC(471, 448)
 #define CQC_WR_CQE_IDX CQC_FIELD_LOC(479, 472)
 #define CQC_SE_CQE_IDX CQC_FIELD_LOC(503, 480)
+#define CQC_NOTIFY_ADDR_6 CQC_FIELD_LOC(509, 504)
+#define CQC_NOTIFY_EN CQC_FIELD_LOC(510, 510)
 #define CQC_POE_QID_H_1 CQC_FIELD_LOC(511, 511)
 
 struct hns_roce_srq_context {
@@ -653,6 +682,12 @@ struct hns_roce_v2_qp_context {
 #define QPCEX_SQ_RQ_NOT_FORBID_EN QPCEX_FIELD_LOC(23, 23)
 #define QPCEX_STASH QPCEX_FIELD_LOC(82, 82)
 
+#define SCC_CONTEXT_SIZE 16
+
+struct hns_roce_v2_scc_context {
+	__le32 data[SCC_CONTEXT_SIZE];
+};
+
 #define	V2_QP_RWE_S 1 /* rdma write enable */
 #define	V2_QP_RRE_S 2 /* rdma read enable */
 #define	V2_QP_ATE_S 3 /* rdma atomic enable */
@@ -936,6 +971,15 @@ struct hns_roce_v2_wqe_data_seg {
 	__le32    len;
 	__le32    lkey;
 	__le64    addr;
+};
+
+struct hns_roce_hw_id_query_cmq {
+	__u8 chip_id;
+	__u8 die_id;
+	__u8 mac_id;
+	__u8 reserved;
+	__le32 func_id;
+	__le32 rsv[4];
 };
 
 struct hns_roce_query_version {
@@ -1271,6 +1315,21 @@ struct hns_roce_cmq_req {
 	__le32 data[6];
 };
 
+struct hns_roce_poe_cfg_addr_cmq {
+	__le32 channel_id;
+	__le32 poe_addr_l;
+	__le32 poe_addr_h;
+	__le32 rsv[3];
+};
+
+#define V2_POE_ATTR_EN V2_POE_ATTR_FIELD_LOC(40, 40)
+#define V2_POE_ATTR_FIELD_LOC(h, l) FIELD_LOC(struct hns_roce_poe_cfg_attr_cmq, h, l)
+struct hns_roce_poe_cfg_attr_cmq {
+	__le32 channel_id;
+	__le32 rsv_en_outstd;
+	__le32 rsv[4];
+};
+
 #define CMQ_REQ_FIELD_LOC(h, l) FIELD_LOC(struct hns_roce_cmq_req, h, l)
 
 struct hns_roce_cmq_desc {
@@ -1313,6 +1372,7 @@ struct hns_roce_link_table {
 
 struct hns_roce_v2_reset_state {
 	u32 reset_state; /* stored to use in user space */
+	u32 hw_ready;
 };
 
 struct hns_roce_v2_free_mr {
@@ -1588,8 +1648,8 @@ struct hns_roce_bond_info {
 struct hns_roce_dev
 	*hns_roce_bond_init_client(struct hns_roce_bond_group *bond_grp,
 				   int func_idx);
-void hns_roce_bond_uninit_client(struct hns_roce_bond_group *bond_grp,
-				 int func_idx);
+int hns_roce_bond_uninit_client(struct hns_roce_bond_group *bond_grp,
+				int func_idx);
 int hns_roce_v2_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata);
 
 int hns_roce_v2_destroy_qp_common(struct hns_roce_dev *hr_dev,

@@ -7,6 +7,7 @@
 #include <linux/fs.h>
 #include <linux/hugetlb_inline.h>
 #include <linux/cgroup.h>
+#include <linux/page_ref.h>
 #include <linux/list.h>
 #include <linux/kref.h>
 #include <linux/pgtable.h>
@@ -161,7 +162,7 @@ int hugetlb_reserve_pages(struct inode *inode, long from, long to,
 						vm_flags_t vm_flags);
 long hugetlb_unreserve_pages(struct inode *inode, long start, long end,
 						long freed);
-bool isolate_huge_page(struct page *page, struct list_head *list);
+int isolate_hugetlb(struct page *page, struct list_head *list);
 void putback_active_hugepage(struct page *page);
 void move_hugetlb_state(struct page *oldpage, struct page *newpage, int reason);
 void free_huge_page(struct page *page);
@@ -347,9 +348,9 @@ static inline pte_t *huge_pte_offset(struct mm_struct *mm, unsigned long addr,
 	return NULL;
 }
 
-static inline bool isolate_huge_page(struct page *page, struct list_head *list)
+static inline int isolate_hugetlb(struct page *page, struct list_head *list)
 {
-	return false;
+	return -EBUSY;
 }
 
 static inline void putback_active_hugepage(struct page *page)
@@ -629,6 +630,9 @@ int huge_add_to_page_cache(struct page *page, struct address_space *mapping,
 
 const struct hstate *hugetlb_get_hstate(void);
 struct page *hugetlb_alloc_hugepage(int nid, int flag);
+struct page *hugetlb_alloc_hugepage_vma(struct vm_area_struct *vma,
+		unsigned long address, int flag);
+
 int hugetlb_insert_hugepage_pte(struct mm_struct *mm, unsigned long addr,
 				pgprot_t prot, struct page *hpage);
 int hugetlb_insert_hugepage_pte_by_pa(struct mm_struct *mm,
@@ -643,6 +647,12 @@ static inline const struct hstate *hugetlb_get_hstate(void)
 static inline struct page *hugetlb_alloc_hugepage(int nid, int flag)
 {
 	return  NULL;
+}
+
+static inline struct page *hugetlb_alloc_hugepage_vma(struct vm_area_struct *vma,
+		unsigned long address, int flag)
+{
+	return NULL;
 }
 
 static inline int hugetlb_insert_hugepage_pte(struct mm_struct *mm,
@@ -700,7 +710,10 @@ static inline struct hstate *hstate_sizelog(int page_size_log)
 	if (!page_size_log)
 		return &default_hstate;
 
-	return size_to_hstate(1UL << page_size_log);
+	if (page_size_log < BITS_PER_LONG)
+		return size_to_hstate(1UL << page_size_log);
+
+	return NULL;
 }
 
 static inline struct hstate *hstate_vma(struct vm_area_struct *vma)
@@ -1091,6 +1104,12 @@ static inline struct page *hugetlb_alloc_hugepage(int nid, int flag)
 	return  NULL;
 }
 
+static inline struct page *hugetlb_alloc_hugepage_vma(struct vm_area_struct *vma,
+		unsigned long address, int flag)
+{
+	return  NULL;
+}
+
 static inline int hugetlb_insert_hugepage_pte(struct mm_struct *mm,
 		unsigned long addr, pgprot_t prot, struct page *hpage)
 {
@@ -1129,6 +1148,18 @@ static inline __init void hugetlb_cma_check(void)
 
 #ifdef CONFIG_ASCEND_SHARE_POOL
 pte_t make_huge_pte(struct vm_area_struct *vma, struct page *page, int writable);
+#endif
+
+#ifdef CONFIG_ARCH_WANT_HUGE_PMD_SHARE
+static inline bool hugetlb_pmd_shared(pte_t *pte)
+{
+	return page_count(virt_to_page(pte)) > 1;
+}
+#else
+static inline bool hugetlb_pmd_shared(pte_t *pte)
+{
+	return false;
+}
 #endif
 
 #endif /* _LINUX_HUGETLB_H */

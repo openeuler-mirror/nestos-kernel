@@ -376,27 +376,20 @@ extern unsigned long zone_reclaimable_pages(struct zone *zone);
 extern unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
 					gfp_t gfp_mask, nodemask_t *mask);
 extern int __isolate_lru_page_prepare(struct page *page, isolate_mode_t mode);
+
+#define MEMCG_RECLAIM_MAY_SWAP (1 << 1)
+#define MEMCG_RECLAIM_PROACTIVE (1 << 2)
+#define MEMCG_RECLAIM_NOT_FILE (1 << 3)
 extern unsigned long try_to_free_mem_cgroup_pages(struct mem_cgroup *memcg,
 						  unsigned long nr_pages,
 						  gfp_t gfp_mask,
-						  bool may_swap);
+						  unsigned int reclaim_options);
 extern unsigned long mem_cgroup_shrink_node(struct mem_cgroup *mem,
 						gfp_t gfp_mask, bool noswap,
 						pg_data_t *pgdat,
 						unsigned long *nr_scanned);
 extern unsigned long shrink_all_memory(unsigned long nr_pages);
 extern int vm_swappiness;
-#define ADDITIONAL_RECLAIM_RATIO 2
-extern unsigned long pagecache_over_limit(void);
-extern void shrink_page_cache(gfp_t mask, struct page *page);
-extern unsigned long vm_pagecache_limit_pages;
-extern unsigned long vm_pagecache_limit_reclaim_pages;
-extern int vm_pagecache_limit_ratio;
-extern int vm_pagecache_limit_reclaim_ratio;
-extern unsigned int vm_pagecache_ignore_dirty;
-extern unsigned int vm_pagecache_limit_async;
-extern int kpagecache_limitd_run(void);
-extern void kpagecache_limitd_stop(void);
 extern int remove_mapping(struct address_space *mapping, struct page *page);
 
 extern unsigned long reclaim_pages(struct list_head *page_list);
@@ -518,11 +511,14 @@ static inline long get_nr_swap_pages(void)
 	return atomic_long_read(&nr_swap_pages);
 }
 
+extern long get_nr_swap_pages_type(int type);
+
 extern void si_swapinfo(struct sysinfo *);
 extern swp_entry_t get_swap_page(struct page *page);
 extern void put_swap_page(struct page *page, swp_entry_t entry);
 extern swp_entry_t get_swap_page_of_type(int);
-extern int get_swap_pages(int n, swp_entry_t swp_entries[], int entry_size);
+extern int get_swap_pages(int n, swp_entry_t swp_entries[], int entry_size,
+			  int type);
 extern int add_swap_count_continuation(swp_entry_t, gfp_t);
 extern void swap_shmem_alloc(swp_entry_t);
 extern int swap_duplicate(swp_entry_t);
@@ -554,6 +550,12 @@ static inline void put_swap_device(struct swap_info_struct *si)
 	percpu_ref_put(&si->sei->users);
 }
 
+#ifdef CONFIG_MEMCG_SWAP_QOS
+extern int write_swapfile_for_memcg(struct address_space *mapping,
+				    int *swap_type);
+extern void read_swapfile_for_memcg(struct seq_file *m, int type);
+void enable_swap_slots_cache_max(void);
+#endif
 #else /* CONFIG_SWAP */
 
 static inline int swap_readpage(struct page *page, bool do_poll)

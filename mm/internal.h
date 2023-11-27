@@ -218,9 +218,6 @@ extern void prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags
 extern bool free_pages_prepare(struct page *page, unsigned int order, bool check_free);
 extern int user_min_free_kbytes;
 
-extern void free_unref_page(struct page *page, unsigned int order);
-extern void free_unref_page_list(struct list_head *list);
-
 extern void zone_pcp_update(struct zone *zone);
 extern void zone_pcp_reset(struct zone *zone);
 extern void zone_pcp_disable(struct zone *zone);
@@ -291,38 +288,6 @@ int find_suitable_fallback(struct free_area *area, unsigned int order,
 			int migratetype, bool only_stealable, bool *can_steal);
 
 #endif
-
-/*
- * Reuse the bit above highest-possible page order (MAX_ORDER - 1) of
- * page->private, to _temporarily_ indicate that the page is pre-zeroed.
- *
- * This bit is only used for pages newly allocated from buddy, neither
- * buddy pages nor lru pages, etc., in the page allocation path.
- *
- * Specifically, this bit is set in __rmqueue_smallest(), and cleared in
- * prep_new_page() or free_pcppages_bulk(). Setting this bit anywhere else
- * is a bug.
- */
-#ifdef CONFIG_PAGE_PREZERO
-#define PAGE_ZEROED	(1UL << (ilog2(MAX_ORDER - 1) + 1))
-#else
-#define PAGE_ZEROED	0
-#endif
-
-static inline bool page_zeroed(struct page *page)
-{
-	return page_private(page) & PAGE_ZEROED;
-}
-
-static inline void set_page_zeroed(struct page *page)
-{
-	page->private |= PAGE_ZEROED;
-}
-
-static inline void clear_page_zeroed(struct page *page)
-{
-	page->private &= ~PAGE_ZEROED;
-}
 
 /*
  * This function returns the order of a free page in the buddy system. In
@@ -705,5 +670,7 @@ struct migration_target_control {
 	nodemask_t *nmask;
 	gfp_t gfp_mask;
 };
+
+DECLARE_PER_CPU(struct per_cpu_nodestat, boot_nodestats);
 
 #endif	/* __MM_INTERNAL_H */

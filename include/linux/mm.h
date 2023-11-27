@@ -392,6 +392,12 @@ extern unsigned int kobjsize(const void *objp);
 # define VM_SHARE_POOL VM_NONE
 #endif
 
+#if defined(CONFIG_ARM64_PBHA)
+# define VM_PBHA_BIT0	VM_HIGH_ARCH_2	/* Page Base Hardware Attributes 4 bit*/
+#else
+# define VM_PBHA_BIT0	VM_NONE
+#endif
+
 #ifndef VM_GROWSUP
 # define VM_GROWSUP	VM_NONE
 #endif
@@ -451,7 +457,7 @@ static inline bool arch_is_platform_page(u64 paddr)
 #define VM_NO_KHUGEPAGED (VM_SPECIAL | VM_HUGETLB)
 
 /* This mask defines which mm->def_flags a process can inherit its parent */
-#define VM_INIT_DEF_MASK	VM_NOHUGEPAGE
+#define VM_INIT_DEF_MASK	(VM_NOHUGEPAGE | VM_PBHA_BIT0)
 
 /* This mask is used to clear all the VMA flags used by mlock */
 #define VM_LOCKED_CLEAR_MASK	(~(VM_LOCKED | VM_LOCKONFAULT))
@@ -2396,7 +2402,6 @@ static inline spinlock_t *pud_lock(struct mm_struct *mm, pud_t *pud)
 }
 
 extern void __init pagecache_init(void);
-extern void __init free_area_init_memoryless_node(int nid);
 extern void free_initmem(void);
 
 /*
@@ -2493,6 +2498,7 @@ extern void get_pfn_range_for_nid(unsigned int nid,
 extern unsigned long find_min_pfn_with_active_regions(void);
 
 extern bool mirrored_kernelcore;
+extern bool memblock_has_mirror(void);
 
 #ifndef CONFIG_NEED_MULTIPLE_NODES
 static inline int early_pfn_to_nid(unsigned long pfn)
@@ -2650,6 +2656,7 @@ extern int __do_munmap(struct mm_struct *, unsigned long, size_t,
 		       struct list_head *uf, bool downgrade);
 extern int do_munmap(struct mm_struct *, unsigned long, size_t,
 		     struct list_head *uf);
+extern void force_swapin_vma(struct vm_area_struct *vma);
 extern int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int behavior);
 
 extern unsigned long __do_mmap_mm(struct mm_struct *mm, struct file *file,

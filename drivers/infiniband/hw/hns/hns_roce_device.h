@@ -33,12 +33,16 @@
 #ifndef _HNS_ROCE_DEVICE_H
 #define _HNS_ROCE_DEVICE_H
 
+#include <linux/pci.h>
 #include <rdma/ib_verbs.h>
 #include <rdma/hns-abi.h>
 #include "hns_roce_bond.h"
+#include "hns_roce_ext.h"
+#include "hns_roce_debugfs.h"
 
 #define PCI_REVISION_ID_HIP08			0x21
 #define PCI_REVISION_ID_HIP09			0x30
+#define PCI_REVISION_ID_HIP10			0x32
 
 #define HNS_ROCE_MAX_MSG_LEN			0x80000000
 
@@ -101,6 +105,10 @@
 #define HNS_ROCE_CQ_BANK_NUM 4
 
 #define CQ_BANKID_SHIFT 2
+
+#define MAX_NOTIFY_MEM_SIZE BIT(24)
+
+#define HNS_ROCE_MEM_BAR 2
 #define CQ_BANKID_MASK GENMASK(1, 0)
 
 enum {
@@ -159,9 +167,12 @@ enum {
 	HNS_ROCE_CAP_FLAG_SVE_DIRECT_WQE	= BIT(13),
 	HNS_ROCE_CAP_FLAG_SDI_MODE		= BIT(14),
 	HNS_ROCE_CAP_FLAG_DCA_MODE		= BIT(15),
+	HNS_ROCE_CAP_FLAG_WRITE_NOTIFY          = BIT(16),
 	HNS_ROCE_CAP_FLAG_STASH			= BIT(17),
 	HNS_ROCE_CAP_FLAG_CQE_INLINE		= BIT(19),
 	HNS_ROCE_CAP_FLAG_BOND			= BIT(21),
+	HNS_ROCE_CAP_FLAG_SRQ_RECORD_DB		= BIT(22),
+	HNS_ROCE_CAP_FLAG_POE                   = BIT(27),
 };
 
 #define HNS_ROCE_DB_TYPE_COUNT			2
@@ -185,6 +196,7 @@ enum hns_roce_instance_state {
 	HNS_ROCE_STATE_INIT,
 	HNS_ROCE_STATE_INITED,
 	HNS_ROCE_STATE_UNINIT,
+	HNS_ROCE_STATE_BOND_UNINIT,
 };
 
 enum {
@@ -216,6 +228,18 @@ struct hns_user_mmap_entry {
 	struct rdma_user_mmap_entry rdma_entry;
 	enum hns_roce_mmap_type mmap_type;
 	u64 address;
+};
+
+struct hns_roce_poe_ch {
+	uint8_t en;
+	refcount_t ref_cnt;
+	uint64_t addr;
+	void *poe_ch_debugfs;
+};
+
+struct hns_roce_poe_ctx {
+	uint8_t poe_num;
+	struct hns_roce_poe_ch *poe_ch;
 };
 
 struct hns_roce_dca_ctx {
@@ -255,7 +279,7 @@ struct hns_roce_ucontext {
 	struct hns_user_mmap_entry *reset_mmap_entry;
 	u32			config;
 	struct hns_roce_dca_ctx	dca_ctx;
-	void *dca_dbgfs;
+	struct hns_dca_ctx_debugfs dca_dbgfs;
 };
 
 struct hns_roce_pd {
@@ -385,6 +409,8 @@ struct hns_roce_mr {
 	struct hns_roce_mtr	pbl_mtr;
 	u32			npages;
 	dma_addr_t		*page_list;
+	bool			delayed_destroy_flag;
+	struct hns_roce_mtr_node *mtr_node;
 };
 
 struct hns_roce_mr_table {
@@ -451,11 +477,17 @@ struct hns_roce_db_pgdir {
 	dma_addr_t		db_dma;
 };
 
+struct hns_roce_umem_node {
+	struct ib_umem *umem;
+	struct list_head list;
+};
+
 struct hns_roce_user_db_page {
 	struct list_head	list;
 	struct ib_umem		*umem;
 	unsigned long		user_virt;
 	refcount_t		refcount;
+	struct hns_roce_umem_node *umem_node;
 };
 
 struct hns_roce_db {
@@ -468,6 +500,22 @@ struct hns_roce_db {
 	void		*virt_addr;
 	unsigned long	index;
 	unsigned long	order;
+};
+
+enum hns_roce_notify_mode {
+	HNS_ROCE_NOTIFY_MODE_64B_ALIGN = 0,
+	HNS_ROCE_NOTIFY_MODE_4B_ALIGN = 1,
+};
+
+enum hns_roce_notify_device_en {
+	HNS_ROCE_NOTIFY_DEV = 0,
+	HNS_ROCE_NOTIFY_DDR = 1,
+};
+
+struct hns_roce_notify_conf {
+	u64 notify_addr; /* should be aligned to 4k */
+	u8 notify_mode; /* use enum hns_roce_notify_mode */
+	u8 notify_device_en; /* use enum hns_roce_notify_device_en */
 };
 
 struct hns_roce_cq {
@@ -490,6 +538,10 @@ struct hns_roce_cq {
 	struct list_head		rq_list; /* all qps on this recv cq */
 	int				is_armed; /* cq is armed */
 	struct list_head		node; /* all armed cqs are on a list */
+	u8				poe_channel;
+	bool				delayed_destroy_flag;
+	struct hns_roce_notify_conf	write_notify;
+	struct hns_roce_mtr_node *mtr_node;
 };
 
 struct hns_roce_idx_que {
@@ -498,6 +550,7 @@ struct hns_roce_idx_que {
 	unsigned long			*bitmap;
 	u32				head;
 	u32				tail;
+	struct hns_roce_mtr_node *mtr_node;
 };
 
 struct hns_roce_srq {
@@ -521,6 +574,10 @@ struct hns_roce_srq {
 	spinlock_t		lock;
 	struct mutex		mutex;
 	void (*event)(struct hns_roce_srq *srq, enum hns_roce_event event);
+	struct hns_roce_db	rdb;
+	u32			cap_flags;
+	bool			delayed_destroy_flag;
+	struct hns_roce_mtr_node *mtr_node;
 };
 
 struct hns_roce_uar_table {
@@ -656,7 +713,6 @@ struct hns_roce_qp {
 	struct hns_roce_db	sdb;
 	unsigned long		en_flags;
 	unsigned long		congest_type;
-	u32			doorbell_qpn;
 	enum ib_sig_type	sq_signal_bits;
 	struct hns_roce_wq	sq;
 
@@ -697,6 +753,8 @@ struct hns_roce_qp {
 	u32			config;
 	u8			tc_mode;
 	u8			priority;
+	bool			delayed_destroy_flag;
+	struct hns_roce_mtr_node *mtr_node;
 };
 
 struct hns_roce_ib_iboe {
@@ -784,6 +842,8 @@ enum congest_type {
 	HNS_ROCE_CONGEST_TYPE_DIP = 1 << HNS_ROCE_SCC_ALGO_DIP,
 };
 
+#define HNS_ROCE_POE_CH_NUM 4
+
 struct hns_roce_caps {
 	u64		fw_ver;
 	u8		num_ports;
@@ -798,7 +858,6 @@ struct hns_roce_caps {
 	u32		rsv0;
 	u32		num_qps;
 	u32		reserved_qps;
-	int		num_qpc_timer;
 	u32		num_srqs;
 	u32		max_wqes;
 	u32		max_srq_wrs;
@@ -916,6 +975,7 @@ struct hns_roce_caps {
 	u16		default_ceq_arm_st;
 	u8		congest_type;
 	u8		default_congest_type;
+	u8              poe_ch_num;
 };
 
 enum hns_roce_device_state {
@@ -950,7 +1010,7 @@ enum hns_roce_hw_pkt_stat_index {
 	HNS_ROCE_HW_CNT_TOTAL,
 };
 
-enum hns_roce_hw_dfx_stat_index {
+enum hns_roce_sw_dfx_stat_index {
 	HNS_ROCE_DFX_AEQE_CNT,
 	HNS_ROCE_DFX_CEQE_CNT,
 	HNS_ROCE_DFX_CMDS_CNT,
@@ -961,7 +1021,9 @@ enum hns_roce_hw_dfx_stat_index {
 	HNS_ROCE_DFX_QP_CREATE_ERR_CNT,
 	HNS_ROCE_DFX_QP_MODIFY_ERR_CNT,
 	HNS_ROCE_DFX_CQ_CREATE_ERR_CNT,
+	HNS_ROCE_DFX_CQ_MODIFY_ERR_CNT,
 	HNS_ROCE_DFX_SRQ_CREATE_ERR_CNT,
+	HNS_ROCE_DFX_SRQ_MODIFY_ERR_CNT,
 	HNS_ROCE_DFX_XRCD_ALLOC_ERR_CNT,
 	HNS_ROCE_DFX_MR_REG_ERR_CNT,
 	HNS_ROCE_DFX_MR_REREG_ERR_CNT,
@@ -1016,7 +1078,9 @@ struct hns_roce_hw {
 	int (*write_srqc)(struct hns_roce_srq *srq, void *mb_buf);
 	int (*query_cqc)(struct hns_roce_dev *hr_dev, u32 cqn, void *buffer);
 	int (*query_qpc)(struct hns_roce_dev *hr_dev, u32 qpn, void *buffer);
+	int (*query_srqc)(struct hns_roce_dev *hr_dev, u32 srqn, void *buffer);
 	int (*query_mpt)(struct hns_roce_dev *hr_dev, u32 key, void *buffer);
+	int (*query_sccc)(struct hns_roce_dev *hr_dev, u32 qpn, void *buffer);
 	int (*get_dscp)(struct hns_roce_dev *hr_dev, u8 dscp,
 			u8 *tc_mode, u8 *priority);
 	int (*query_hw_counter)(struct hns_roce_dev *hr_dev,
@@ -1030,6 +1094,7 @@ struct hns_roce_hw {
 				enum hns_roce_scc_algo algo);
 	int (*query_scc_param)(struct hns_roce_dev *hr_dev, u8 port_num,
 			       enum hns_roce_scc_algo alog);
+	int (*cfg_poe_ch)(struct hns_roce_dev *hr_dev, u32 index, u64 poe_addr);
 };
 
 #define HNS_ROCE_SCC_PARAM_SIZE 4
@@ -1050,11 +1115,16 @@ struct hns_roce_port {
 	struct hns_roce_scc_param *scc_param;
 };
 
+struct hns_roce_mtr_node {
+	struct hns_roce_mtr mtr;
+	struct list_head list;
+};
+
 struct hns_roce_dev {
 	struct ib_device	ib_dev;
 	struct pci_dev		*pci_dev;
 	struct device		*dev;
-	void			*dbgfs; /* debugfs for this dev */
+	struct hns_roce_dev_debugfs dbgfs; /* debugfs for this dev */
 
 	struct list_head	uctx_list; /* list of all uctx on this dev */
 	spinlock_t		uctx_list_lock; /* protect @uctx_list */
@@ -1088,6 +1158,10 @@ struct hns_roce_dev {
 	u32                     vendor_id;
 	u32                     vendor_part_id;
 	u32                     hw_rev;
+	u16 chip_id;
+	u16 die_id;
+	u16 mac_id;
+	u16 func_id;
 	void __iomem            *priv_addr;
 
 	struct hns_roce_cmdq	cmd;
@@ -1125,6 +1199,14 @@ struct hns_roce_dev {
 	struct notifier_block bond_nb;
 	struct hns_roce_port port_data[HNS_ROCE_MAX_PORTS];
 	atomic64_t *dfx_cnt;
+	struct hns_roce_poe_ctx poe_ctx; /* poe ch array */
+
+	struct rdma_notify_mem *notify_tbl;
+	size_t notify_num;
+	struct list_head mtr_unfree_list; /* list of unfree mtr on this dev */
+	spinlock_t mtr_unfree_list_lock; /* protect mtr_unfree_list */
+	struct list_head umem_unfree_list; /* list of unfree umem on this dev */
+	spinlock_t umem_unfree_list_lock; /* protect umem_unfree_list */
 };
 
 static inline struct hns_roce_dev *to_hr_dev(struct ib_device *ib_dev)
@@ -1271,6 +1353,27 @@ static inline enum ib_port_state get_port_state(struct net_device *net_dev)
 		IB_PORT_ACTIVE : IB_PORT_DOWN;
 }
 
+static inline struct net_device *get_hr_netdev(struct hns_roce_dev *hr_dev,
+					       u8 port)
+{
+	return hr_dev->iboe.netdevs[port];
+}
+
+static inline u8 get_hr_bus_num(struct hns_roce_dev *hr_dev)
+{
+	return hr_dev->pci_dev->bus->number;
+}
+
+static inline bool poe_is_supported(struct hns_roce_dev *hr_dev)
+{
+	return !!(hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_POE);
+}
+
+static inline bool is_write_notify_supported(struct hns_roce_dev *dev)
+{
+	return !!(dev->caps.flags & HNS_ROCE_CAP_FLAG_WRITE_NOTIFY);
+}
+
 void hns_roce_init_uar_table(struct hns_roce_dev *dev);
 int hns_roce_uar_alloc(struct hns_roce_dev *dev, struct hns_roce_uar *uar);
 
@@ -1385,7 +1488,8 @@ int hns_roce_destroy_cq(struct ib_cq *ib_cq, struct ib_udata *udata);
 int hns_roce_db_map_user(struct hns_roce_ucontext *context, unsigned long virt,
 			 struct hns_roce_db *db);
 void hns_roce_db_unmap_user(struct hns_roce_ucontext *context,
-			    struct hns_roce_db *db);
+			    struct hns_roce_db *db,
+			    bool delayed_unmap_flag);
 int hns_roce_alloc_db(struct hns_roce_dev *hr_dev, struct hns_roce_db *db,
 		      int order);
 void hns_roce_free_db(struct hns_roce_dev *hr_dev, struct hns_roce_db *db);
@@ -1405,6 +1509,13 @@ int hns_roce_fill_res_qp_entry(struct sk_buff *msg, struct ib_qp *ib_qp);
 int hns_roce_fill_res_qp_entry_raw(struct sk_buff *msg, struct ib_qp *ib_qp);
 int hns_roce_fill_res_mr_entry(struct sk_buff *msg, struct ib_mr *ib_mr);
 int hns_roce_fill_res_mr_entry_raw(struct sk_buff *msg, struct ib_mr *ib_mr);
+void hns_roce_add_unfree_umem(struct hns_roce_user_db_page *user_page,
+			      struct hns_roce_dev *hr_dev);
+void hns_roce_free_unfree_umem(struct hns_roce_dev *hr_dev);
+void hns_roce_add_unfree_mtr(struct hns_roce_mtr_node *pos,
+			     struct hns_roce_dev *hr_dev,
+			     struct hns_roce_mtr *mtr);
+void hns_roce_free_unfree_mtr(struct hns_roce_dev *hr_dev);
 struct hns_user_mmap_entry *
 hns_roce_user_mmap_entry_insert(struct ib_ucontext *ucontext, u64 address,
 				size_t length,
@@ -1412,4 +1523,8 @@ hns_roce_user_mmap_entry_insert(struct ib_ucontext *ucontext, u64 address,
 int hns_roce_create_port_files(struct ib_device *ibdev, u8 port_num,
 			       struct kobject *kobj);
 void hns_roce_unregister_sysfs(struct hns_roce_dev *hr_dev);
+int hns_roce_register_poe_channel(struct hns_roce_dev *hr_dev, u8 channel,
+				  u64 poe_addr);
+int hns_roce_unregister_poe_channel(struct hns_roce_dev *hr_dev, u8 channel);
+bool hns_roce_is_srq_exist(struct hns_roce_dev *hr_dev, u32 srqn);
 #endif /* _HNS_ROCE_DEVICE_H */

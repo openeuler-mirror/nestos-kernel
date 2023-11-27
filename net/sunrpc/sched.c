@@ -796,7 +796,6 @@ rpc_init_task_statistics(struct rpc_task *task)
 	/* Initialize retry counters */
 	task->tk_garb_retry = 2;
 	task->tk_cred_retry = 2;
-	task->tk_rebind_retry = 2;
 
 	/* starting timestamp */
 	task->tk_start = ktime_get();
@@ -896,8 +895,10 @@ static void __rpc_execute(struct rpc_task *task)
 		/*
 		 * Lockless check for whether task is sleeping or not.
 		 */
-		if (!RPC_IS_QUEUED(task))
+		if (!RPC_IS_QUEUED(task)) {
+			cond_resched();
 			continue;
+		}
 
 		/*
 		 * Signalled tasks should exit rather than sleep.

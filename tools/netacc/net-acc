@@ -8,26 +8,27 @@ function usage() {
 	echo ""
 }
 
-function mount_cgp2() {
-	CGP2=`mount | grep cgroup2`
-	if [[ "$CGP2"X == "X" ]]; then
-		CGP2_PATCH=/sys/fs/cgroup/tunned-acc
-		mount -o rw,remount  /sys/fs/cgroup
-		mkdir -p ${CGP2_PATCH}
-		mount -t cgroup2 -o nosuid,nodev,noexec none ${CGP2_PATCH}
-		mount -o ro,remount  /sys/fs/cgroup
+function get_cgrp_path() {
+	local CGRP=`mount | grep cgroup2 | head -n 1`
+	if [[ "$CGRP"X == "X" ]]; then
+		CGRP=`mount | grep cgroup | grep "net_cls,net_prio" | head -n 1`
 	fi
+	cgrp_path=`echo $CGRP | awk '{print $3}'`
 }
 
 CMD=$1
 
+get_cgrp_path
+if [[ "$cgrp_path"X == "X" ]]; then
+	echo "Failed to obtain a valid cgroup mount point."
+	usage;
+	exit 1
+fi
+
 if [[ "$CMD"X == "enableX" ]]; then
-	mount_cgp2
-	modprobe localip
-	/usr/sbin/tuned_acc/redis_acc enable
+	/usr/sbin/tuned_acc/netacc enable ${cgrp_path}
 elif [[ "$CMD"X == "disableX" ]]; then
-	/usr/sbin/tuned_acc/redis_acc disable
-	rmmod localip 2>/dev/null
+	/usr/sbin/tuned_acc/netacc disable ${cgrp_path}
 	exit 0
 else
 	usage;

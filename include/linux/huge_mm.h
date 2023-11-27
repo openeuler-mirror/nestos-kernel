@@ -143,7 +143,6 @@ static inline bool transhuge_vma_enabled(struct vm_area_struct *vma,
 	return true;
 }
 
-#ifndef CONFIG_MEMCG_THP
 /*
  * to be used on vmas which are known to support THP.
  * Use transparent_hugepage_active otherwise
@@ -175,7 +174,6 @@ static inline bool __transparent_hugepage_enabled(struct vm_area_struct *vma)
 
 	return false;
 }
-#endif
 
 bool transparent_hugepage_active(struct vm_area_struct *vma);
 
@@ -331,11 +329,6 @@ static inline struct list_head *page_deferred_list(struct page *page)
 	 */
 	return &page[2].deferred_list;
 }
-
-#ifdef CONFIG_MEMCG_THP
-extern struct static_key_false cgroup_thp_enabled;
-extern inline bool __transparent_hugepage_enabled(struct vm_area_struct *vma);
-#endif
 
 #else /* CONFIG_TRANSPARENT_HUGEPAGE */
 #define HPAGE_PMD_SHIFT ({ BUILD_BUG(); 0; })
@@ -505,5 +498,17 @@ static inline unsigned long thp_size(struct page *page)
 {
 	return PAGE_SIZE << thp_order(page);
 }
+
+/*
+ * archs that select ARCH_WANTS_THP_SWAP but don't support THP_SWP due to
+ * limitations in the implementation like arm64 MTE can override this to
+ * false
+ */
+#ifndef arch_thp_swp_supported
+static inline bool arch_thp_swp_supported(void)
+{
+	return true;
+}
+#endif
 
 #endif /* _LINUX_HUGE_MM_H */

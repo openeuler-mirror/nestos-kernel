@@ -78,6 +78,7 @@ config ARM64
 	select ARCH_SUPPORTS_ATOMIC_RMW
 	select ARCH_SUPPORTS_INT128 if CC_HAS_INT128 && (GCC_VERSION >= 50000 || CC_IS_CLANG)
 	select ARCH_SUPPORTS_NUMA_BALANCING
+	select ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH
 	select ARCH_WANT_COMPAT_IPC_PARSE_VERSION if COMPAT
 	select ARCH_WANT_DEFAULT_BPF_JIT
 	select ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT
@@ -86,6 +87,7 @@ config ARM64
 	select ARCH_WANT_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
 	select ARCH_WANT_LD_ORPHAN_WARN
 	select ARCH_WANT_RESERVE_CRASH_KERNEL if KEXEC_CORE
+	select ARCH_WANTS_THP_SWAP if ARM64_4K_PAGES
 	select ARCH_HAS_UBSAN_SANITIZE_ALL
 	select ARM_AMBA
 	select ARM_ARCH_TIMER
@@ -510,7 +512,7 @@ config ARM64_ERRATUM_1742098
       are only present if the cryptography extensions are present.
       All software should have a fallback implementation for CPUs
       that don't implement the cryptography extensions.
- 
+
       If unsure, say Y.
 
 config ARM64_ERRATUM_845719
@@ -803,14 +805,14 @@ config HISILICON_ERRATUM_1980005
 	  If unsure, say N.
 
 config HISILICON_ERRATUM_162100801
-    bool "Hip09 162100801 erratum support"
-    default y
-    help
-	When enabled GICv4.1 in hip09, there are some invalid vPE config
-	in configuration tables for some situation, which will cause vSGI
-	interrupts lost. So fix it by sending vinvall commands after vmovp.
+	bool "Hip09 162100801 erratum support"
+	default y
+	help
+	  When enabled GICv4.1 in hip09, there are some invalid vPE config
+	  in configuration tables for some situation, which will cause vSGI
+	  interrupts lost. So fix it by sending vinvall commands after vmovp.
 
-	If unsure, say Y.
+	  If unsure, say Y.
 
 config HISILICON_ERRATUM_162100125
 	bool "Hisilicon erratum 162100125"
@@ -822,6 +824,17 @@ config HISILICON_ERRATUM_162100125
 	  CNP support for Hisilicon LINXICORE9100 cores.
 
 	  If unsure, say Y.
+
+config HISILICON_ERRATUM_162102203
+	bool "Hisilicon erratum 162102203"
+	default n
+	help
+	  On HIP09, SMS_ATN bit may be cleared by hardware before it is driven
+	  to process. This will causes bridge commands timeout. Avoid these issues
+	  by modifying the IPMI driver to use variables to store SMS_ATNs that may
+	  be lost.
+
+	  If unsure, say N.
 
 config QCOM_FALKOR_ERRATUM_1003
 	bool "Falkor E1003: Incorrect translation due to ASID change"
@@ -1689,6 +1702,26 @@ config ARM64_CNP
 	  at runtime, and does not affect PEs that do not implement
 	  this feature.
 
+config ARM64_PBHA
+	bool "Enable support for Page Based Hardware Attributes (PBHA)"
+	default n
+	select ARCH_USES_HIGH_VMA_FLAGS
+	help
+	  Page Based Hardware Attributes (PBHA) allow the SoC hardware to
+	  change behaviour depending on which mapping was used to access
+	  a page of memory. e.g. access via one mapping may always result
+	  in the data being cached, whereas using another mapping of the same
+	  physical memory.
+
+	  The behaviour of each PBHA bit is not defined. Say no unless you
+	  are very sure you want this
+
+	  For PBHA_BIT0: It has the following features:
+	  a) kernel pte entry will be set PBHA 59 bit during pagetable startup
+	  b) Introduce VM_PBHA_BIT0 for feature use.
+	  c) User pte entry will be set PBHA 59 bit for vma with VM_PBHA_BIT0.
+	  d) Introduce /proc/<pid>/pbha_bit0 to update whole user task.
+
 endmenu
 
 menu "ARMv8.3 architectural features"
@@ -1746,6 +1779,9 @@ config AS_HAS_PAC
 
 config AS_HAS_CFI_NEGATE_RA_STATE
 	def_bool $(as-instr,.cfi_startproc\n.cfi_negate_ra_state\n.cfi_endproc\n)
+
+config AS_HAS_LDAPR
+	def_bool $(as-instr,.arch_extension rcpc)
 
 endmenu
 

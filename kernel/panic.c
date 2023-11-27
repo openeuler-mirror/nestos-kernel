@@ -31,10 +31,8 @@
 #include <linux/bug.h>
 #include <linux/ratelimit.h>
 #include <linux/debugfs.h>
+#include <linux/sysfs.h>
 #include <asm/sections.h>
-#include <linux/proc_fs.h>
-#include <linux/seq_file.h>
-#include <linux/fault_event.h>
 
 #define PANIC_TIMER_STEP 100
 #define PANIC_BLINK_SPD 18
@@ -44,7 +42,9 @@
  * Should we dump all CPUs backtraces in an oops event?
  * Defaults to 0, can be changed via sysctl.
  */
-unsigned int __read_mostly sysctl_oops_all_cpu_backtrace;
+static unsigned int __read_mostly sysctl_oops_all_cpu_backtrace;
+#else
+#define sysctl_oops_all_cpu_backtrace 0
 #endif /* CONFIG_SMP */
 
 int panic_on_oops = CONFIG_PANIC_ON_OOPS_VALUE;
@@ -57,6 +57,7 @@ bool crash_kexec_post_notifiers;
 int panic_on_warn __read_mostly;
 unsigned long panic_on_taint;
 bool panic_on_taint_nousertaint = false;
+static unsigned int warn_limit __read_mostly;
 
 int panic_timeout = CONFIG_PANIC_TIMEOUT;
 EXPORT_SYMBOL_GPL(panic_timeout);
@@ -72,6 +73,56 @@ unsigned long panic_print;
 ATOMIC_NOTIFIER_HEAD(panic_notifier_list);
 
 EXPORT_SYMBOL(panic_notifier_list);
+
+#ifdef CONFIG_SYSCTL
+static struct ctl_table kern_panic_table[] = {
+#ifdef CONFIG_SMP
+	{
+		.procname       = "oops_all_cpu_backtrace",
+		.data           = &sysctl_oops_all_cpu_backtrace,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1         = SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE,
+	},
+#endif
+	{
+		.procname       = "warn_limit",
+		.data           = &warn_limit,
+		.maxlen         = sizeof(warn_limit),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec,
+	},
+	{ }
+};
+
+static __init int kernel_panic_sysctls_init(void)
+{
+	register_sysctl_init("kernel", kern_panic_table);
+	return 0;
+}
+late_initcall(kernel_panic_sysctls_init);
+#endif
+
+static atomic_t warn_count = ATOMIC_INIT(0);
+
+#ifdef CONFIG_SYSFS
+static ssize_t warn_count_show(struct kobject *kobj, struct kobj_attribute *attr,
+			       char *page)
+{
+	return sysfs_emit(page, "%d\n", atomic_read(&warn_count));
+}
+
+static struct kobj_attribute warn_count_attr = __ATTR_RO(warn_count);
+
+static __init int kernel_panic_sysfs_init(void)
+{
+	sysfs_add_file_to_group(kernel_kobj, &warn_count_attr.attr, NULL);
+	return 0;
+}
+late_initcall(kernel_panic_sysfs_init);
+#endif
 
 static long no_blink(int state)
 {
@@ -169,6 +220,16 @@ static void panic_print_sys_info(void)
 		ftrace_dump(DUMP_ALL);
 }
 
+void check_panic_on_warn(const char *origin)
+{
+	if (panic_on_warn)
+		panic("%s: panic_on_warn set ...\n", origin);
+
+	if (atomic_inc_return(&warn_count) >= READ_ONCE(warn_limit) && warn_limit)
+		panic("%s: system warned too often (kernel.warn_limit is %d)",
+		      origin, warn_limit);
+}
+
 /**
  *	panic - halt the system
  *	@fmt: The text string to print
@@ -185,6 +246,16 @@ void panic(const char *fmt, ...)
 	int state = 0;
 	int old_cpu, this_cpu;
 	bool _crash_kexec_post_notifiers = crash_kexec_post_notifiers;
+
+	if (panic_on_warn) {
+		/*
+		 * This thread may hit another WARN() in the panic path.
+		 * Resetting this prevents additional WARN() from panicking the
+		 * system on this thread.  Other threads are blocked by the
+		 * panic_mutex in panic().
+		 */
+		panic_on_warn = 0;
+	}
 
 	/*
 	 * Disable local interrupts. This will prevent panic_smp_self_stop
@@ -218,8 +289,6 @@ void panic(const char *fmt, ...)
 
 	console_verbose();
 	bust_spinlocks(1);
-	report_fault_event(smp_processor_id(), current, FATAL_FAULT,
-			FE_PANIC, NULL);
 	va_start(args, fmt);
 	len = vscnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
@@ -600,160 +669,6 @@ void oops_exit(void)
 	kmsg_dump(KMSG_DUMP_OOPS);
 }
 
-unsigned int sysctl_fault_event_enable = 1;
-unsigned int sysctl_fault_event_print;
-unsigned int sysctl_panic_on_fatal_event;
-static atomic_t tot_fault_cnt;
-static atomic_t class_fault_cnt[FAULT_CLASSS_MAX];
-
-static char *fault_class_name[FAULT_CLASSS_MAX] = {
-       "Slight",
-       "Normal",
-       "Fatal"
-};
-
-static struct fault_event fevents[FE_MAX] = {
-       {FE_SOFTLOCKUP, "soft lockup", "general", {0} },
-       {FE_RCUSTALL, "rcu stall", "general", {0} },
-       {FE_HUNGTASK, "hung task", "general", {0} },
-       {FE_OOM_GLOBAL, "global oom", "mem", {0} },
-       {FE_OOM_CGROUP, "cgroup oom", "mem", {0} },
-       {FE_ALLOCFAIL, "alloc failed", "mem", {0} },
-       {FE_LIST_CORRUPT, "list corruption", "general", {0} },
-       {FE_MM_STATE, "bad mm_struct", "mem", {0} },
-       {FE_IO_ERR, "io error", "io", {0} },
-       {FE_EXT4_ERR, "ext4 fs error", "fs", {0} },
-       {FE_MCE, "mce", "hardware", {0} },
-       {FE_SIGNAL, "fatal signal", "general", {0} },
-       {FE_WARN, "warning", "general", {0} },
-       {FE_PANIC, "panic", "general", {0} },
-};
-
-bool fault_monitor_enable(void)
-{
-       return sysctl_fault_event_enable;
-}
-
-static const char *get_task_cmdline(struct task_struct *tsk, char *buff,
-               int size)
-{
-       struct mm_struct *mm;
-       char *p = buff, c;
-       int i, len, count = 0;
-
-       if (!tsk)
-               return "nil";
-
-       if (tsk->tgid != current->tgid || !tsk->mm
-           || (tsk->flags & PF_KTHREAD))
-               goto use_comm;
-
-       mm = tsk->mm;
-       len = mm->arg_end - mm->arg_start;
-       len = min(len, size);
-       if (len <= 0)
-               goto use_comm;
-
-       if (__copy_from_user_inatomic(p, (void *)mm->arg_start, len))
-               goto use_comm;
-
-       if (__copy_from_user_inatomic(&c, (void *)(mm->arg_end - 1), 1))
-               goto use_comm;
-
-       count += len;
-       if (c == '\0' || len == size)
-               goto out;
-
-       p = buff + len;
-       len = mm->env_end - mm->env_start;
-       len = min(len, size - count);
-       if (len <= 0)
-               goto out;
-
-       if (!__copy_from_user_inatomic(p, (void *)mm->env_start, len))
-               count += len;
-
-out:
-       for (i = 0; i < count-1; i++) {
-               if (buff[i] == '\0')
-                       buff[i] = ' ';
-       }
-       buff[count - 1] = '\0';
-
-       return buff;
-
-use_comm:
-       return tsk->comm;
-}
-
-void report_fault_event(int cpu, struct task_struct *tsk,
-               enum FAULT_CLASS class, enum FAULT_EVENT event,
-               const char *msg)
-{
-       unsigned int evt_cnt;
-       char tsk_cmdline[256];
-
-       if (!sysctl_fault_event_enable)
-               return;
-
-       if (class >= FAULT_CLASSS_MAX || event >= FE_MAX)
-               return;
-
-       evt_cnt = atomic_inc_return(&fevents[event].count);
-       atomic_inc(&class_fault_cnt[class]);
-       atomic_inc(&tot_fault_cnt);
-
-       if (!sysctl_fault_event_print)
-               goto may_panic;
-
-       printk_ratelimited(KERN_EMERG "%s fault event[%s:%s]: %s. "
-               "At cpu %d task %d(%s). Total: %d\n",
-               fault_class_name[class], fevents[event].module,
-               fevents[event].name, msg ? msg : "", cpu,
-               tsk ? tsk->pid : -1,
-               get_task_cmdline(tsk, tsk_cmdline, 256), evt_cnt);
-
-may_panic:
-       if (sysctl_panic_on_fatal_event && class == FATAL_FAULT &&
-           event != FE_PANIC) {
-               sysctl_fault_event_enable = false;
-               panic("kernel fault event");
-       }
-}
-EXPORT_SYMBOL(report_fault_event);
-
-static int fault_events_show(struct seq_file *m, void *v)
-{
-       unsigned int evt_cnt, class_cnt, total;
-       int i;
-
-       total = atomic_read(&tot_fault_cnt);
-       seq_printf(m, "\nTotal fault events: %d\n\n", total);
-
-       for (i = 0; i < FAULT_CLASSS_MAX; i++) {
-               class_cnt = atomic_read(&class_fault_cnt[i]);
-               seq_printf(m, "%s: %d\n", fault_class_name[i],
-               class_cnt);
-       }
-
-       seq_puts(m, "\n");
-       for (i = 0; i < FE_MAX; i++) {
-               evt_cnt = atomic_read(&fevents[i].count);
-               seq_printf(m, "%s: %d\n", fevents[i].name,
-                       evt_cnt);
-       }
-
-       return 0;
-}
-
-static int fault_events_init(void)
-{
-       proc_create_single("fault_events", 0, NULL, fault_events_show);
-
-       return 0;
-}
-module_init(fault_events_init);
-
 struct warn_args {
 	const char *fmt;
 	va_list args;
@@ -772,14 +687,6 @@ void __warn(const char *file, int line, void *caller, unsigned taint,
 		pr_warn("WARNING: CPU: %d PID: %d at %pS\n",
 			raw_smp_processor_id(), current->pid, caller);
 
-	if (strstr(file, "list_debug.c"))
-		report_fault_event(smp_processor_id(), current,
-			FATAL_FAULT, FE_LIST_CORRUPT, NULL);
-	else
-		report_fault_event(smp_processor_id(), current,
-			SLIGHT_FAULT, FE_WARN, "kernel warning");
-
-
 	if (args)
 		vprintk(args->fmt, args->args);
 
@@ -788,16 +695,7 @@ void __warn(const char *file, int line, void *caller, unsigned taint,
 	if (regs)
 		show_regs(regs);
 
-	if (panic_on_warn) {
-		/*
-		 * This thread may hit another WARN() in the panic path.
-		 * Resetting this prevents additional WARN() from panicking the
-		 * system on this thread.  Other threads are blocked by the
-		 * panic_mutex in panic().
-		 */
-		panic_on_warn = 0;
-		panic("panic_on_warn set ...\n");
-	}
+	check_panic_on_warn("kernel");
 
 	if (!regs)
 		dump_stack();
@@ -928,3 +826,8 @@ static int __init panic_on_taint_setup(char *s)
 	return 0;
 }
 early_param("panic_on_taint", panic_on_taint_setup);
+
+int __weak in_dbg(void)
+{
+	return 0;
+}

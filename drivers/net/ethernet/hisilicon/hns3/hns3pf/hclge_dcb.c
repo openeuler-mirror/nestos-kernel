@@ -52,7 +52,10 @@ static void hclge_tm_info_to_ieee_ets(struct hclge_dev *hdev,
 
 	for (i = 0; i < HNAE3_MAX_TC; i++) {
 		ets->prio_tc[i] = hdev->tm_info.prio_tc[i];
-		ets->tc_tx_bw[i] = hdev->tm_info.pg_info[0].tc_dwrr[i];
+		if (i < hdev->tm_info.num_tc)
+			ets->tc_tx_bw[i] = hdev->tm_info.pg_info[0].tc_dwrr[i];
+		else
+			ets->tc_tx_bw[i] = 0;
 
 		if (hdev->tm_info.tc_info[i].tc_sch_mode ==
 		    HCLGE_SCH_MODE_SP)
@@ -123,7 +126,8 @@ static u8 hclge_ets_tc_changed(struct hclge_dev *hdev, struct ieee_ets *ets,
 }
 
 static int hclge_ets_sch_mode_validate(struct hclge_dev *hdev,
-				       struct ieee_ets *ets, bool *changed)
+				       struct ieee_ets *ets, bool *changed,
+				       u8 tc_num)
 {
 	bool has_ets_tc = false;
 	u32 total_ets_bw = 0;
@@ -137,6 +141,13 @@ static int hclge_ets_sch_mode_validate(struct hclge_dev *hdev,
 				*changed = true;
 			break;
 		case IEEE_8021QAZ_TSA_ETS:
+			if (i >= tc_num) {
+				dev_err(&hdev->pdev->dev,
+					"tc%u is disabled, cannot set ets bw\n",
+					i);
+				return -EINVAL;
+			}
+
 			/* The hardware will switch to sp mode if bandwidth is
 			 * 0, so limit ets bandwidth must be greater than 0.
 			 */
@@ -176,7 +187,7 @@ static int hclge_ets_validate(struct hclge_dev *hdev, struct ieee_ets *ets,
 	if (ret)
 		return ret;
 
-	ret = hclge_ets_sch_mode_validate(hdev, ets, changed);
+	ret = hclge_ets_sch_mode_validate(hdev, ets, changed, tc_num);
 	if (ret)
 		return ret;
 
@@ -248,7 +259,7 @@ static int hclge_ieee_setets(struct hnae3_handle *h, struct ieee_ets *ets)
 	int ret;
 
 	if (!(hdev->dcbx_cap & DCB_CAP_DCBX_VER_IEEE) ||
-	    hdev->flag & HCLGE_FLAG_MQPRIO_ENABLE)
+	    h->kinfo.tc_info.mqprio_active)
 		return -EINVAL;
 
 	ret = hclge_ets_validate(hdev, ets, &num_tc, &map_changed);
@@ -264,10 +275,7 @@ static int hclge_ieee_setets(struct hnae3_handle *h, struct ieee_ets *ets)
 	}
 
 	hclge_tm_schd_info_update(hdev, num_tc);
-	if (num_tc > 1)
-		hdev->flag |= HCLGE_FLAG_DCB_ENABLE;
-	else
-		hdev->flag &= ~HCLGE_FLAG_DCB_ENABLE;
+	h->kinfo.tc_info.dcb_ets_active = num_tc > 1;
 
 	ret = hclge_ieee_ets_to_tm_info(hdev, ets);
 	if (ret)
@@ -476,7 +484,7 @@ static u8 hclge_getdcbx(struct hnae3_handle *h)
 	struct hclge_vport *vport = hclge_get_vport(h);
 	struct hclge_dev *hdev = vport->back;
 
-	if (hdev->flag & HCLGE_FLAG_MQPRIO_ENABLE)
+	if (h->kinfo.tc_info.mqprio_active)
 		return 0;
 
 	return hdev->dcbx_cap;
@@ -499,6 +507,37 @@ static u8 hclge_setdcbx(struct hnae3_handle *h, u8 mode)
 	hdev->dcbx_cap = mode;
 
 	return 0;
+}
+
+static int hclge_mqprio_qopt_check_rate(struct hclge_dev *hdev, u64 min_rate,
+					u64 max_rate)
+{
+	u32 max_speed = hclge_tm_rate_2_port_rate(max_rate);
+
+	if (min_rate) {
+		dev_err(&hdev->pdev->dev, "unsupported min_rate, min_rate = %lluB/s\n",
+			min_rate);
+		return -EOPNOTSUPP;
+	}
+
+	if (!max_rate)
+		return 0;
+
+	if (hnae3_dev_roh_supported(hdev) ||
+	    hnae3_dev_ubl_supported(hdev->ae_dev)) {
+		if (max_rate < TM_RATE_PORT_RATE_SCALE ||
+		    max_speed > hdev->hw.mac.max_speed) {
+			dev_err(&hdev->pdev->dev,
+				"invalid max_rate[%lluB/s]: the range is [1Mbps, %uMbps]\n",
+				max_rate, hdev->hw.mac.max_speed);
+			return -EINVAL;
+		}
+		return 0;
+	}
+
+	dev_err(&hdev->pdev->dev, "unsupported max_rate, max_rate = %lluB/s\n",
+		max_rate);
+	return -EOPNOTSUPP;
 }
 
 static int hclge_mqprio_qopt_check(struct hclge_dev *hdev,
@@ -538,11 +577,11 @@ static int hclge_mqprio_qopt_check(struct hclge_dev *hdev,
 			return -EINVAL;
 		}
 
-		if (mqprio_qopt->min_rate[i] || mqprio_qopt->max_rate[i]) {
-			dev_err(&hdev->pdev->dev,
-				"qopt tx_rate is not supported\n");
-			return -EOPNOTSUPP;
-		}
+		ret = hclge_mqprio_qopt_check_rate(hdev,
+						   mqprio_qopt->min_rate[i],
+						   mqprio_qopt->max_rate[i]);
+		if (ret)
+			return ret;
 
 		queue_sum = mqprio_qopt->qopt.offset[i];
 		queue_sum += mqprio_qopt->qopt.count[i];
@@ -568,18 +607,28 @@ static void hclge_sync_mqprio_qopt(struct hnae3_tc_info *tc_info,
 	       sizeof_field(struct hnae3_tc_info, tqp_count));
 	memcpy(tc_info->tqp_offset, mqprio_qopt->qopt.offset,
 	       sizeof_field(struct hnae3_tc_info, tqp_offset));
+	memcpy(tc_info->max_rate, mqprio_qopt->max_rate,
+	       sizeof_field(struct hnae3_tc_info, max_rate));
 }
 
 static int hclge_config_tc(struct hclge_dev *hdev,
 			   struct hnae3_tc_info *tc_info)
 {
+	int ret;
 	int i;
 
 	hclge_tm_schd_info_update(hdev, tc_info->num_tc);
 	for (i = 0; i < HNAE3_MAX_USER_PRIO; i++)
 		hdev->tm_info.prio_tc[i] = tc_info->prio_tc[i];
 
-	return hclge_map_update(hdev);
+	ret = hclge_map_update(hdev);
+	if (ret)
+		return ret;
+
+	if (hnae3_dev_roh_supported(hdev) || hnae3_dev_ubl_supported(hdev->ae_dev))
+		return hclge_tm_set_tc_rate_limit(hdev, tc_info);
+
+	return 0;
 }
 
 /* Set up TC for hardware offloaded mqprio in channel mode */
@@ -600,7 +649,8 @@ static int hclge_setup_tc(struct hnae3_handle *h,
 	if (!test_bit(HCLGE_STATE_NIC_REGISTERED, &hdev->state))
 		return -EBUSY;
 
-	if (hdev->flag & HCLGE_FLAG_DCB_ENABLE)
+	kinfo = &vport->nic.kinfo;
+	if (kinfo->tc_info.dcb_ets_active)
 		return -EINVAL;
 
 	ret = hclge_mqprio_qopt_check(hdev, mqprio_qopt);
@@ -614,7 +664,6 @@ static int hclge_setup_tc(struct hnae3_handle *h,
 	if (ret)
 		return ret;
 
-	kinfo = &vport->nic.kinfo;
 	memcpy(&old_tc_info, &kinfo->tc_info, sizeof(old_tc_info));
 	hclge_sync_mqprio_qopt(&kinfo->tc_info, mqprio_qopt);
 	kinfo->tc_info.mqprio_active = tc > 0;
@@ -622,13 +671,6 @@ static int hclge_setup_tc(struct hnae3_handle *h,
 	ret = hclge_config_tc(hdev, &kinfo->tc_info);
 	if (ret)
 		goto err_out;
-
-	hdev->flag &= ~HCLGE_FLAG_DCB_ENABLE;
-
-	if (tc > 1)
-		hdev->flag |= HCLGE_FLAG_MQPRIO_ENABLE;
-	else
-		hdev->flag &= ~HCLGE_FLAG_MQPRIO_ENABLE;
 
 	return hclge_notify_init_up(hdev);
 

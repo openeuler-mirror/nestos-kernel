@@ -71,6 +71,7 @@
 
 #define QM_AEQE_PHASE(aeqe)		((le32_to_cpu((aeqe)->dw0) >> 16) & 0x1)
 #define QM_AEQE_TYPE_SHIFT		17
+#define QM_AEQE_TYPE_MASK		0xf
 #define QM_AEQE_CQN_MASK		GENMASK(15, 0)
 #define QM_CQ_OVERFLOW			0
 #define QM_EQ_OVERFLOW			1
@@ -90,6 +91,8 @@
 #define QM_DB_PRIORITY_SHIFT_V1		48
 #define QM_PAGE_SIZE			0x0034
 #define QM_QP_DB_INTERVAL		0x10000
+#define QM_DB_TIMEOUT_CFG		0x100074
+#define QM_DB_TIMEOUT_SET		0x1fffff
 
 #define QM_MEM_START_INIT		0x100040
 #define QM_MEM_INIT_DONE		0x100044
@@ -1059,12 +1062,13 @@ static void qm_get_complete_eqe_num(struct hisi_qm *qm)
 	u16 cqn, eqe_num = 0;
 
 	if (QM_EQE_PHASE(eqe) != qm->status.eqc_phase) {
+		atomic64_inc(&qm->debug.dfx.err_irq_cnt);
 		qm_db(qm, 0, QM_DOORBELL_CMD_EQ, qm->status.eq_head, 0);
 		return;
 	}
 
 	cqn = le32_to_cpu(eqe->dw0) & QM_EQE_CQN_MASK;
-	if (cqn >= qm->qp_num)
+	if (unlikely(cqn >= qm->qp_num))
 		return;
 	poll_data = &qm->poll_data[cqn];
 
@@ -1086,12 +1090,9 @@ static void qm_get_complete_eqe_num(struct hisi_qm *qm)
 			break;
 	}
 
+	poll_data->eqe_num = eqe_num;
+	queue_work(qm->wq, &poll_data->work);
 	qm_db(qm, 0, QM_DOORBELL_CMD_EQ, qm->status.eq_head, 0);
-
-	if (poll_data) {
-		poll_data->eqe_num = eqe_num;
-		queue_work(qm->wq, &poll_data->work);
-	}
 }
 
 static irqreturn_t qm_eq_irq(int irq, void *data)
@@ -1186,7 +1187,8 @@ static irqreturn_t qm_aeq_thread(int irq, void *data)
 	atomic64_inc(&qm->debug.dfx.aeq_irq_cnt);
 
 	while (QM_AEQE_PHASE(aeqe) == qm->status.aeqc_phase) {
-		type = le32_to_cpu(aeqe->dw0) >> QM_AEQE_TYPE_SHIFT;
+		type = (le32_to_cpu(aeqe->dw0) >> QM_AEQE_TYPE_SHIFT) &
+			QM_AEQE_TYPE_MASK;
 		qp_id = le32_to_cpu(aeqe->dw0) & QM_AEQE_CQN_MASK;
 
 		switch (type) {
@@ -2571,17 +2573,6 @@ static long hisi_qm_uacce_ioctl(struct uacce_queue *q, unsigned int cmd,
 	return -EINVAL;
 }
 
-static enum uacce_dev_state hisi_qm_get_state(struct uacce_device *uacce)
-{
-	struct hisi_qm *qm = uacce->priv;
-	enum qm_state curr;
-
-	curr = atomic_read(&qm->status.flags);
-	if (curr == QM_STOP)
-		return UACCE_DEV_ERR;
-
-	return UACCE_DEV_NORMAL;
-}
 static void qm_uacce_api_ver_init(struct hisi_qm *qm)
 {
 	struct uacce_device *uacce = qm->uacce;
@@ -2758,7 +2749,6 @@ static const struct uacce_ops uacce_qm_ops = {
 	.stop_queue = hisi_qm_uacce_stop_queue,
 	.mmap = hisi_qm_uacce_mmap,
 	.ioctl = hisi_qm_uacce_ioctl,
-	.get_dev_state = hisi_qm_get_state,
 	.is_q_updated = hisi_qm_is_q_updated,
 	.get_isolate_state = hisi_qm_get_isolate_state,
 	.isolate_err_threshold_write = hisi_qm_isolate_threshold_write,
@@ -3061,10 +3051,9 @@ static void hisi_qm_pci_uninit(struct hisi_qm *qm)
 	pci_disable_device(pdev);
 }
 
-static void hisi_qm_set_state(struct hisi_qm *qm, enum vf_state state)
+static void hisi_qm_set_state(struct hisi_qm *qm, u8 state)
 {
-	/* set vf driver state */
-	if (qm->ver > QM_HW_V2)
+	if (qm->ver > QM_HW_V2 && qm->fun_type == QM_HW_VF)
 		writel(state, qm->io_base + QM_VF_STATE);
 }
 
@@ -3117,7 +3106,7 @@ void hisi_qm_uninit(struct hisi_qm *qm)
 	}
 
 	hisi_qm_memory_uninit(qm);
-	hisi_qm_set_state(qm, VF_NOT_READY);
+	hisi_qm_set_state(qm, QM_NOT_READY);
 	up_write(&qm->qps_lock);
 
 	qm_remove_uacce(qm);
@@ -3133,6 +3122,7 @@ EXPORT_SYMBOL_GPL(hisi_qm_uninit);
  * @number: The number of queues in vft.
  *
  * We can allocate multiple queues to a qm by configuring virtual function
+ * table. We get related configures by this function. Normally, we call this
  * function in VF driver to get the queue information.
  *
  * qm hw v1 does not support this interface.
@@ -3302,8 +3292,7 @@ int hisi_qm_start(struct hisi_qm *qm)
 	if (!ret)
 		atomic_set(&qm->status.flags, QM_START);
 
-	hisi_qm_set_state(qm, VF_READY);
-
+	hisi_qm_set_state(qm, QM_READY);
 err_unlock:
 	up_write(&qm->qps_lock);
 	return ret;
@@ -3396,8 +3385,6 @@ int hisi_qm_stop(struct hisi_qm *qm, enum qm_stop_reason r)
 {
 	struct device *dev = &qm->pdev->dev;
 	int ret = 0;
-
-	hisi_qm_set_state(qm, VF_PREPARE);
 
 	down_write(&qm->qps_lock);
 
@@ -5439,8 +5426,6 @@ static int hisi_qm_pci_init(struct hisi_qm *qm)
 		goto err_get_pci_res;
 	pci_set_master(pdev);
 
-	hisi_qm_set_state(qm, VF_PREPARE);
-
 	num_vec = qm_get_irq_num(qm);
 	ret = pci_alloc_irq_vectors(pdev, num_vec, num_vec, PCI_IRQ_MSI);
 	if (ret < 0) {
@@ -5638,6 +5623,8 @@ int hisi_qm_init(struct hisi_qm *qm)
 		goto err_pci_init;
 
 	if (qm->fun_type == QM_HW_PF) {
+		/* Set the doorbell timeout to QM_DB_TIMEOUT_CFG ns. */
+		writel(QM_DB_TIMEOUT_SET, qm->io_base + QM_DB_TIMEOUT_CFG);
 		qm_disable_clock_gate(qm);
 		ret = qm_dev_mem_reset(qm);
 		if (ret) {
@@ -5805,6 +5792,8 @@ static int qm_rebuild_for_resume(struct hisi_qm *qm)
 
 	qm_cmd_init(qm);
 	hisi_qm_dev_err_init(qm);
+	/* Set the doorbell timeout to QM_DB_TIMEOUT_CFG ns. */
+	writel(QM_DB_TIMEOUT_SET, qm->io_base + QM_DB_TIMEOUT_CFG);
 	qm_disable_clock_gate(qm);
 	ret = qm_dev_mem_reset(qm);
 	if (ret)

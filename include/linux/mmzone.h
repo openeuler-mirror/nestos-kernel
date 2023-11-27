@@ -97,9 +97,6 @@ extern int page_group_by_mobility_disabled;
 struct free_area {
 	struct list_head	free_list[MIGRATE_TYPES];
 	unsigned long		nr_free;
-#ifdef CONFIG_PAGE_PREZERO
-	unsigned long		nr_zeroed;  /* Pre-zeroed pages */
-#endif
 };
 
 static inline struct page *get_page_from_free_area(struct free_area *area,
@@ -162,9 +159,6 @@ enum zone_stat_item {
 	NR_ZSPAGES,		/* allocated in zsmalloc */
 #endif
 	NR_FREE_CMA_PAGES,
-#ifdef CONFIG_PAGE_PREZERO
-	NR_ZEROED_PAGES,	/* Pre-zeroed pages */
-#endif
 	NR_VM_ZONE_STAT_ITEMS };
 
 enum node_stat_item {
@@ -324,24 +318,6 @@ enum zone_watermarks {
 	NR_WMARK
 };
 
-/*
- * One per migratetype for each PAGE_ALLOC_COSTLY_ORDER plus one additional
- * for pageblock size for THP if configured.
- */
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-#define NR_PCP_THP 1
-#else
-#define NR_PCP_THP 0
-#endif
-#define NR_PCP_LISTS (MIGRATE_PCPTYPES * (PAGE_ALLOC_COSTLY_ORDER + 1 + NR_PCP_THP))
-
-/*
- * Shift to encode migratetype and order in the same integer, with order
- * in the least significant bits.
- */
-#define NR_PCP_ORDER_WIDTH 8
-#define NR_PCP_ORDER_MASK ((1<<NR_PCP_ORDER_WIDTH) - 1)
-
 #define min_wmark_pages(z) (z->_watermark[WMARK_MIN] + z->watermark_boost)
 #define low_wmark_pages(z) (z->_watermark[WMARK_LOW] + z->watermark_boost)
 #define high_wmark_pages(z) (z->_watermark[WMARK_HIGH] + z->watermark_boost)
@@ -353,7 +329,7 @@ struct per_cpu_pages {
 	int batch;		/* chunk size for buddy add/remove */
 
 	/* Lists of pages, one per migrate type stored on the pcp-lists */
-	struct list_head lists[NR_PCP_LISTS];
+	struct list_head lists[MIGRATE_PCPTYPES];
 };
 
 struct per_cpu_pageset {
@@ -475,14 +451,6 @@ struct zone {
 	 * changes.
 	 */
 	long lowmem_reserve[MAX_NR_ZONES];
-
- 	/*
-	 * This atomic counter is set when there is pagecache limit
-	 * reclaim going on on this particular zone. Other potential
-	 * reclaiers should back off to prevent from heavy lru_lock
-	 * bouncing.
-	 */
-	atomic_t		pagecache_reclaim;
 
 #ifdef CONFIG_NEED_MULTIPLE_NODES
 	int node;
@@ -620,9 +588,6 @@ struct zone {
 
 	bool			contiguous;
 
-#ifdef CONFIG_PAGE_PREZERO
-	bool			alloc_zero;
-#endif
 	ZONE_PADDING(_pad3_)
 
 	KABI_RESERVE(1)

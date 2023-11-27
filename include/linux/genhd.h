@@ -204,6 +204,7 @@ struct gendisk {
 	int flags;
 	unsigned long state;
 #define GD_NEED_PART_SCAN		0
+#define GD_QUEUE_REF			1
 	struct rw_semaphore lookup_sem;
 	struct kobject *slave_dir;
 
@@ -307,14 +308,27 @@ extern bool disk_has_partitions(struct gendisk *disk);
 extern unsigned int part_in_flight(struct hd_struct *part);
 extern void device_add_disk(struct device *parent, struct gendisk *disk,
 			    const struct attribute_group **groups);
+extern int __must_check device_add_disk_safe(struct device *parent,
+			    struct gendisk *disk,
+			    const struct attribute_group **groups);
 static inline void add_disk(struct gendisk *disk)
 {
 	device_add_disk(NULL, disk, NULL);
 }
 extern void device_add_disk_no_queue_reg(struct device *parent, struct gendisk *disk);
+extern int __must_check device_add_disk_no_queue_reg_safe(struct device *parent,
+							  struct gendisk *disk);
 static inline void add_disk_no_queue_reg(struct gendisk *disk)
 {
 	device_add_disk_no_queue_reg(NULL, disk);
+}
+static inline int __must_check add_disk_no_queue_reg_safe(struct gendisk *disk)
+{
+	return device_add_disk_no_queue_reg_safe(NULL, disk);
+}
+static inline int __must_check add_disk_safe(struct gendisk *disk)
+{
+	return device_add_disk_safe(NULL, disk, NULL);
 }
 
 extern void del_gendisk(struct gendisk *gp);
@@ -387,6 +401,28 @@ extern void blk_delete_region(dev_t devt, unsigned long range,
 })
 
 #define alloc_disk(minors) alloc_disk_node(minors, NUMA_NO_NODE)
+
+/**
+ * blk_alloc_disk - allocate a gendisk structure
+ * @node_id: numa node to allocate on
+ *
+ * Allocate and pre-initialize a gendisk structure for use with BIO based
+ * drivers.
+ *
+ * Context: can sleep
+ */
+#define blk_alloc_disk(node_id)						\
+({									\
+	struct gendisk *__disk = __blk_alloc_disk(node_id);		\
+	static struct lock_class_key __key;				\
+									\
+	if (__disk)							\
+		lockdep_init_map(&__disk->lockdep_map,			\
+			"(bio completion)", &__key, 0);			\
+	__disk;								\
+})
+struct gendisk *__blk_alloc_disk(int node);
+void blk_cleanup_disk(struct gendisk *disk);
 
 int register_blkdev(unsigned int major, const char *name);
 void unregister_blkdev(unsigned int major, const char *name);

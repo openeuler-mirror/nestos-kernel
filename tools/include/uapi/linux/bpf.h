@@ -3872,12 +3872,6 @@ union bpf_attr {
  *		check src_cpu whether share cache with dst_cpu.
  *	Return
  *		true yes, false no.
- *
- * long bpf_is_local_ipaddr(u32 ipaddr)
- *     Description
- *             Check the ipaddr is local address or not.
- *     Return
- *             1 is local address, 0 is not.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -4050,7 +4044,6 @@ union bpf_attr {
 	FN(sched_entity_to_tg),		\
 	FN(cpumask_op),			\
 	FN(cpus_share_cache),		\
-	FN(is_local_ipaddr),            \
 	/* */
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
@@ -4714,6 +4707,7 @@ struct bpf_sock_ops {
 				 * the outgoing header has not
 				 * been written yet.
 				 */
+	__u32 local_skb;
 };
 
 /* Definitions for bpf_sock_ops_cb_flags */
@@ -4879,6 +4873,7 @@ enum {
 					 * by the kernel or the
 					 * earlier bpf-progs.
 					 */
+	BPF_SOCK_OPS_TCP_DEFER_CONNECT_CB,/* call ebpf to defer connect*/
 };
 
 /* List of TCP states. There is a build check in net/ipv4/tcp.c to detect

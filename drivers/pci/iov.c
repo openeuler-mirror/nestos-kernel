@@ -16,6 +16,8 @@
 
 #define VIRTFN_ID_LEN	16
 
+static DEFINE_MUTEX(pci_sriov_numvfs_lock);
+
 int pci_iov_virtfn_bus(struct pci_dev *dev, int vf_id)
 {
 	if (!dev->is_physfn)
@@ -31,6 +33,20 @@ int pci_iov_virtfn_devfn(struct pci_dev *dev, int vf_id)
 	return (dev->devfn + dev->sriov->offset +
 		dev->sriov->stride * vf_id) & 0xff;
 }
+
+int pci_iov_vf_id(struct pci_dev *dev)
+{
+	struct pci_dev *pf;
+
+	if (!dev->is_virtfn)
+		return -EINVAL;
+
+	pf = pci_physfn(dev);
+	return (((dev->bus->number << 8) + dev->devfn) -
+		((pf->bus->number << 8) + pf->devfn + pf->sriov->offset)) /
+	       pf->sriov->stride;
+}
+EXPORT_SYMBOL_GPL(pci_iov_vf_id);
 
 /*
  * Per SR-IOV spec sec 3.3.10 and 3.3.11, First VF Offset and VF Stride may
@@ -299,6 +315,7 @@ static ssize_t sriov_numvfs_store(struct device *dev,
 	if (num_vfs > pci_sriov_get_totalvfs(pdev))
 		return -ERANGE;
 
+	mutex_lock(&pci_sriov_numvfs_lock);
 	device_lock(&pdev->dev);
 
 	if (num_vfs == pdev->sriov->num_VFs)
@@ -335,6 +352,7 @@ static ssize_t sriov_numvfs_store(struct device *dev,
 
 exit:
 	device_unlock(&pdev->dev);
+	mutex_unlock(&pci_sriov_numvfs_lock);
 
 	if (ret < 0)
 		return ret;

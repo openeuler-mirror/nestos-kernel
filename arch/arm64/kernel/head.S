@@ -452,10 +452,14 @@ SYM_FUNC_START_LOCAL(__primary_switched)
 #ifdef CONFIG_KASAN
 	bl	kasan_early_init
 #endif
+	mov	x0, x21				// pass FDT address in x0
+	bl	early_fdt_map			// Try mapping the FDT early
+#ifdef CONFIG_ARM64_PBHA
+	bl	early_pbha_init			// Init PBHA early via FDT
+#endif
 #ifdef CONFIG_RANDOMIZE_BASE
 	tst	x23, ~(MIN_KIMG_ALIGN - 1)	// already running randomized?
 	b.ne	0f
-	mov	x0, x21				// pass FDT address in x0
 	bl	kaslr_early_init		// parse FDT for KASLR options
 	cbz	x0, 0f				// KASLR disabled? just proceed
 	orr	x23, x23, x0			// record KASLR offset
@@ -482,6 +486,51 @@ EXPORT_SYMBOL(kimage_vaddr)
  */
 	.section ".idmap.text","awx"
 
+#ifdef CONFIG_ARM64_BRBE
+/*
+ * Enable BRBE cycle count
+ *
+ * BRBE requires both BRBCR_EL1.CC and BRBCR_EL2.CC fields, be set
+ * for the cycle counts to be available in BRBINF<N>_EL1.CC during
+ * branch record processing after a PMU interrupt. This enables CC
+ * field on both these registers while still executing inside EL2.
+ *
+ * BRBE driver would still be able to toggle branch records cycle
+ * count support via BRBCR_EL1.CC field regardless of whether the
+ * kernel ends up executing in EL1 or EL2.
+ */
+.macro __init_el2_brbe
+	mrs	x1, id_aa64dfr0_el1
+	ubfx	x1, x1, #ID_AA64DFR0_EL1_BRBE_SHIFT, #4
+	cbz	x1, .Lskip_brbe_cc_\@
+
+	mrs_s	x0, SYS_BRBCR_EL2
+	orr	x0, x0, BRBCR_ELx_CC
+	msr_s	SYS_BRBCR_EL2, x0
+
+	/*
+	 * Accessing BRBCR_EL1 register here does not require
+	 * BRBCR_EL12 addressing mode as HCR_EL2.E2H is still
+	 * clear. Regardless, check for HCR_E2H and be on the
+	 * safer side.
+	 */
+	mrs	x1, hcr_el2
+	and	x1, x1, #HCR_E2H
+	cbz	x1, .Lset_brbe_el1_direct_\@
+
+	mrs_s	x0, SYS_BRBCR_EL12
+	orr	x0, x0, BRBCR_ELx_CC
+	msr_s	SYS_BRBCR_EL12, x0
+	b	.Lskip_brbe_cc_\@
+
+.Lset_brbe_el1_direct_\@:
+	mrs_s	x0, SYS_BRBCR_EL1
+	orr	x0, x0, BRBCR_ELx_CC
+	msr_s	SYS_BRBCR_EL1, x0
+.Lskip_brbe_cc_\@:
+.endm
+
+#endif
 /*
  * If we're fortunate enough to boot at EL2, ensure that the world is
  * sane before dropping to EL1.
@@ -597,6 +646,9 @@ set_hcr:
 7:
 	msr	mdcr_el2, x3			// Configure debug traps
 
+#ifdef CONFIG_ARM64_BRBE
+	__init_el2_brbe
+#endif
 	/* LORegions */
 	mrs	x1, id_aa64mmfr1_el1
 	ubfx	x0, x1, #ID_AA64MMFR1_LOR_SHIFT, 4
@@ -747,7 +799,7 @@ SYM_FUNC_START_LOCAL(__secondary_switched)
 	ldr	x2, [x0, #CPU_BOOT_TASK]
 	cbz	x2, __secondary_too_slow
 	msr	sp_el0, x2
-	scs_load x2, x3
+	scs_load_current
 	mov	x29, #0
 	mov	x30, #0
 

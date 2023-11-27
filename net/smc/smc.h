@@ -28,6 +28,7 @@
 #define SMC_MAX_ISM_DEVS	8	/* max # of proposed non-native ISM
 					 * devices
 					 */
+#define SMC_AUTOCORKING_DEFAULT_SIZE	0x10000	/* 64K by default */
 
 #define SMC_MAX_HOSTNAME_LEN	32
 #define SMC_MAX_EID_LEN		32
@@ -175,6 +176,7 @@ struct smc_connection {
 						 * - dec on polled tx cqe
 						 */
 	wait_queue_head_t	cdc_pend_tx_wq; /* wakeup on no cdc_pend_tx_wr*/
+	atomic_t		tx_pushing;     /* nr_threads trying tx push */
 	struct delayed_work	tx_work;	/* retry of smc_cdc_msg_send */
 	u32			tx_off;		/* base offset in peer rmb */
 
@@ -194,6 +196,10 @@ struct smc_connection {
 						 * data still pending
 						 */
 	char			urg_rx_byte;	/* urgent byte */
+	bool			tx_in_release_sock;
+						/* flush pending tx data in
+						 * sock release_cb()
+						 */
 	atomic_t		bytes_to_rcv;	/* arrived data,
 						 * not yet received
 						 */
@@ -214,6 +220,13 @@ struct smc_connection {
 	u8			out_of_sync : 1; /* out of sync with peer */
 };
 
+#define SMC_MAX_TCP_LISTEN_WORKS 2
+
+struct smc_tcp_listen_work {
+	struct smc_sock *smc;
+	struct work_struct	work;
+};
+
 struct smc_sock {				/* smc sock container */
 	struct sock		sk;
 	struct socket		*clcsock;	/* internal tcp socket */
@@ -222,7 +235,9 @@ struct smc_sock {				/* smc sock container */
 	struct smc_connection	conn;		/* smc connection */
 	struct smc_sock		*listen_smc;	/* listen parent */
 	struct work_struct	connect_work;	/* handle non-blocking connect*/
-	struct work_struct	tcp_listen_work;/* handle tcp socket accepts */
+	struct smc_tcp_listen_work	tcp_listen_works[SMC_MAX_TCP_LISTEN_WORKS];
+						/* handle tcp socket accepts */
+	atomic_t		tcp_listen_work_seq;/* used to select tcp_listen_works */
 	struct work_struct	smc_listen_work;/* prepare new accept socket */
 	struct list_head	accept_q;	/* sockets to be accepted */
 	spinlock_t		accept_q_lock;	/* protects accept_q */

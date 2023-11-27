@@ -97,6 +97,8 @@
 #define HCLGE_UMV_TBL_SIZE		3072
 #define HCLGE_DEFAULT_UMV_SPACE_PER_PF \
 	(HCLGE_UMV_TBL_SIZE / HCLGE_MAX_PF_NUM)
+#define HCLGE_DEFAULT_GUID_TBL_SIZE	64
+#define HCLGE_DEFAULT_IP_TBL_SIZE		1024
 
 #define HCLGE_TQP_RESET_TRY_TIMES	200
 
@@ -187,15 +189,22 @@ enum HLCGE_PORT_TYPE {
 #define HCLGE_SUPPORT_1G_BIT		BIT(0)
 #define HCLGE_SUPPORT_10G_BIT		BIT(1)
 #define HCLGE_SUPPORT_25G_BIT		BIT(2)
-#define HCLGE_SUPPORT_50G_BIT		BIT(3)
-#define HCLGE_SUPPORT_100G_BIT		BIT(4)
+#define HCLGE_SUPPORT_50G_R2_BIT	BIT(3)
+#define HCLGE_SUPPORT_100G_R4_BIT	BIT(4)
 /* to be compatible with exsit board */
 #define HCLGE_SUPPORT_40G_BIT		BIT(5)
 #define HCLGE_SUPPORT_100M_BIT		BIT(6)
 #define HCLGE_SUPPORT_10M_BIT		BIT(7)
 #define HCLGE_SUPPORT_200G_BIT		BIT(8)
+#define HCLGE_SUPPORT_50G_R1_BIT	BIT(9)
+#define HCLGE_SUPPORT_100G_R2_BIT	BIT(10)
+
 #define HCLGE_SUPPORT_GE \
 	(HCLGE_SUPPORT_1G_BIT | HCLGE_SUPPORT_100M_BIT | HCLGE_SUPPORT_10M_BIT)
+#define HCLGE_SUPPORT_50G_BITS \
+	(HCLGE_SUPPORT_50G_R2_BIT | HCLGE_SUPPORT_50G_R1_BIT)
+#define HCLGE_SUPPORT_100G_BITS \
+	(HCLGE_SUPPORT_100G_R4_BIT | HCLGE_SUPPORT_100G_R2_BIT)
 
 enum HCLGE_DEV_STATE {
 	HCLGE_STATE_REINITING,
@@ -205,6 +214,7 @@ enum HCLGE_DEV_STATE {
 	HCLGE_STATE_NIC_REGISTERED,
 	HCLGE_STATE_ROCE_REGISTERED,
 	HCLGE_STATE_ROH_REGISTERED,
+	HCLGE_STATE_UDMA_REGISTERED,
 	HCLGE_STATE_SERVICE_INITED,
 	HCLGE_STATE_RST_SERVICE_SCHED,
 	HCLGE_STATE_RST_HANDLING,
@@ -286,10 +296,15 @@ struct hclge_mac {
 	__ETHTOOL_DECLARE_LINK_MODE_MASK(advertising);
 };
 
+#ifndef UBL_ALEN
+#define UBL_ALEN	16
+#endif
+
 struct hclge_hw {
 	struct hclge_comm_hw hw;
 	struct hclge_mac mac;
 	int num_vec;
+	u8 *func_guid;
 };
 
 enum hclge_fc_mode {
@@ -361,6 +376,8 @@ struct hclge_cfg {
 	u16 speed_ability;
 	u16 umv_space;
 };
+
+#define TM_RATE_PORT_RATE_SCALE	125000
 
 struct hclge_tm_info {
 	u8 num_tc;
@@ -806,6 +823,18 @@ struct hclge_vf_vlan_cfg {
 
 #pragma pack()
 
+struct unic_ip_table_info {
+	u16 max_iptbl_size;
+	/* private ip table space, it's same for PF and its VFs */
+	u16 priv_iptbl_size;
+	/* ip table space shared by PF and its VFs */
+	u16 share_iptbl_size;
+	/* store ip addr to assemble */
+	struct sockaddr_in6 ipaddr_to_assemble;
+	/* save upper ip addr subcode, NOT SET: 255 */
+	u8 upper_ip_addr_state;
+};
+
 /* For each bit of TCAM entry, it uses a pair of 'x' and
  * 'y' to indicate which value to match, like below:
  * ----------------------------------
@@ -822,21 +851,18 @@ struct hclge_vf_vlan_cfg {
  * Then for input key(k) and mask(v), we can calculate the value by
  * the formulae:
  *	x = (~k) & v
- *	y = (k ^ ~v) & k
+ *	y = k & v
  */
-#define calc_x(x, k, v) (x = ~(k) & (v))
-#define calc_y(y, k, v) \
-	do { \
-		const typeof(k) _k_ = (k); \
-		const typeof(v) _v_ = (v); \
-		(y) = (_k_ ^ ~_v_) & (_k_); \
-	} while (0)
+#define calc_x(x, k, v) ((x) = ~(k) & (v))
+#define calc_y(y, k, v) ((y) = (k) & (v))
 
 #define HCLGE_MAC_STATS_FIELD_OFF(f) (offsetof(struct hclge_mac_stats, f))
 #define HCLGE_STATS_READ(p, offset) (*(u64 *)((u8 *)(p) + (offset)))
 
 #define HCLGE_MAC_TNL_LOG_SIZE	8
 #define HCLGE_VPORT_NUM 256
+
+#define HCLGE_UNIC_MC_GUID_NUM 64
 struct hclge_dev {
 	struct pci_dev *pdev;
 	struct hnae3_ae_dev *ae_dev;
@@ -892,6 +918,7 @@ struct hclge_dev {
 	u16 num_nic_msi;	/* Num of nic vectors for this PF */
 	u16 num_roce_msi;	/* Num of roce vectors for this PF */
 	u16 num_roh_msi;	/* Num of roh vectors for this PF */
+	u16 num_udma_msi;	/* Num of udma vectors for this PF */
 
 	unsigned long service_timer_period;
 	unsigned long service_timer_previous;
@@ -909,11 +936,10 @@ struct hclge_dev {
 	struct hnae3_client *nic_client;
 	struct hnae3_client *roce_client;
 	struct hnae3_client *roh_client;
+	struct hnae3_client *udma_client;
 
 #define HCLGE_FLAG_MAIN			BIT(0)
 #define HCLGE_FLAG_DCB_CAPABLE		BIT(1)
-#define HCLGE_FLAG_DCB_ENABLE		BIT(2)
-#define HCLGE_FLAG_MQPRIO_ENABLE	BIT(3)
 	u32 flag;
 
 	u32 pkt_buf_size; /* Total pf buf size for tx/rx */
@@ -953,6 +979,12 @@ struct hclge_dev {
 	u16 share_umv_size;
 	/* multicast mac address number used by PF and its VFs */
 	u16 used_mc_mac_num;
+
+	struct unic_ip_table_info iptbl_info;
+
+	/* multicast guid number used by PF and its VFs */
+	u16 used_mc_guid_num;
+	DECLARE_BITMAP(mc_guid_tbl_bmap, HCLGE_UNIC_MC_GUID_NUM);
 
 	DECLARE_KFIFO(mac_tnl_log, struct hclge_mac_tnl_stats,
 		      HCLGE_MAC_TNL_LOG_SIZE);
@@ -995,6 +1027,8 @@ enum HCLGE_VPORT_STATE {
 	HCLGE_VPORT_STATE_PROMISC_CHANGE,
 	HCLGE_VPORT_STATE_VLAN_FLTR_CHANGE,
 	HCLGE_VPORT_STATE_INITED,
+	HCLGE_VPORT_STATE_GUID_TBL_CHANGE,
+	HCLGE_VPORT_STATE_IP_TBL_CHANGE,
 	HCLGE_VPORT_STATE_MAX
 };
 
@@ -1045,11 +1079,14 @@ struct hclge_vport {
 
 	u16 used_umv_num;
 
+	u16 used_iptbl_num;
+
 	u16 vport_id;
 	struct hclge_dev *back;  /* Back reference to associated dev */
 	struct hnae3_handle nic;
 	struct hnae3_handle roce;
 	struct hnae3_handle roh;
+	struct hnae3_handle udma;
 
 	unsigned long state;
 	unsigned long need_notify;
@@ -1065,6 +1102,12 @@ struct hclge_vport {
 	struct list_head mc_mac_list;   /* Store VF multicast table */
 
 	struct list_head vlan_list;     /* Store VF vlan table */
+
+	spinlock_t mguid_list_lock;     /* protect mc guid need to add/detele */
+	struct list_head mc_guid_list;  /* Store VF mc guid table */
+
+	spinlock_t ip_list_lock; /* protect ip address need to add/detele */
+	struct list_head ip_list;	/* Store VF ip table */
 };
 
 struct hclge_speed_bit_map {
@@ -1075,6 +1118,11 @@ struct hclge_speed_bit_map {
 struct hclge_mac_speed_map {
 	u32 speed_drv; /* speed defined in driver */
 	u32 speed_fw; /* speed defined in firmware */
+};
+
+struct hclge_link_mode_bmap {
+	u16 support_bit;
+	enum ethtool_link_mode_bit_indices link_mode;
 };
 
 int hclge_set_vport_promisc_mode(struct hclge_vport *vport, bool en_uc_pmc,
@@ -1146,8 +1194,6 @@ int hclge_push_vf_port_base_vlan_info(struct hclge_vport *vport, u8 vfid,
 				      u16 state,
 				      struct hclge_vlan_info *vlan_info);
 void hclge_task_schedule(struct hclge_dev *hdev, unsigned long delay_time);
-int hclge_query_bd_num_cmd_send(struct hclge_dev *hdev,
-				struct hclge_desc *desc);
 void hclge_report_hw_error(struct hclge_dev *hdev,
 			   enum hnae3_hw_error_type type);
 void hclge_inform_vf_promisc_info(struct hclge_vport *vport);
@@ -1170,4 +1216,5 @@ void hclge_reset_event(struct pci_dev *pdev, struct hnae3_handle *handle);
 void hclge_get_media_type(struct hnae3_handle *handle, u8 *media_type,
 			  u8 *module_type);
 int hclge_cfg_mac_mode(struct hclge_dev *hdev, bool enable);
+int hclge_query_scc_version(struct hclge_dev *hdev, u32 *scc_version);
 #endif
