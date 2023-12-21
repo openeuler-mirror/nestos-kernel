@@ -681,6 +681,9 @@ static u64 *hns3_ethtool_pp_stats(struct hnae3_handle *handle, u64 *data)
 	struct page_pool *page_pool;
 	int i;
 
+	if (!hns3_is_page_pool_enabled())
+		return data;
+
 	for (i = 0; i < ring_num; i++) {
 		page_pool = priv->ring[i + ring_num].page_pool;
 		if (page_pool)
@@ -1834,6 +1837,14 @@ static int hns3_get_module_info(struct net_device *netdev,
 	case SFF8024_ID_QSFP28_8636:
 		modinfo->type = ETH_MODULE_SFF_8636;
 		modinfo->eeprom_len = ETH_MODULE_SFF_8636_MAX_LEN;
+		break;
+	case SFF8024_ID_QSFP_DD:
+	case SFF8024_ID_QSFP_PLUS_CMIS:
+		modinfo->type = ETH_MODULE_SFF_8636;
+		if (sfp_type.flat_mem & HNS3_CMIS_FLAT_MEMORY)
+			modinfo->eeprom_len = ETH_MODULE_SFF_8636_LEN;
+		else
+			modinfo->eeprom_len = ETH_MODULE_SFF_8472_LEN;
 		break;
 	default:
 		netdev_err(netdev, "Optical module unknown: %#x\n",

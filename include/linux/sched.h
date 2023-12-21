@@ -1449,8 +1449,21 @@ struct task_struct {
 	KABI_RESERVE(10)
 	KABI_RESERVE(11)
 #endif
+
+#if !defined(__GENKSYMS__)
+#if defined(CONFIG_QOS_SCHED_SMART_GRID)
+	struct sched_grid_qos *grid_qos;
+#else
 	KABI_RESERVE(12)
+#endif
+#else
+	KABI_RESERVE(12)
+#endif
+#ifdef CONFIG_PSI_FINE_GRAINED
+	KABI_USE(13, int memstall_type)
+#else
 	KABI_RESERVE(13)
+#endif
 	KABI_RESERVE(14)
 	KABI_RESERVE(15)
 	KABI_RESERVE(16)
@@ -1648,7 +1661,7 @@ extern struct pid *cad_pid;
 #define PF_KTHREAD		0x00200000	/* I am a kernel thread */
 #define PF_RANDOMIZE		0x00400000	/* Randomize virtual address space */
 #define PF_SWAPWRITE		0x00800000	/* Allowed to write to swap */
-#define PF_COREDUMP_MCS		0x01000000      /* Task coredump support machine check safe */
+#define PF_MCS			0x01000000	/* Mc is support for specific function(eg. coredump) for this task */
 #define PF_NO_SETAFFINITY	0x04000000	/* Userland is not allowed to meddle with cpus_mask */
 #define PF_MCE_EARLY		0x08000000      /* Early kill for mce process policy */
 #define PF_MEMALLOC_NOCMA	0x10000000	/* All allocation request will have _GFP_MOVABLE cleared */
@@ -1995,10 +2008,22 @@ static inline int _cond_resched(void) { return 0; }
 })
 
 extern int __cond_resched_lock(spinlock_t *lock);
+extern int __cond_resched_rwlock_read(rwlock_t *lock);
+extern int __cond_resched_rwlock_write(rwlock_t *lock);
 
 #define cond_resched_lock(lock) ({				\
 	___might_sleep(__FILE__, __LINE__, PREEMPT_LOCK_OFFSET);\
 	__cond_resched_lock(lock);				\
+})
+
+#define cond_resched_rwlock_read(lock) ({			\
+	__might_sleep(__FILE__, __LINE__, PREEMPT_LOCK_OFFSET);	\
+	__cond_resched_rwlock_read(lock);			\
+})
+
+#define cond_resched_rwlock_write(lock) ({			\
+	__might_sleep(__FILE__, __LINE__, PREEMPT_LOCK_OFFSET);	\
+	__cond_resched_rwlock_write(lock);			\
 })
 
 static inline void cond_resched_rcu(void)
@@ -2019,6 +2044,23 @@ static inline int spin_needbreak(spinlock_t *lock)
 {
 #ifdef CONFIG_PREEMPTION
 	return spin_is_contended(lock);
+#else
+	return 0;
+#endif
+}
+
+/*
+ * Check if a rwlock is contended.
+ * Returns non-zero if there is another task waiting on the rwlock.
+ * Returns zero if the lock is not contended or the system / underlying
+ * rwlock implementation does not support contention detection.
+ * Technically does not depend on CONFIG_PREEMPTION, but a general need
+ * for low latency.
+ */
+static inline int rwlock_needbreak(rwlock_t *lock)
+{
+#ifdef CONFIG_PREEMPTION
+	return rwlock_is_contended(lock);
 #else
 	return 0;
 #endif
@@ -2253,6 +2295,19 @@ int set_prefer_cpus_ptr(struct task_struct *p,
 int sched_prefer_cpus_fork(struct task_struct *p, struct cpumask *mask);
 void sched_prefer_cpus_free(struct task_struct *p);
 void dynamic_affinity_enable(void);
+#endif
+
+#ifdef CONFIG_QOS_SCHED_SMART_GRID
+extern struct static_key __smart_grid_used;
+static inline bool smart_grid_used(void)
+{
+	return static_key_false(&__smart_grid_used);
+}
+#else
+static inline bool smart_grid_used(void)
+{
+	return false;
+}
 #endif
 
 #ifdef CONFIG_BPF_SCHED

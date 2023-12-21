@@ -97,7 +97,9 @@
 #include <linux/scs.h>
 #include <linux/io_uring.h>
 #include <linux/sched/mm.h>
-
+#ifdef CONFIG_QOS_SCHED_SMART_GRID
+#include <linux/sched/grid_qos.h>
+#endif
 #include <linux/share_pool.h>
 #include <asm/pgalloc.h>
 #include <linux/uaccess.h>
@@ -470,6 +472,9 @@ void free_task(struct task_struct *tsk)
 		free_kthread_struct(tsk);
 #ifdef CONFIG_QOS_SCHED_DYNAMIC_AFFINITY
 	sched_prefer_cpus_free(tsk);
+#endif
+#ifdef CONFIG_QOS_SCHED_SMART_GRID
+	sched_grid_qos_free(tsk);
 #endif
 	free_task_struct(tsk);
 }
@@ -2063,7 +2068,7 @@ static __latent_entropy struct task_struct *copy_process(
 #ifdef CONFIG_QOS_SCHED_DYNAMIC_AFFINITY
 	retval = sched_prefer_cpus_fork(p, current->prefer_cpus);
 	if (retval)
-		goto bad_fork_free;
+		goto bad_fork_cleanup_count;
 #endif
 
 	lockdep_assert_irqs_enabled();
@@ -2082,6 +2087,12 @@ static __latent_entropy struct task_struct *copy_process(
 	retval = copy_creds(p, clone_flags);
 	if (retval < 0)
 		goto bad_fork_free;
+
+#ifdef CONFIG_QOS_SCHED_SMART_GRID
+	retval = sched_grid_qos_fork(p, current);
+	if (retval)
+		goto bad_fork_cleanup_count;
+#endif
 
 	/*
 	 * If multiple threads are within copy_process(), then this check
@@ -2529,11 +2540,6 @@ struct task_struct * __init fork_idle(int cpu)
 	return task;
 }
 
-struct mm_struct *copy_init_mm(void)
-{
-	return dup_mm(NULL, &init_mm);
-}
-
 /*
  * This is like kernel_clone(), but shaved down and tailored to just
  * creating io_uring workers. It returns a created task, or an error pointer.
@@ -2928,10 +2934,27 @@ static void sighand_ctor(void *data)
 	init_waitqueue_head(&sighand->signalfd_wqh);
 }
 
-void __init proc_caches_init(void)
+void __init mm_cache_init(void)
 {
 	unsigned int mm_size;
 
+	/*
+	 * The mm_cpumask is located at the end of mm_struct, and is
+	 * dynamically sized based on the maximum CPU number this system
+	 * can have, taking hotplug into account (nr_cpu_ids).
+	 */
+	mm_size = MM_STRUCT_SIZE;
+
+	mm_cachep = kmem_cache_create_usercopy("mm_struct",
+			mm_size, ARCH_MIN_MMSTRUCT_ALIGN,
+			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT,
+			OFFSET_OF_MM_SAVED_AUXV,
+			SIZE_OF_MM_SAVED_AUXV,
+			NULL);
+}
+
+void __init proc_caches_init(void)
+{
 	sighand_cachep = kmem_cache_create("sighand_cache",
 			sizeof(struct sighand_struct), 0,
 			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_TYPESAFE_BY_RCU|
@@ -2949,19 +2972,6 @@ void __init proc_caches_init(void)
 			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT,
 			NULL);
 
-	/*
-	 * The mm_cpumask is located at the end of mm_struct, and is
-	 * dynamically sized based on the maximum CPU number this system
-	 * can have, taking hotplug into account (nr_cpu_ids).
-	 */
-	mm_size = MM_STRUCT_SIZE;
-
-	mm_cachep = kmem_cache_create_usercopy("mm_struct",
-			mm_size, ARCH_MIN_MMSTRUCT_ALIGN,
-			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT,
-			OFFSET_OF_MM_SAVED_AUXV,
-			SIZE_OF_MM_SAVED_AUXV,
-			NULL);
 	vm_area_cachep = KMEM_CACHE(vm_area_struct, SLAB_PANIC|SLAB_ACCOUNT);
 	mmap_init();
 	nsproxy_cache_init();

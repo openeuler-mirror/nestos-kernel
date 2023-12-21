@@ -35,6 +35,8 @@
 #include "hclge_unic_guid.h"
 #include "hclge_unic_addr.h"
 
+#include "hclge_trace.h"
+
 #define HCLGE_NAME			"hclge"
 
 #define HCLGE_BUF_SIZE_UNIT	256U
@@ -408,6 +410,48 @@ int hclge_cmd_send(struct hclge_hw *hw, struct hclge_desc *desc, int num)
 	return hclge_comm_cmd_send(&hw->hw, desc, num);
 }
 
+static void hclge_trace_cmd_send(struct hclge_comm_hw *hw, struct hclge_desc *desc,
+				 int num, bool is_special)
+{
+	int i;
+
+	trace_hclge_pf_cmd_send(hw, desc, 0, num);
+
+	if (!is_special) {
+		for (i = 1; i < num; i++)
+			trace_hclge_pf_cmd_send(hw, &desc[i], i, num);
+	} else {
+		for (i = 1; i < num; i++)
+			trace_hclge_pf_special_cmd_send(hw, (u32 *)&desc[i],
+							i, num);
+	}
+}
+
+static void hclge_trace_cmd_get(struct hclge_comm_hw *hw, struct hclge_desc *desc,
+				int num, bool is_special)
+{
+	int i;
+
+	if (!HCLGE_COMM_SEND_SYNC(le16_to_cpu(desc->flag)))
+		return;
+
+	trace_hclge_pf_cmd_get(hw, desc, 0, num);
+
+	if (!is_special) {
+		for (i = 1; i < num; i++)
+			trace_hclge_pf_cmd_get(hw, &desc[i], i, num);
+	} else {
+		for (i = 1; i < num; i++)
+			trace_hclge_pf_special_cmd_get(hw, (u32 *)&desc[i],
+						       i, num);
+	}
+}
+
+static const struct hclge_comm_cmq_ops hclge_cmq_ops = {
+	.trace_cmd_send = hclge_trace_cmd_send,
+	.trace_cmd_get = hclge_trace_cmd_get,
+};
+
 static int hclge_mac_update_stats_defective(struct hclge_dev *hdev)
 {
 #define HCLGE_MAC_CMD_NUM 21
@@ -660,8 +704,12 @@ static int hclge_get_sset_count(struct hnae3_handle *handle, int stringset)
 			handle->flags |= HNAE3_SUPPORT_APP_LOOPBACK;
 		}
 
-		count += 1;
-		handle->flags |= HNAE3_SUPPORT_SERDES_SERIAL_LOOPBACK;
+		if (hdev->ae_dev->dev_specs.hilink_version !=
+		    HCLGE_HILINK_H60) {
+			count += 1;
+			handle->flags |= HNAE3_SUPPORT_SERDES_SERIAL_LOOPBACK;
+		}
+
 		count += 1;
 		handle->flags |= HNAE3_SUPPORT_SERDES_PARALLEL_LOOPBACK;
 		count += 1;
@@ -914,7 +962,7 @@ static const struct hclge_speed_bit_map speed_bit_map[] = {
 	{HCLGE_MAC_SPEED_40G, HCLGE_SUPPORT_40G_BIT},
 	{HCLGE_MAC_SPEED_50G, HCLGE_SUPPORT_50G_BITS},
 	{HCLGE_MAC_SPEED_100G, HCLGE_SUPPORT_100G_BITS},
-	{HCLGE_MAC_SPEED_200G, HCLGE_SUPPORT_200G_BIT},
+	{HCLGE_MAC_SPEED_200G, HCLGE_SUPPORT_200G_BITS},
 };
 
 static int hclge_get_speed_bit(u32 speed, u32 *speed_bit)
@@ -970,7 +1018,7 @@ static void hclge_update_fec_support(struct hclge_mac *mac)
 				 mac->supported);
 }
 
-static const struct hclge_link_mode_bmap hclge_sr_link_mode_bmap[8] = {
+static const struct hclge_link_mode_bmap hclge_sr_link_mode_bmap[] = {
 	{HCLGE_SUPPORT_10G_BIT, ETHTOOL_LINK_MODE_10000baseSR_Full_BIT},
 	{HCLGE_SUPPORT_25G_BIT, ETHTOOL_LINK_MODE_25000baseSR_Full_BIT},
 	{HCLGE_SUPPORT_40G_BIT, ETHTOOL_LINK_MODE_40000baseSR4_Full_BIT},
@@ -978,10 +1026,12 @@ static const struct hclge_link_mode_bmap hclge_sr_link_mode_bmap[8] = {
 	{HCLGE_SUPPORT_50G_R1_BIT, ETHTOOL_LINK_MODE_50000baseSR_Full_BIT},
 	{HCLGE_SUPPORT_100G_R4_BIT, ETHTOOL_LINK_MODE_100000baseSR4_Full_BIT},
 	{HCLGE_SUPPORT_100G_R2_BIT, ETHTOOL_LINK_MODE_100000baseSR2_Full_BIT},
-	{HCLGE_SUPPORT_200G_BIT, ETHTOOL_LINK_MODE_200000baseSR4_Full_BIT},
+	{HCLGE_SUPPORT_200G_R4_EXT_BIT,
+	 ETHTOOL_LINK_MODE_200000baseSR4_Full_BIT},
+	{HCLGE_SUPPORT_200G_R4_BIT, ETHTOOL_LINK_MODE_200000baseSR4_Full_BIT},
 };
 
-static const struct hclge_link_mode_bmap hclge_lr_link_mode_bmap[6] = {
+static const struct hclge_link_mode_bmap hclge_lr_link_mode_bmap[] = {
 	{HCLGE_SUPPORT_10G_BIT, ETHTOOL_LINK_MODE_10000baseLR_Full_BIT},
 	{HCLGE_SUPPORT_40G_BIT, ETHTOOL_LINK_MODE_40000baseLR4_Full_BIT},
 	{HCLGE_SUPPORT_50G_R1_BIT, ETHTOOL_LINK_MODE_50000baseLR_ER_FR_Full_BIT},
@@ -989,11 +1039,13 @@ static const struct hclge_link_mode_bmap hclge_lr_link_mode_bmap[6] = {
 	 ETHTOOL_LINK_MODE_100000baseLR4_ER4_Full_BIT},
 	{HCLGE_SUPPORT_100G_R2_BIT,
 	 ETHTOOL_LINK_MODE_100000baseLR2_ER2_FR2_Full_BIT},
-	{HCLGE_SUPPORT_200G_BIT,
+	{HCLGE_SUPPORT_200G_R4_EXT_BIT,
+	 ETHTOOL_LINK_MODE_200000baseLR4_ER4_FR4_Full_BIT},
+	{HCLGE_SUPPORT_200G_R4_BIT,
 	 ETHTOOL_LINK_MODE_200000baseLR4_ER4_FR4_Full_BIT},
 };
 
-static const struct hclge_link_mode_bmap hclge_cr_link_mode_bmap[8] = {
+static const struct hclge_link_mode_bmap hclge_cr_link_mode_bmap[] = {
 	{HCLGE_SUPPORT_10G_BIT, ETHTOOL_LINK_MODE_10000baseCR_Full_BIT},
 	{HCLGE_SUPPORT_25G_BIT, ETHTOOL_LINK_MODE_25000baseCR_Full_BIT},
 	{HCLGE_SUPPORT_40G_BIT, ETHTOOL_LINK_MODE_40000baseCR4_Full_BIT},
@@ -1001,10 +1053,12 @@ static const struct hclge_link_mode_bmap hclge_cr_link_mode_bmap[8] = {
 	{HCLGE_SUPPORT_50G_R1_BIT, ETHTOOL_LINK_MODE_50000baseCR_Full_BIT},
 	{HCLGE_SUPPORT_100G_R4_BIT, ETHTOOL_LINK_MODE_100000baseCR4_Full_BIT},
 	{HCLGE_SUPPORT_100G_R2_BIT, ETHTOOL_LINK_MODE_100000baseCR2_Full_BIT},
-	{HCLGE_SUPPORT_200G_BIT, ETHTOOL_LINK_MODE_200000baseCR4_Full_BIT},
+	{HCLGE_SUPPORT_200G_R4_EXT_BIT,
+	 ETHTOOL_LINK_MODE_200000baseCR4_Full_BIT},
+	{HCLGE_SUPPORT_200G_R4_BIT, ETHTOOL_LINK_MODE_200000baseCR4_Full_BIT},
 };
 
-static const struct hclge_link_mode_bmap hclge_kr_link_mode_bmap[9] = {
+static const struct hclge_link_mode_bmap hclge_kr_link_mode_bmap[] = {
 	{HCLGE_SUPPORT_1G_BIT, ETHTOOL_LINK_MODE_1000baseKX_Full_BIT},
 	{HCLGE_SUPPORT_10G_BIT, ETHTOOL_LINK_MODE_10000baseKR_Full_BIT},
 	{HCLGE_SUPPORT_25G_BIT, ETHTOOL_LINK_MODE_25000baseKR_Full_BIT},
@@ -1013,7 +1067,9 @@ static const struct hclge_link_mode_bmap hclge_kr_link_mode_bmap[9] = {
 	{HCLGE_SUPPORT_50G_R1_BIT, ETHTOOL_LINK_MODE_50000baseKR_Full_BIT},
 	{HCLGE_SUPPORT_100G_R4_BIT, ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT},
 	{HCLGE_SUPPORT_100G_R2_BIT, ETHTOOL_LINK_MODE_100000baseKR2_Full_BIT},
-	{HCLGE_SUPPORT_200G_BIT, ETHTOOL_LINK_MODE_200000baseKR4_Full_BIT},
+	{HCLGE_SUPPORT_200G_R4_EXT_BIT,
+	 ETHTOOL_LINK_MODE_200000baseKR4_Full_BIT},
+	{HCLGE_SUPPORT_200G_R4_BIT, ETHTOOL_LINK_MODE_200000baseKR4_Full_BIT},
 };
 
 static void hclge_convert_setting_sr(u16 speed_ability,
@@ -1184,7 +1240,7 @@ static void hclge_parse_link_mode(struct hclge_dev *hdev, u16 speed_ability)
 
 static u32 hclge_get_max_speed(u16 speed_ability)
 {
-	if (speed_ability & HCLGE_SUPPORT_200G_BIT)
+	if (speed_ability & HCLGE_SUPPORT_200G_BITS)
 		return HCLGE_MAC_SPEED_200G;
 
 	if (speed_ability & HCLGE_SUPPORT_100G_BITS)
@@ -1380,6 +1436,7 @@ static void hclge_parse_dev_specs(struct hclge_dev *hdev,
 	ae_dev->dev_specs.umv_size = le16_to_cpu(req1->umv_size);
 	ae_dev->dev_specs.mc_mac_size = le16_to_cpu(req1->mc_mac_size);
 	ae_dev->dev_specs.tnl_num = req1->tnl_num;
+	ae_dev->dev_specs.hilink_version = req1->hilink_version;
 #ifdef CONFIG_HNS3_UBL
 	if (hnae3_dev_ubl_supported(ae_dev)) {
 		ae_dev->dev_specs.guid_tbl_space =
@@ -11178,6 +11235,10 @@ static int hclge_set_mac_mtu(struct hclge_dev *hdev, int new_mps)
 	req = (struct hclge_config_max_frm_size_cmd *)desc.data;
 	req->max_frm_size = cpu_to_le16(new_mps);
 	req->min_frm_size = HCLGE_MAC_MIN_FRAME;
+#ifdef CONFIG_HNS3_UBL
+	if (hnae3_dev_ubl_supported(hdev->ae_dev))
+		req->min_frm_size = UB_MIN_MTU;
+#endif
 
 	return hclge_cmd_send(&hdev->hw, &desc, 1);
 }
@@ -12367,6 +12428,10 @@ static int hclge_init_ae_dev(struct hnae3_ae_dev *ae_dev)
 
 	/* HW supprt 2 layer vlan */
 	hdev->mps = ETH_FRAME_LEN + ETH_FCS_LEN + 2 * VLAN_HLEN;
+#ifdef CONFIG_HNS3_UBL
+	if (hnae3_dev_ubl_supported(ae_dev))
+		hdev->mps = UB_DATA_LEN;
+#endif
 
 	mutex_init(&hdev->vport_lock);
 	spin_lock_init(&hdev->fd_rule_lock);
@@ -12386,6 +12451,7 @@ static int hclge_init_ae_dev(struct hnae3_ae_dev *ae_dev)
 		goto err_devlink_uninit;
 
 	/* Firmware command initialize */
+	hclge_comm_cmd_init_ops(&hdev->hw.hw, &hclge_cmq_ops);
 	ret = hclge_comm_cmd_init(hdev->ae_dev, &hdev->hw.hw, &hdev->fw_version,
 				  true, hdev->reset_pending);
 	if (ret)

@@ -284,7 +284,8 @@ static void hns_roce_clear_bond(struct hns_roce_bond_group *bond_grp)
 out:
 	ret = hns_roce_cleanup_bond(bond_grp);
 	if (!ret)
-		ibdev_info(&hr_dev->ib_dev, "RoCE clear bond finished!\n");
+		ibdev_info(&bond_grp->main_hr_dev->ib_dev,
+			   "RoCE clear bond finished!\n");
 }
 
 static void hns_roce_slave_changestate(struct hns_roce_bond_group *bond_grp)
@@ -558,6 +559,12 @@ static struct hns_roce_die_info *alloc_die_info(int bus_num)
 	return die_info;
 }
 
+static void dealloc_die_info(struct hns_roce_die_info *die_info, u8 bus_num)
+{
+	xa_erase(&roce_bond_xa, bus_num);
+	kvfree(die_info);
+}
+
 static int alloc_bond_id(struct hns_roce_bond_group *bond_grp)
 {
 	u8 bus_num = bond_grp->bus_num;
@@ -599,10 +606,8 @@ static int remove_bond_id(int bus_num, u8 bond_id)
 
 	die_info->bond_id_mask &= ~BOND_ID(bond_id);
 	die_info->bgrps[bond_id] = NULL;
-	if (!die_info->bond_id_mask) {
-		kfree(die_info);
-		xa_erase(&roce_bond_xa, bus_num);
-	}
+	if (!die_info->bond_id_mask)
+		dealloc_die_info(die_info, bus_num);
 
 	return 0;
 }
@@ -620,7 +625,7 @@ int hns_roce_cleanup_bond(struct hns_roce_bond_group *bond_grp)
 	cancel_delayed_work(&bond_grp->bond_work);
 	ret = remove_bond_id(bond_grp->bus_num, bond_grp->bond_id);
 	if (ret)
-		BOND_ERR_LOG("failed to remove bond id %d, ret = %d.\n",
+		BOND_ERR_LOG("failed to remove bond id %u, ret = %d.\n",
 			     bond_grp->bond_id, ret);
 
 	completion_no_waiter = completion_done(&bond_grp->bond_work_done);
@@ -653,10 +658,17 @@ static bool hns_roce_bond_lowerstate_event(struct hns_roce_dev *hr_dev,
 	return true;
 }
 
-static inline bool hns_roce_bond_mode_is_supported(enum netdev_lag_tx_type tx_type)
+static bool is_bond_setting_supported(struct netdev_lag_upper_info *bond_info)
 {
-	if (tx_type != NETDEV_LAG_TX_TYPE_ACTIVEBACKUP &&
-	    tx_type != NETDEV_LAG_TX_TYPE_HASH)
+	if (!bond_info)
+		return false;
+
+	if (bond_info->tx_type != NETDEV_LAG_TX_TYPE_ACTIVEBACKUP &&
+	    bond_info->tx_type != NETDEV_LAG_TX_TYPE_HASH)
+		return false;
+
+	if (bond_info->tx_type == NETDEV_LAG_TX_TYPE_HASH &&
+	    bond_info->hash_type > NETDEV_LAG_HASH_L23)
 		return false;
 
 	return true;
@@ -778,18 +790,81 @@ static struct hns_roce_bond_group *hns_roce_alloc_bond_grp(struct hns_roce_dev *
 	return bond_grp;
 }
 
+static bool is_dev_bond_supported(struct hns_roce_bond_group *bond_grp,
+				  struct net_device *net_dev, int bus_num)
+{
+	struct hns_roce_dev *hr_dev = hns_roce_get_hrdev_by_netdev(net_dev);
+
+	if (!hr_dev) {
+		if (bond_grp &&
+		    get_netdev_bond_slave_id(net_dev, bond_grp) >= 0)
+			return true;
+		else
+			return false;
+	}
+
+	if (!(hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_BOND))
+		return false;
+
+	if (hr_dev->is_vf || pci_num_vf(hr_dev->pci_dev) > 0)
+		return false;
+
+	if (bus_num != get_hr_bus_num(hr_dev))
+		return false;
+
+	return true;
+}
+
+static bool check_unlinking_bond_support(struct hns_roce_bond_group *bond_grp)
+{
+	struct net_device *net_dev;
+	u8 slave_num = 0;
+
+	rcu_read_lock();
+	for_each_netdev_in_bond_rcu(bond_grp->upper_dev, net_dev) {
+		if (get_netdev_bond_slave_id(net_dev, bond_grp) >= 0)
+			slave_num++;
+	}
+	rcu_read_unlock();
+
+	return (slave_num > 1);
+}
+
+static bool check_linking_bond_support(struct netdev_lag_upper_info *bond_info,
+				       struct hns_roce_bond_group *bond_grp,
+				       struct net_device *upper_dev,
+				       int bus_num)
+{
+	struct net_device *net_dev;
+	u8 slave_num = 0;
+
+	if (!is_bond_setting_supported(bond_info))
+		return false;
+
+	rcu_read_lock();
+	for_each_netdev_in_bond_rcu(upper_dev, net_dev) {
+		if (is_dev_bond_supported(bond_grp, net_dev, bus_num)) {
+			slave_num++;
+		} else {
+			rcu_read_unlock();
+			return false;
+		}
+	}
+	rcu_read_unlock();
+
+	return (slave_num > 1 && slave_num <= ROCE_BOND_FUNC_MAX);
+}
+
 static enum bond_support_type
 	check_bond_support(struct hns_roce_dev *hr_dev,
 			   struct net_device **upper_dev,
 			   struct netdev_notifier_changeupper_info *info)
 {
 	struct net_device *net_dev = get_hr_netdev(hr_dev, 0);
-	struct netdev_lag_upper_info *bond_upper_info = NULL;
 	struct hns_roce_bond_group *bond_grp;
 	int bus_num = get_hr_bus_num(hr_dev);
 	bool bond_grp_exist = false;
-	bool support = true;
-	u8 slave_num = 0;
+	bool support;
 
 	*upper_dev = info->upper_dev;
 	bond_grp = hns_roce_get_bond_grp(net_dev, bus_num);
@@ -800,37 +875,10 @@ static enum bond_support_type
 		return BOND_NOT_SUPPORT;
 
 	if (info->linking)
-		bond_upper_info = info->upper_info;
-
-	if (bond_upper_info &&
-	    !hns_roce_bond_mode_is_supported(bond_upper_info->tx_type))
-		return BOND_NOT_SUPPORT;
-
-	bus_num = -1;
-	rcu_read_lock();
-	for_each_netdev_in_bond_rcu(*upper_dev, net_dev) {
-		if (!info->linking && bond_grp_exist) {
-			if (get_netdev_bond_slave_id(net_dev, bond_grp) >= 0)
-				slave_num++;
-		} else {
-			hr_dev = hns_roce_get_hrdev_by_netdev(net_dev);
-			if (hr_dev) {
-				slave_num++;
-				if (bus_num == -1)
-					bus_num = get_hr_bus_num(hr_dev);
-				if (hr_dev->is_vf ||
-				    pci_num_vf(hr_dev->pci_dev) > 0 ||
-				    bus_num != get_hr_bus_num(hr_dev)) {
-					support = false;
-					break;
-				}
-			}
-		}
-	}
-	rcu_read_unlock();
-
-	if (slave_num <= 1 || slave_num > ROCE_BOND_FUNC_MAX)
-		support = false;
+		support = check_linking_bond_support(info->upper_info, bond_grp,
+						     *upper_dev, bus_num);
+	else
+		support = check_unlinking_bond_support(bond_grp);
 	if (support)
 		return BOND_SUPPORT;
 

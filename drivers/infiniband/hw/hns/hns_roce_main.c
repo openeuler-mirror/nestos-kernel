@@ -61,8 +61,7 @@ static struct net_device *hns_roce_get_netdev(struct ib_device *ib_dev,
 	if (!ndev)
 		ndev = get_hr_netdev(hr_dev, port_num - 1);
 
-	if (ndev)
-		dev_hold(ndev);
+	dev_hold(ndev);
 
 	rcu_read_unlock();
 
@@ -318,6 +317,7 @@ static int hns_roce_query_port(struct ib_device *ib_dev, u8 port_num,
 	unsigned long flags;
 	enum ib_mtu mtu;
 	u8 port;
+	int ret;
 
 	port = port_num - 1;
 
@@ -330,8 +330,10 @@ static int hns_roce_query_port(struct ib_device *ib_dev, u8 port_num,
 				IB_PORT_BOOT_MGMT_SUP;
 	props->max_msg_sz = HNS_ROCE_MAX_MSG_LEN;
 	props->pkey_tbl_len = 1;
-	props->active_width = IB_WIDTH_4X;
-	props->active_speed = 1;
+	ret = ib_get_eth_speed(ib_dev, port_num, &props->active_speed,
+			       &props->active_width);
+	if (ret)
+		ibdev_warn(ib_dev, "failed to get speed, ret = %d.\n", ret);
 
 	spin_lock_irqsave(&hr_dev->iboe.lock, flags);
 
@@ -642,7 +644,7 @@ static void hns_roce_dealloc_ucontext(struct ib_ucontext *ibcontext)
 	list_del(&context->list);
 	spin_unlock(&hr_dev->uctx_list_lock);
 
-	hns_roce_unregister_uctx_debugfs(hr_dev, context);
+	hns_roce_unregister_uctx_debugfs(context);
 
 	hns_roce_unregister_udca(hr_dev, context);
 
@@ -1114,14 +1116,24 @@ static int hns_roce_register_device(struct hns_roce_dev *hr_dev)
 
 	if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_BOND) {
 		ret = hr_dev->hw->bond_init(hr_dev);
-		if (ret)
+		if (ret) {
 			dev_err(dev, "roce bond init failed, ret = %d\n", ret);
+			/* For non-bond devices, the failure of bond_init does
+			 * not affect other functions.
+			 */
+			if (hr_dev->hw->bond_is_active(hr_dev))
+				goto error_bond_init;
+			else
+				ret = 0;
+		}
 	}
 
 	hr_dev->active = true;
 
 	return ret;
 
+error_bond_init:
+	unregister_netdevice_notifier(&iboe->nb);
 error_failed_setup_mtu_mac:
 	ib_unregister_device(ib_dev);
 

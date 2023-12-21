@@ -288,6 +288,10 @@ struct hns_roce_v2_cq_context {
 	__le32 byte_64_se_cqe_idx;
 };
 
+#define CQC_CQE_BA_L_S 3
+#define CQC_CQE_BA_H_S (32 + CQC_CQE_BA_L_S)
+#define CQC_CQE_DB_RECORD_ADDR_H_S 32
+
 #define HNS_ROCE_V2_CQ_DEFAULT_BURST_NUM 0x0
 #define HNS_ROCE_V2_CQ_DEFAULT_INTERVAL	0x0
 
@@ -482,6 +486,11 @@ struct hns_roce_v2_qp_context {
 
 	struct hns_roce_v2_qp_context_ex ext;
 };
+#define QPC_TRRL_BA_L_S 4
+#define QPC_TRRL_BA_M_S (16 + QPC_TRRL_BA_L_S)
+#define QPC_TRRL_BA_H_S (32 + QPC_TRRL_BA_M_S)
+#define QPC_IRRL_BA_L_S 6
+#define QPC_IRRL_BA_H_S (32 + QPC_IRRL_BA_L_S)
 
 #define QPC_FIELD_LOC(h, l) FIELD_LOC(struct hns_roce_v2_qp_context, h, l)
 
@@ -751,6 +760,9 @@ struct hns_roce_v2_mpt_entry {
 	__le32	pa1_l;
 	__le32	byte_64_buf_pa1;
 };
+
+#define MPT_PBL_BUF_ADDR_S 6
+#define MPT_PBL_BA_ADDR_S 3
 
 #define MPT_FIELD_LOC(h, l) FIELD_LOC(struct hns_roce_v2_mpt_entry, h, l)
 
@@ -1027,6 +1039,43 @@ struct hns_roce_func_clear {
 /* Fields of HNS_ROCE_OPC_CFG_GLOBAL_PARAM */
 #define CFG_GLOBAL_PARAM_1US_CYCLES CMQ_REQ_FIELD_LOC(9, 0)
 #define CFG_GLOBAL_PARAM_UDP_PORT CMQ_REQ_FIELD_LOC(31, 16)
+
+enum hns_roce_res_invalid_flag {
+	QPC_BT_NUM_INVALID_FLAG,
+	SRQC_BT_NUM_INVALID_FLAG,
+	CQC_BT_NUM_INVALID_FLAG,
+	MPT_BT_NUM_INVALID_FLAG,
+	EQC_BT_NUM_INVALID_FLAG,
+	SMAC_BT_NUM_INVALID_FLAG,
+	SGID_BT_NUM_INVALID_FLAG,
+	QID_NUM_INVALID_FLAG,
+	SCCC_BT_NUM_INVALID_FLAG,
+	GMV_BT_NUM_INVALID_FLAG,
+	QPC_TIMER_BT_NUM_INVALID_FLAG,
+	CQC_TIMER_BT_NUM_INVALID_FLAG,
+};
+
+enum hns_roce_res_revision {
+	RES_FOR_HIP08,
+	RES_FOR_HIP09,
+	RES_FOR_ALL,
+};
+
+#define RES_OFFSET_IN_CAPS(res) \
+	(offsetof(struct hns_roce_caps, res))
+
+#define MAX_QPC_BT_NUM 2048
+#define MAX_SRQC_BT_NUM 512
+#define MAX_CQC_BT_NUM 512
+#define MAX_MPT_BT_NUM 512
+#define MAX_EQC_BT_NUM 512
+#define MAX_SMAC_BT_NUM 256
+#define MAX_SGID_BT_NUM 256
+#define MAX_SL_NUM 8
+#define MAX_SCCC_BT_NUM 512
+#define MAX_GMV_BT_NUM 256
+#define MAX_QPC_TIMER_BT_NUM 1728
+#define MAX_CQC_TIMER_BT_NUM 1600
 
 /*
  * Fields of HNS_ROCE_OPC_QUERY_PF_RES, HNS_ROCE_OPC_QUERY_VF_RES

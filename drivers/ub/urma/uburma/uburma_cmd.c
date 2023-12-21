@@ -1785,7 +1785,7 @@ static int uburma_cmd_delete_jetty_grp(struct ubcore_device *ubc_dev,
 	if (ret != 0)
 		return ret;
 
-	uobj = uobj_get_del(UOBJ_CLASS_JETTY_GRP, arg.in.handle, file);
+	uobj = uobj_get_del(UOBJ_CLASS_JETTY_GRP, (int)arg.in.handle, file);
 	if (IS_ERR(uobj)) {
 		uburma_log_err("failed to find jetty group");
 		return -EINVAL;
@@ -1848,7 +1848,7 @@ static int uburma_cmd_user_ctl(struct ubcore_device *ubc_dev,
 	if (ret != 0)
 		return ret;
 
-	ret = ubcore_user_control(&k_user_ctl);
+	ret = ubcore_user_control(ubc_dev, &k_user_ctl);
 	if (ret != 0)
 		return ret;
 

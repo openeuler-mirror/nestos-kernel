@@ -27,6 +27,7 @@
 #include "smc_close.h"
 #include "smc_ism.h"
 #include "smc_tx.h"
+#include "smc_stats.h"
 
 #define SMC_TX_WORK_DELAY	0
 
@@ -44,6 +45,8 @@ static void smc_tx_write_space(struct sock *sk)
 
 	/* similar to sk_stream_write_space */
 	if (atomic_read(&smc->conn.sndbuf_space) && sock) {
+		if (test_bit(SOCK_NOSPACE, &sock->flags))
+			SMC_STAT_RMB_TX_FULL(!smc->conn.lnk);
 		clear_bit(SOCK_NOSPACE, &sock->flags);
 		rcu_read_lock();
 		wq = rcu_dereference(sk->sk_wq);
@@ -195,9 +198,19 @@ int smc_tx_sendmsg(struct smc_sock *smc, struct msghdr *msg, size_t len)
 		goto out_err;
 	}
 
+	if (sk->sk_state == SMC_INIT)
+		return -ENOTCONN;
+
+	if (len > conn->sndbuf_desc->len)
+		SMC_STAT_RMB_TX_SIZE_SMALL(!conn->lnk);
+
+	if (len > conn->peer_rmbe_size)
+		SMC_STAT_RMB_TX_PEER_SIZE_SMALL(!conn->lnk);
+
+	if (msg->msg_flags & MSG_OOB)
+		SMC_STAT_INC(!conn->lnk, urg_data_cnt);
+
 	while (msg_data_left(msg)) {
-		if (sk->sk_state == SMC_INIT)
-			return -ENOTCONN;
 		if (smc->sk.sk_shutdown & SEND_SHUTDOWN ||
 		    (smc->sk.sk_err == ECONNABORTED) ||
 		    conn->killed)
@@ -367,6 +380,7 @@ static int smcr_tx_rdma_writes(struct smc_connection *conn, size_t len,
 
 	dma_addr_t dma_addr =
 		sg_dma_address(conn->sndbuf_desc->sgt[link->link_idx].sgl);
+	u64 virt_addr = (uintptr_t)conn->sndbuf_desc->cpu_addr;
 	int src_len_sum = src_len, dst_len_sum = dst_len;
 	int sent_count = src_off;
 	int srcchunk, dstchunk;
@@ -379,7 +393,7 @@ static int smcr_tx_rdma_writes(struct smc_connection *conn, size_t len,
 		u64 base_addr = dma_addr;
 
 		if (dst_len < link->qp_attr.cap.max_inline_data) {
-			base_addr = (uintptr_t)conn->sndbuf_desc->cpu_addr;
+			base_addr = virt_addr;
 			wr->wr.send_flags |= IB_SEND_INLINE;
 		} else {
 			wr->wr.send_flags &= ~IB_SEND_INLINE;
@@ -387,8 +401,12 @@ static int smcr_tx_rdma_writes(struct smc_connection *conn, size_t len,
 
 		num_sges = 0;
 		for (srcchunk = 0; srcchunk < 2; srcchunk++) {
-			sge[srcchunk].addr = base_addr + src_off;
+			sge[srcchunk].addr = conn->sndbuf_desc->is_vm ?
+				(virt_addr + src_off) : (base_addr + src_off);
 			sge[srcchunk].length = src_len;
+			if (conn->sndbuf_desc->is_vm)
+				sge[srcchunk].lkey =
+					conn->sndbuf_desc->mr[link->link_idx]->lkey;
 			num_sges++;
 
 			src_off += src_len;
@@ -480,8 +498,10 @@ static int smc_tx_rdma_writes(struct smc_connection *conn,
 	/* destination: RMBE */
 	/* cf. snd_wnd */
 	rmbespace = atomic_read(&conn->peer_rmbe_space);
-	if (rmbespace <= 0)
+	if (rmbespace <= 0) {
+		SMC_STAT_RMB_TX_PEER_FULL(!conn->lnk);
 		return 0;
+	}
 	smc_curs_copy(&prod, &conn->local_tx_ctrl.prod, conn);
 	smc_curs_copy(&cons, &conn->local_rx_ctrl.cons, conn);
 

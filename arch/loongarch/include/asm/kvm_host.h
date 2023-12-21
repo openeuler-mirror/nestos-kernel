@@ -29,7 +29,6 @@
 
 #define LOONGSON_VIRT_REG_BASE	0x1f000000
 #define KVM_MAX_VCPUS		256
-#define KVM_USER_MEM_SLOTS	256
 /* memory slots that does not exposed to userspace */
 #define KVM_PRIVATE_MEM_SLOTS	0
 
@@ -220,16 +219,9 @@ struct kvm_vcpu_arch {
 	/* vcpu's vpid is different on each host cpu in an smp system */
 	u64 vpid[NR_CPUS];
 
-	/* Period of stable timer tick in ns */
-	u64 timer_period;
 	/* Frequency of stable timer in Hz */
 	u64 timer_mhz;
-	/* Stable bias from the raw time */
-	u64 timer_bias;
-	/* Dynamic nanosecond bias (multiple of timer_period) to avoid overflow */
-	s64 timer_dyn_bias;
-	/* Save ktime */
-	ktime_t stable_ktime_saved;
+	ktime_t expire;
 
 	u64 core_ext_ioisr[4];
 
@@ -299,11 +291,6 @@ enum _kvm_fault_result {
 };
 
 #define KVM_ARCH_WANT_MMU_NOTIFIER
-int kvm_unmap_hva_range(struct kvm *kvm,
-			unsigned long start, unsigned long end, bool blockable);
-int kvm_set_spte_hva(struct kvm *kvm, unsigned long hva, pte_t pte);
-int kvm_age_hva(struct kvm *kvm, unsigned long start, unsigned long end);
-int kvm_test_age_hva(struct kvm *kvm, unsigned long hva);
 
 static inline void update_pc(struct kvm_vcpu_arch *arch)
 {

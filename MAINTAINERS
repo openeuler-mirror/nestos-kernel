@@ -8070,6 +8070,13 @@ M:	Yonglong Liu <liuyonglong@huawei.com>
 S:	Supported
 F:	drivers/ptp/ptp_hisi.c
 
+HISI_RAID SCSI RAID DRIVERS
+M:	Zhang Lei <zhanglei48@huawei.com>
+L:	linux-scsi@vger.kernel.org
+S:	Maintained
+F:	Documentation/scsi/hisi_raid.rst
+F:	drivers/scsi/hisi_raid/
+
 HMM - Heterogeneous Memory Management
 M:	Jérôme Glisse <jglisse@redhat.com>
 L:	linux-mm@kvack.org
@@ -19503,6 +19510,12 @@ L:	usbb2k-api-dev@nongnu.org
 S:	Maintained
 F:	Documentation/input/devices/yealink.rst
 F:	drivers/input/misc/yealink.*
+
+YUNSILICON XSC DRIVERS
+M:	Weihonggang <weihg@yunsilicon.com>
+S:	Maintained
+F:	drivers/infiniband/hw/xsc
+F:	drivers/net/ethernet/yunsilicon/xsc
 
 Z8530 DRIVER FOR AX.25
 M:	Joerg Reuter <jreuter@yaina.de>

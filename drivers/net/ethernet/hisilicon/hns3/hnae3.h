@@ -41,6 +41,7 @@
 #define HNAE3_DEVICE_VERSION_V1   0x00020
 #define HNAE3_DEVICE_VERSION_V2   0x00021
 #define HNAE3_DEVICE_VERSION_V3   0x00030
+#define HNAE3_DEVICE_VERSION_V4   0x00032
 
 #define HNAE3_PCI_REVISION_BIT_SIZE		8
 
@@ -137,9 +138,9 @@ enum HNAE3_DEV_CAP_BITS {
 	HNAE3_DEV_SUPPORT_CQ_B,
 	HNAE3_DEV_SUPPORT_LANE_NUM_B,
 	HNAE3_DEV_SUPPORT_WOL_B,
-	HNAE3_DEV_SUPPORT_VF_FAULT_B,
 	HNAE3_DEV_SUPPORT_NOTIFY_PKT_B,
 	HNAE3_DEV_SUPPORT_TM_FLUSH_B,
+	HNAE3_DEV_SUPPORT_VF_FAULT_B,
 	HNAE3_DEV_SUPPORT_ERR_MOD_GEN_REG_B,
 };
 
@@ -209,14 +210,14 @@ enum HNAE3_DEV_CAP_BITS {
 #define hnae3_ae_dev_wol_supported(ae_dev) \
 	test_bit(HNAE3_DEV_SUPPORT_WOL_B, (ae_dev)->caps)
 
-#define hnae3_ae_dev_vf_fault_supported(ae_dev) \
-	test_bit(HNAE3_DEV_SUPPORT_VF_FAULT_B, (ae_dev)->caps)
-
 #define hnae3_ae_dev_notify_pkt_supported(ae_dev) \
 	test_bit(HNAE3_DEV_SUPPORT_NOTIFY_PKT_B, (ae_dev)->caps)
 
 #define hnae3_ae_dev_tm_flush_supported(hdev) \
 	test_bit(HNAE3_DEV_SUPPORT_TM_FLUSH_B, (hdev)->ae_dev->caps)
+
+#define hnae3_ae_dev_vf_fault_supported(ae_dev) \
+	test_bit(HNAE3_DEV_SUPPORT_VF_FAULT_B, (ae_dev)->caps)
 
 #define hnae3_ae_dev_gen_reg_dfx_supported(hdev) \
 	test_bit(HNAE3_DEV_SUPPORT_ERR_MOD_GEN_REG_B, (hdev)->ae_dev->caps)
@@ -453,6 +454,7 @@ struct hnae3_dev_specs {
 	u8 tnl_num;
 	u16 guid_tbl_space;
 	u16 ip_tbl_space;
+	u8 hilink_version;
 };
 
 struct hnae3_client_ops {
