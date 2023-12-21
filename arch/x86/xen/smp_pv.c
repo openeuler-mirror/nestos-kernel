@@ -30,6 +30,7 @@
 #include <asm/desc.h>
 #include <asm/cpu.h>
 #include <asm/io_apic.h>
+#include <asm/fpu/internal.h>
 
 #include <xen/interface/xen.h>
 #include <xen/interface/vcpu.h>
@@ -63,6 +64,7 @@ static void cpu_bringup(void)
 
 	cr4_init();
 	cpu_init();
+	fpu__init_cpu();
 	touch_softlockup_watchdog();
 	preempt_disable();
 
@@ -180,7 +182,7 @@ static void __init _get_smp_config(unsigned int early)
 	 * hypercall to expand the max number of VCPUs an already
 	 * running guest has. So cap it up to X. */
 	if (subtract)
-		nr_cpu_ids = nr_cpu_ids - subtract;
+		set_nr_cpu_ids(nr_cpu_ids - subtract);
 #endif
 
 }

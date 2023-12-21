@@ -658,7 +658,7 @@ static int smc_clc_send_confirm_accept(struct smc_sock *smc,
 		clc->hdr.typev1 = SMC_TYPE_D;
 		clc->d0.gid = conn->lgr->smcd->local_gid;
 		clc->d0.token = conn->rmb_desc->token;
-		clc->d0.dmbe_size = conn->rmbe_size_short;
+		clc->d0.dmbe_size = conn->rmbe_size_comp;
 		clc->d0.dmbe_idx = 0;
 		memcpy(&clc->d0.linkid, conn->lgr->id, SMC_LGR_ID_SIZE);
 		if (version == SMC_V1) {
@@ -693,7 +693,7 @@ static int smc_clc_send_confirm_accept(struct smc_sock *smc,
 		       ETH_ALEN);
 		hton24(clc->r0.qpn, link->roce_qp->qp_num);
 		clc->r0.rmb_rkey =
-			htonl(conn->rmb_desc->mr_rx[link->link_idx]->rkey);
+			htonl(conn->rmb_desc->mr[link->link_idx]->rkey);
 		clc->r0.rmbe_idx = 1; /* for now: 1 RMB = 1 RMBE */
 		clc->r0.rmbe_alert_token = htonl(conn->alert_token_local);
 		switch (clc->hdr.type) {
@@ -704,9 +704,11 @@ static int smc_clc_send_confirm_accept(struct smc_sock *smc,
 			clc->r0.qp_mtu = min(link->path_mtu, link->peer_mtu);
 			break;
 		}
-		clc->r0.rmbe_size = conn->rmbe_size_short;
-		clc->r0.rmb_dma_addr = cpu_to_be64((u64)sg_dma_address
-				(conn->rmb_desc->sgt[link->link_idx].sgl));
+		clc->r0.rmbe_size = conn->rmbe_size_comp;
+		clc->r0.rmb_dma_addr = conn->rmb_desc->is_vm ?
+			cpu_to_be64((uintptr_t)conn->rmb_desc->cpu_addr) :
+			cpu_to_be64((u64)sg_dma_address
+				    (conn->rmb_desc->sgt[link->link_idx].sgl));
 		hton24(clc->r0.psn, link->psn_initial);
 		memcpy(trl.eyecatcher, SMC_EYECATCHER, sizeof(SMC_EYECATCHER));
 	}
@@ -771,6 +773,11 @@ int smc_clc_send_accept(struct smc_sock *new_smc, bool srv_first_contact,
 		len = len >= 0 ? -EPROTO : -new_smc->clcsock->sk->sk_err;
 
 	return len > 0 ? 0 : len;
+}
+
+void smc_clc_get_hostname(u8 **host)
+{
+	*host = &smc_hostname[0];
 }
 
 void __init smc_clc_init(void)

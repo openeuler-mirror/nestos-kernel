@@ -195,9 +195,10 @@ enum HLCGE_PORT_TYPE {
 #define HCLGE_SUPPORT_40G_BIT		BIT(5)
 #define HCLGE_SUPPORT_100M_BIT		BIT(6)
 #define HCLGE_SUPPORT_10M_BIT		BIT(7)
-#define HCLGE_SUPPORT_200G_BIT		BIT(8)
+#define HCLGE_SUPPORT_200G_R4_EXT_BIT	BIT(8)
 #define HCLGE_SUPPORT_50G_R1_BIT	BIT(9)
 #define HCLGE_SUPPORT_100G_R2_BIT	BIT(10)
+#define HCLGE_SUPPORT_200G_R4_BIT	BIT(11)
 
 #define HCLGE_SUPPORT_GE \
 	(HCLGE_SUPPORT_1G_BIT | HCLGE_SUPPORT_100M_BIT | HCLGE_SUPPORT_10M_BIT)
@@ -205,6 +206,8 @@ enum HLCGE_PORT_TYPE {
 	(HCLGE_SUPPORT_50G_R2_BIT | HCLGE_SUPPORT_50G_R1_BIT)
 #define HCLGE_SUPPORT_100G_BITS \
 	(HCLGE_SUPPORT_100G_R4_BIT | HCLGE_SUPPORT_100G_R2_BIT)
+#define HCLGE_SUPPORT_200G_BITS \
+	(HCLGE_SUPPORT_200G_R4_EXT_BIT | HCLGE_SUPPORT_200G_R4_BIT)
 
 enum HCLGE_DEV_STATE {
 	HCLGE_STATE_REINITING,
@@ -257,6 +260,12 @@ enum HCLGE_MAC_SPEED {
 enum HCLGE_MAC_DUPLEX {
 	HCLGE_MAC_HALF,
 	HCLGE_MAC_FULL
+};
+
+/* hilink version */
+enum hclge_hilink_version {
+	HCLGE_HILINK_H32 = 0,
+	HCLGE_HILINK_H60 = 1,
 };
 
 #define QUERY_SFP_SPEED		0
@@ -1203,14 +1212,14 @@ int hclge_check_mac_addr_valid(struct hclge_dev *hdev, u8 vf,
 int hclge_push_vf_link_status(struct hclge_vport *vport);
 int hclge_enable_vport_vlan_filter(struct hclge_vport *vport, bool request_en);
 int hclge_mac_update_stats(struct hclge_dev *hdev);
+struct hclge_vport *hclge_get_vf_vport(struct hclge_dev *hdev, int vf);
+int hclge_inform_vf_reset(struct hclge_vport *vport, u16 reset_type);
 int hclge_register_sysfs(struct hclge_dev *hdev);
 void hclge_unregister_sysfs(struct hclge_dev *hdev);
 int hclge_cfg_mac_speed_dup_hw(struct hclge_dev *hdev, int speed, u8 duplex,
 			       u8 lane_num);
 int hclge_get_wol_supported_mode(struct hclge_dev *hdev, u32 *wol_supported);
 int hclge_get_wol_cfg(struct hclge_dev *hdev, u32 *mode);
-struct hclge_vport *hclge_get_vf_vport(struct hclge_dev *hdev, int vf);
-int hclge_inform_vf_reset(struct hclge_vport *vport, u16 reset_type);
 void hclge_reset_task_schedule(struct hclge_dev *hdev);
 void hclge_reset_event(struct pci_dev *pdev, struct hnae3_handle *handle);
 void hclge_get_media_type(struct hnae3_handle *handle, u8 *media_type,

@@ -836,6 +836,19 @@ config HISILICON_ERRATUM_162102203
 
 	  If unsure, say N.
 
+config HISILICON_ERRATUM_162100602
+	bool "Hisilicon erratum 162100602"
+	depends on ARM_SMMU_V3
+	default y
+	help
+	 On Hisilicon LINXICORE9100 cores, SMMU pagetable prefetch features may
+	 prefetch and use a invalid PTE even the PTE is valid at that time. This
+	 will cause the device trigger fake pagefaults. If the SMMU works in
+	 terminate mode, transactions which occur fake pagefaults will be aborted,
+	 and could result in unexpected errors.
+
+	 If unsure, say Y.
+
 config QCOM_FALKOR_ERRATUM_1003
 	bool "Falkor E1003: Incorrect translation due to ASID change"
 	default y
@@ -1991,6 +2004,17 @@ config ARM64_SVE
 	  Thus, you will need to enable CONFIG_ARM64_VHE if you want to support
 	  KVM in the same kernel image.
 
+config ARM64_SME
+	bool "ARM Scalable Matrix Extension support"
+	default y
+	depends on ARM64_SVE
+	help
+	  The Scalable Matrix Extension (SME) is an extension to the AArch64
+	  execution state which utilises a substantial subset of the SVE
+	  instruction set, together with the addition of new architectural
+	  register state capable of holding two dimensional matrix tiles to
+	  enable various matrix operations.
+
 config ARM64_MODULE_PLTS
 	bool "Use PLTs to allow module memory to spill over into vmalloc area"
 	depends on MODULES
@@ -2090,6 +2114,19 @@ config CC_HAVE_STACKPROTECTOR_SYSREG
 config STACKPROTECTOR_PER_TASK
 	def_bool y
 	depends on STACKPROTECTOR && CC_HAVE_STACKPROTECTOR_SYSREG
+
+config ARCH_CUSTOM_NUMA_DISTANCE
+	bool "Support custom node relaim distance"
+	depends on ARM64 && ARCH_HISI && NUMA
+	default n
+	help
+	  Allow arch to adjust node_reclaim_distance.
+
+	  Some machines may have a specific node distance to achieve optimal
+	  system performance. You can set a specific node_reclaim_distance based
+	  on the system topology.
+
+	  If unsure, say N.
 
 menuconfig ASCEND_FEATURES
 	bool "Support Ascend Features"

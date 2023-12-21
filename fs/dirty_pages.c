@@ -159,6 +159,7 @@ static void dump_dirtypages_sb(struct super_block *sb, struct seq_file *m)
 		if (m->size <= m->count) {
 			seq_set_overflow(m);
 			strncpy(m->buf+m->count-12, "terminated\n\0", 12);
+			iput(inode);
 			goto done;
 		}
 		seq_printf(m, "FSType: %s, Dev ID: %u(%u:%u) ino %lu, dirty pages %lu, path %s\n",
@@ -217,12 +218,15 @@ static ssize_t seq_read_dirty(
 	}
 
 	n = min(m->count - m->from, size);
-	err = simple_read_from_buffer(buf, n,
-		(loff_t *) &m->from, m->buf, m->count);
-	if (err < 0) {
+	/* check if this is the last read */
+	if (n == 0)
+		goto done;
+	n -= copy_to_user(buf, m->buf + m->from, n);
+	if (unlikely(!n)) {
 		err = -EFAULT;
 		goto done;
 	}
+	m->from += n;
 	copied += n;
 done:
 	if (!copied)

@@ -653,6 +653,26 @@ config PSI_DEFAULT_DISABLED
 
 	  Say N if unsure.
 
+config PSI_CGROUP_V1
+       bool "Support PSI under cgroup v1"
+       default n
+       depends on PSI
+       help
+         If set, pressure stall information tracking will be used
+         for cgroup v1 other than v2.
+
+         Say N if unsure.
+
+config PSI_FINE_GRAINED
+	bool "Support fine grained psi under cgroup v1 and system"
+	default n
+	depends on PSI
+	help
+	  If set, fine grained pressure stall information tracking will
+	  be used for cgroup v1 and system, such as memory reclaim,
+	  memory compact and so on.
+	  Say N if unsure.
+
 endmenu # "CPU/Task time and stats accounting"
 
 config CPU_ISOLATION
@@ -1077,6 +1097,19 @@ config UCLAMP_TASK_GROUP
 	  be bigger than the corresponding clamping defined at task group level.
 
 	  If in doubt, say N.
+
+config QOS_SCHED_SMART_GRID
+	bool "qos smart grid scheduler"
+	depends on FAIR_GROUP_SCHED && QOS_SCHED_DYNAMIC_AFFINITY
+	default n
+	help
+	 This feature is used for power consumption tuning in server scenario.
+	 This can be divided into the following aspects:
+	  1. User interface, manage user needs.
+	  2. Collect tasks' features to ensure key tasks' QOS.
+	  3. Weaken the influence the impact of CPU frequency and cpuidle
+	     adjustment on tasks.
+	  4. Docking EAS (Energy Aware Scheduling) model.
 
 config CGROUP_PIDS
 	bool "PIDs controller"

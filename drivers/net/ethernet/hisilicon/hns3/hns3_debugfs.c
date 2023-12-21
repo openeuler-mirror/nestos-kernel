@@ -414,11 +414,11 @@ static struct hns3_dbg_cap_info hns3_dbg_cap[] = {
 		.name = "support wake on lan",
 		.cap_bit = HNAE3_DEV_SUPPORT_WOL_B,
 	}, {
-		.name = "support vf fault detect",
-		.cap_bit = HNAE3_DEV_SUPPORT_VF_FAULT_B,
-	}, {
 		.name = "support tm flush",
 		.cap_bit = HNAE3_DEV_SUPPORT_TM_FLUSH_B,
+	}, {
+		.name = "support vf fault detect",
+		.cap_bit = HNAE3_DEV_SUPPORT_VF_FAULT_B,
 	}
 };
 
@@ -1099,6 +1099,8 @@ hns3_dbg_dev_specs(struct hnae3_handle *h, char *buf, int len, int *pos)
 	*pos += scnprintf(buf + *pos, len - *pos,
 			  "TX timeout threshold: %d seconds\n",
 			  dev->watchdog_timeo / HZ);
+	*pos += scnprintf(buf + *pos, len - *pos, "Hilink Version: %u\n",
+			  dev_specs->hilink_version);
 }
 
 static int hns3_dbg_dev_info(struct hnae3_handle *h, char *buf, int len)
