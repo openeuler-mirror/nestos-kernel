@@ -960,6 +960,12 @@ config MEMCG_MEMFS_INFO
 	  charged in given memory cgroup. The files infomations can be printed
 	  through interface "memory.memfs_files_info" or printed when OOM is
 	  triggered.
+config MEMCG_THP
+       bool "Transparent hugepage controller"
+       depends on MEMCG && TRANSPARENT_HUGEPAGE
+       default n
+       help
+         Provides control transparent hugepage in a cgroup.
 
 config BLK_CGROUP
 	bool "IO controller"

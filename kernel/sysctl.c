@@ -71,6 +71,7 @@
 #include <linux/coredump.h>
 #include <linux/latencytop.h>
 #include <linux/pid.h>
+#include <linux/fault_event.h>
 
 #include "../lib/kstrtox.h"
 
@@ -679,6 +680,48 @@ static int do_proc_dointvec(struct ctl_table *table, int write,
 {
 	return __do_proc_dointvec(table->data, table, write,
 			buffer, lenp, ppos, conv, data);
+}
+
+int setup_pagecache_limit(void)
+{
+	/* reclaim $ADDITIONAL_RECLAIM_PAGES more than limit. */
+	vm_pagecache_limit_reclaim_ratio = vm_pagecache_limit_ratio + ADDITIONAL_RECLAIM_RATIO;
+
+	if (vm_pagecache_limit_reclaim_ratio > 100)
+		vm_pagecache_limit_reclaim_ratio = 100;
+	if (vm_pagecache_limit_ratio == 0)
+		vm_pagecache_limit_reclaim_ratio = 0;
+
+	vm_pagecache_limit_pages = vm_pagecache_limit_ratio * totalram_pages() / 100;
+	vm_pagecache_limit_reclaim_pages = vm_pagecache_limit_reclaim_ratio * totalram_pages() / 100;
+	return 0;
+}
+
+static int pc_limit_proc_dointvec(struct ctl_table *table, int write,
+		     void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+	if (write && !ret)
+		ret = setup_pagecache_limit();
+	return ret;
+}
+
+int pc_reclaim_limit_proc_dointvec(struct ctl_table *table, int write,
+		     void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	if (write && vm_pagecache_limit_ratio == 0)
+		return -EINVAL;
+
+	int pre_reclaim_ratio = vm_pagecache_limit_reclaim_ratio;
+	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+	if (write && !ret) {
+		if (vm_pagecache_limit_reclaim_ratio - vm_pagecache_limit_ratio < ADDITIONAL_RECLAIM_RATIO) {
+			vm_pagecache_limit_reclaim_ratio = pre_reclaim_ratio;
+			return -EINVAL;
+		}
+		vm_pagecache_limit_reclaim_pages = vm_pagecache_limit_reclaim_ratio * totalram_pages() / 100;
+	}
+	return ret;
 }
 
 static int do_proc_douintvec_w(unsigned int *tbl_data,
@@ -2420,6 +2463,30 @@ static struct ctl_table kern_table[] = {
 		.extra2		= SYSCTL_ONE,
 	},
 #endif /* CONFIG_SMP */
+	{
+		.procname	= "unrecovered_softlockup_thresh_cpus",
+		.data		= &sysctl_unrecovered_softlockup_thresh_cpus,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+	},
+	{
+		.procname	= "unrecovered_softlockup_sample_seconds",
+		.data		= &sysctl_unrecovered_softlockup_sample_interval,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+	},
+	{
+		.procname	= "unrecovered_softlockup_thresh_times",
+		.data		= &sysctl_unrecovered_softlockup_thresh_times,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+	},
 #endif
 #ifdef CONFIG_HARDLOCKUP_DETECTOR
 	{
@@ -2803,6 +2870,35 @@ static struct ctl_table kern_table[] = {
 		.extra2		= &one_hundred,
 	},
 #endif
+	{
+                .procname       = "fault_event_enable",
+                .data           = &sysctl_fault_event_enable,
+                .maxlen         = sizeof(unsigned int),
+                .mode           = 0644,
+                .proc_handler   = proc_dointvec_minmax,
+                .extra1         = SYSCTL_ZERO,
+                .extra2         = SYSCTL_ONE,
+        },
+#if defined CONFIG_PRINTK
+        {
+                .procname       = "fault_event_print",
+                .data           = &sysctl_fault_event_print,
+                .maxlen         = sizeof(unsigned int),
+                .mode           = 0644,
+                .proc_handler   = proc_dointvec_minmax,
+                .extra1         = SYSCTL_ZERO,
+                .extra2         = SYSCTL_ONE,
+        },
+#endif
+        {
+                .procname       = "panic_on_fatal_event",
+                .data           = &sysctl_panic_on_fatal_event,
+                .maxlen         = sizeof(unsigned int),
+                .mode           = 0644,
+                .proc_handler   = proc_dointvec_minmax,
+            	.extra1         = SYSCTL_ZERO,
+                .extra2         = SYSCTL_ONE,
+        },
 #ifdef CONFIG_QOS_SCHED_SMART_GRID
 	{
 		.procname	= "smart_grid_strategy_ctrl",
@@ -2825,6 +2921,12 @@ static struct ctl_table kern_table[] = {
 #endif
 	{ }
 };
+
+int pc_limit_proc_dointvec(struct ctl_table *table, int write,
+		     void __user *buffer, size_t *lenp, loff_t *ppos);
+
+int pc_reclaim_limit_proc_dointvec(struct ctl_table *table, int write,
+		     void __user *buffer, size_t *lenp, loff_t *ppos);
 
 static struct ctl_table vm_table[] = {
 	{
@@ -2957,6 +3059,31 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= &two_hundred,
+	},
+	{
+		.procname	= "pagecache_limit_ratio",
+		.data		= &vm_pagecache_limit_ratio,
+		.maxlen		= sizeof(vm_pagecache_limit_ratio),
+		.mode		= 0644,
+		.proc_handler	= &pc_limit_proc_dointvec,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= &one_hundred,
+	},
+	{
+		.procname	= "pagecache_limit_reclaim_ratio",
+		.data		= &vm_pagecache_limit_reclaim_ratio,
+		.maxlen		= sizeof(vm_pagecache_limit_reclaim_ratio),
+		.mode		= 0644,
+		.proc_handler	= &pc_reclaim_limit_proc_dointvec,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= &one_hundred,
+	},
+	{
+		.procname	= "pagecache_limit_ignore_dirty",
+		.data		= &vm_pagecache_ignore_dirty,
+		.maxlen		= sizeof(vm_pagecache_ignore_dirty),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
 	},
 #ifdef CONFIG_NUMA
 	{
