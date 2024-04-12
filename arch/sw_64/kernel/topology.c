@@ -3,6 +3,7 @@
 #include <linux/acpi.h>
 #include <linux/of.h>
 #include <linux/printk.h>
+#include <asm/sw64io.h>
 #include <asm/topology.h>
 
 static int __init parse_dt_topology(void)
@@ -22,6 +23,18 @@ static int topo_nr_cpus;
 static int topo_threads[NR_CPUS];
 static int topo_cores[NR_CPUS];
 static int topo_packages[NR_CPUS];
+
+void __init get_vt_smp_info(void)
+{
+	unsigned long smp_info;
+
+	smp_info = sw64_io_read(0, SMP_INFO);
+	if (smp_info == -1UL)
+		smp_info = 0;
+	topo_nr_threads = (smp_info >> VT_THREADS_SHIFT) & VT_THREADS_MASK;
+	topo_nr_cores = (smp_info >> VT_CORES_SHIFT) & VT_CORES_MASK;
+	topo_nr_maxcpus = (smp_info >> VT_MAX_CPUS_SHIFT) & VT_MAX_CPUS_MASK;
+}
 
 static void __init init_topo_threads(void)
 {
@@ -88,14 +101,11 @@ static void update_siblings_masks(int cpu)
 	for_each_online_cpu(sib) {
 		struct cpu_topology *sib_topo = &cpu_topology[sib];
 
-		if (cpu_topo->llc_id == sib_topo->llc_id) {
-			cpumask_set_cpu(cpu, &sib_topo->llc_sibling);
-			cpumask_set_cpu(sib, &cpu_topo->llc_sibling);
-		}
-
 		if (cpu_topo->package_id == sib_topo->package_id) {
 			cpumask_set_cpu(cpu, &sib_topo->core_sibling);
 			cpumask_set_cpu(sib, &cpu_topo->core_sibling);
+			cpumask_set_cpu(cpu, &sib_topo->llc_sibling);
+			cpumask_set_cpu(sib, &cpu_topo->llc_sibling);
 
 			if (cpu_topo->core_id == sib_topo->core_id) {
 				cpumask_set_cpu(cpu, &sib_topo->thread_sibling);
@@ -116,18 +126,16 @@ void store_cpu_topology(int cpu)
 		cpu_topo->package_id = topo_packages[cpu];
 		cpu_topo->core_id = topo_cores[cpu];
 		cpu_topo->thread_id = topo_threads[cpu];
-		cpu_topo->llc_id = topo_packages[cpu];
 		goto topology_populated;
 	}
 
-	cpu_topo->package_id = rcid_to_package(cpu_to_rcid(cpu));
-	cpu_topo->core_id = cpu_to_rcid(cpu) & CORE_ID_MASK;
-	cpu_topo->thread_id = (cpu_to_rcid(cpu) >> THREAD_ID_SHIFT) & THREAD_ID_MASK;
-	cpu_topo->llc_id = rcid_to_package(cpu_to_rcid(cpu));
+	cpu_topo->package_id = rcid_to_domain_id(cpu_to_rcid(cpu));
+	cpu_topo->core_id = rcid_to_core_id(cpu_to_rcid(cpu));
+	cpu_topo->thread_id = rcid_to_thread_id(cpu_to_rcid(cpu));
 
-	pr_debug("CPU%u: socket %d core %d thread %d llc %d\n",
+	pr_debug("CPU%u: socket %d core %d thread %d\n",
 		 cpu, cpu_topo->package_id, cpu_topo->core_id,
-		 cpu_topo->thread_id, cpu_topo->llc_id);
+		 cpu_topo->thread_id);
 
 topology_populated:
 	update_siblings_masks(cpu);
@@ -156,7 +164,6 @@ static void __init reset_cpu_topology(void)
 		cpu_topo->thread_id = -1;
 		cpu_topo->core_id = 0;
 		cpu_topo->package_id = -1;
-		cpu_topo->llc_id = -1;
 
 		clear_cpu_topology(cpu);
 	}

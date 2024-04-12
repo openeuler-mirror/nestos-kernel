@@ -105,9 +105,9 @@ extern int dbg_set_reg(int regno, void *mem, struct pt_regs *regs);
  */
 
 /**
- *	kgdb_arch_init - Perform any architecture specific initalization.
+ *	kgdb_arch_init - Perform any architecture specific initialization.
  *
- *	This function will handle the initalization of any architecture
+ *	This function will handle the initialization of any architecture
  *	specific callbacks.
  */
 extern int kgdb_arch_init(void);
@@ -199,6 +199,7 @@ kgdb_arch_handle_qxfer_pkt(char *remcom_in_buffer,
 
 extern void kgdb_call_nmi_hook(void *ignored);
 
+#ifdef CONFIG_IPI_AS_NMI
 /**
  *	kgdb_smp_call_nmi_hook - Provide default fallback mechanism to
  *				 round-up CPUs
@@ -210,6 +211,7 @@ extern void kgdb_call_nmi_hook(void *ignored);
  */
 
 extern void kgdb_smp_call_nmi_hook(void);
+#endif
 
 /**
  *	kgdb_roundup_cpus - Get other CPUs into a holding pattern
@@ -241,9 +243,9 @@ extern int kgdb_arch_set_breakpoint(struct kgdb_bkpt *bpt);
 extern int kgdb_arch_remove_breakpoint(struct kgdb_bkpt *bpt);
 
 /**
- *	kgdb_arch_late - Perform any architecture specific initalization.
+ *	kgdb_arch_late - Perform any architecture specific initialization.
  *
- *	This function will handle the late initalization of any
+ *	This function will handle the late initialization of any
  *	architecture specific callbacks.  This is an optional function for
  *	handling things like late initialization of hw breakpoints.  The
  *	default implementation does nothing.
@@ -337,7 +339,6 @@ extern char *kgdb_mem2hex(char *mem, char *buf, int count);
 extern int kgdb_hex2mem(char *buf, char *mem, int count);
 
 extern int kgdb_isremovedbreak(unsigned long addr);
-extern void kgdb_schedule_breakpoint(void);
 extern int kgdb_has_hit_break(unsigned long addr);
 
 extern int
@@ -378,5 +379,6 @@ extern void kgdb_free_init_mem(void);
 #define dbg_late_init()
 static inline void kgdb_panic(const char *msg) {}
 static inline void kgdb_free_init_mem(void) { }
+static inline int kgdb_nmicallback(int cpu, void *regs) { return 1; }
 #endif /* ! CONFIG_KGDB */
 #endif /* _KGDB_H_ */

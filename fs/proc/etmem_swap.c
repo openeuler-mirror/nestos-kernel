@@ -10,10 +10,9 @@
 #include <linux/mempolicy.h>
 #include <linux/uaccess.h>
 #include <linux/delay.h>
-#include <linux/numa.h>
+#include <linux/etmem.h>
 #include <linux/freezer.h>
 #include <linux/kthread.h>
-#include <linux/mm_inline.h>
 
 #define RECLAIM_SWAPCACHE_MAGIC 0X77
 #define SET_SWAPCACHE_WMARK	_IOW(RECLAIM_SWAPCACHE_MAGIC, 0x02, unsigned int)
@@ -97,6 +96,8 @@ static int swap_pages_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+extern struct file_operations proc_swap_pages_operations;
+
 /* check if swapcache meet requirements */
 static bool swapcache_balanced(void)
 {
@@ -106,7 +107,7 @@ static bool swapcache_balanced(void)
 /* the flag present if swapcache reclaim is started */
 static bool swapcache_reclaim_enabled(void)
 {
-	return	READ_ONCE(enable_swapcache_reclaim);
+	return  READ_ONCE(enable_swapcache_reclaim);
 }
 
 static void start_swapcache_reclaim(void)
@@ -145,8 +146,8 @@ static int get_swapcache_watermark(unsigned int ratio)
 	low_watermark = ratio & 0xFF;
 	high_watermark = (ratio >> 8) & 0xFF;
 	if (low_watermark > WATERMARK_MAX ||
-	    high_watermark > WATERMARK_MAX ||
-	    low_watermark > high_watermark)
+		high_watermark > WATERMARK_MAX ||
+		low_watermark > high_watermark)
 		return -EPERM;
 
 	swapcache_watermark[ETMEM_SWAPCACHE_WMARK_LOW] = totalram_pages() *
@@ -156,8 +157,6 @@ static int get_swapcache_watermark(unsigned int ratio)
 
 	return 0;
 }
-
-extern struct file_operations proc_swap_pages_operations;
 
 static void reclaim_swapcache_try_to_sleep(void)
 {
@@ -190,7 +189,7 @@ static int reclaim_swapcache_proactive(void *para)
 
 		reclaim_swapcache_try_to_sleep();
 		ret = try_to_freeze();
-		if (kthread_should_stop())
+		if (kthread_freezable_should_stop(NULL))
 			break;
 
 		if (ret)
@@ -207,7 +206,7 @@ static int reclaim_swapcache_run(void)
 	int ret = 0;
 
 	reclaim_swapcache_tk = kthread_run(reclaim_swapcache_proactive, NULL,
-					"etmem_recalim_swapcache");
+						"etmem_recalim_swapcache");
 	if (IS_ERR(reclaim_swapcache_tk)) {
 		ret = PTR_ERR(reclaim_swapcache_tk);
 		reclaim_swapcache_tk = NULL;
@@ -243,6 +242,7 @@ static long swap_page_ioctl(struct file *filp, unsigned int cmd,
 
 	return 0;
 }
+
 
 static int swap_pages_entry(void)
 {

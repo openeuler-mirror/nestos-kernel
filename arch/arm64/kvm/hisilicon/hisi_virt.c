@@ -174,46 +174,44 @@ bool hisi_dvmbm_supported(void)
 	return true;
 }
 
-int kvm_hisi_dvmbm_vcpu_init(struct kvm_vcpu *vcpu)
+int kvm_sched_affinity_vcpu_init(struct kvm_vcpu *vcpu)
 {
 	if (!kvm_dvmbm_support)
 		return 0;
 
-	vcpu->arch.cpus_ptr = kzalloc(sizeof(cpumask_t), GFP_ATOMIC);
-	vcpu->arch.pre_cpus_ptr = kzalloc(sizeof(cpumask_t), GFP_ATOMIC);
-	if (!vcpu->arch.cpus_ptr || !vcpu->arch.pre_cpus_ptr)
+	if (!zalloc_cpumask_var(&vcpu->arch.sched_cpus, GFP_ATOMIC) ||
+	    !zalloc_cpumask_var(&vcpu->arch.pre_sched_cpus, GFP_ATOMIC))
 		return -ENOMEM;
 
 	return 0;
 }
 
-void kvm_hisi_dvmbm_vcpu_destroy(struct kvm_vcpu *vcpu)
+void kvm_sched_affinity_vcpu_destroy(struct kvm_vcpu *vcpu)
 {
 	if (!kvm_dvmbm_support)
 		return;
 
-	kfree(vcpu->arch.cpus_ptr);
-	kfree(vcpu->arch.pre_cpus_ptr);
+	free_cpumask_var(vcpu->arch.sched_cpus);
+	free_cpumask_var(vcpu->arch.pre_sched_cpus);
 }
 
 static void __kvm_write_lsudvmbm(struct kvm *kvm)
 {
-	write_sysreg_s(kvm->arch.lsudvmbm_el2, SYS_LSUDVMBM_EL2);
+	write_sysreg_s(kvm->arch.tlbi_dvmbm, SYS_LSUDVMBM_EL2);
 }
 
 static void kvm_write_lsudvmbm(struct kvm *kvm)
 {
-	/* Do we really need to hold the dvm_lock?? */
-	spin_lock(&kvm->arch.dvm_lock);
+	spin_lock(&kvm->arch.sched_lock);
 	__kvm_write_lsudvmbm(kvm);
-	spin_unlock(&kvm->arch.dvm_lock);
+	spin_unlock(&kvm->arch.sched_lock);
 }
 
 static int kvm_dvmbm_get_dies_info(struct kvm *kvm, u64 *vm_aff3s, int size)
 {
 	int num = 0, cpu;
 
-	for_each_cpu(cpu, kvm->arch.dvm_cpumask) {
+	for_each_cpu(cpu, kvm->arch.sched_cpus) {
 		bool found = false;
 		u64 aff3;
 		int i;
@@ -254,7 +252,7 @@ static void kvm_update_vm_lsudvmbm(struct kvm *kvm)
 		      vm_aff3s[0] << DVMBM_DIE1_SHIFT;
 
 		/* fulfill bits [52:0] */
-		for_each_cpu(cpu, kvm->arch.dvm_cpumask) {
+		for_each_cpu(cpu, kvm->arch.sched_cpus) {
 			mpidr = cpu_logical_map(cpu);
 			aff2 = MPIDR_AFFINITY_LEVEL(mpidr, 2);
 			aff1 = MPIDR_AFFINITY_LEVEL(mpidr, 1);
@@ -272,7 +270,7 @@ static void kvm_update_vm_lsudvmbm(struct kvm *kvm)
 	      vm_aff3s[1] << DVMBM_DIE2_SHIFT;
 
 	/* and fulfill bits [43:0] */
-	for_each_cpu(cpu, kvm->arch.dvm_cpumask) {
+	for_each_cpu(cpu, kvm->arch.sched_cpus) {
 		mpidr = cpu_logical_map(cpu);
 		aff3 = MPIDR_AFFINITY_LEVEL(mpidr, 3);
 		aff2 = MPIDR_AFFINITY_LEVEL(mpidr, 2);
@@ -284,51 +282,47 @@ static void kvm_update_vm_lsudvmbm(struct kvm *kvm)
 	}
 
 out_update:
-	kvm->arch.lsudvmbm_el2 = val;
+	kvm->arch.tlbi_dvmbm = val;
 }
 
-void kvm_hisi_dvmbm_load(struct kvm_vcpu *vcpu)
+void kvm_tlbi_dvmbm_vcpu_load(struct kvm_vcpu *vcpu)
 {
 	struct kvm *kvm = vcpu->kvm;
 	struct kvm_vcpu *tmp;
 	cpumask_t mask;
-	int i;
+	unsigned long i;
 
 	/* Don't bother on old hardware */
 	if (!kvm_dvmbm_support)
 		return;
 
-	cpumask_copy(vcpu->arch.cpus_ptr, current->cpus_ptr);
+	cpumask_copy(vcpu->arch.sched_cpus, current->cpus_ptr);
 
-	if (likely(cpumask_equal(vcpu->arch.cpus_ptr,
-				 vcpu->arch.pre_cpus_ptr))) {
+	if (likely(cpumask_equal(vcpu->arch.sched_cpus,
+				 vcpu->arch.pre_sched_cpus))) {
 		kvm_write_lsudvmbm(kvm);
 		return;
 	}
 
-	/* Re-calculate dvm_cpumask for this VM */
-	spin_lock(&kvm->arch.dvm_lock);
+	/* Re-calculate sched_cpus for this VM */
+	spin_lock(&kvm->arch.sched_lock);
 
 	cpumask_clear(&mask);
 	kvm_for_each_vcpu(i, tmp, kvm) {
 		/*
-		 * We may get the stale cpus_ptr if another thread
+		 * We may get the stale sched_cpus if another thread
 		 * is concurrently changing its affinity. It'll
 		 * eventually go through vcpu_load() and we rely on
-		 * the last dvm_lock holder to make things correct.
+		 * the last sched_lock holder to make things correct.
 		 */
-		cpumask_or(&mask, &mask, tmp->arch.cpus_ptr);
+		cpumask_or(&mask, &mask, tmp->arch.sched_cpus);
 	}
 
-	if (cpumask_equal(kvm->arch.dvm_cpumask, &mask))
+	if (cpumask_equal(kvm->arch.sched_cpus, &mask))
 		goto out_unlock;
 
-	cpumask_copy(kvm->arch.dvm_cpumask, &mask);
+	cpumask_copy(kvm->arch.sched_cpus, &mask);
 
-	/*
-	 * Perform a heavy invalidation for this VMID. Good place
-	 * to optimize, right?
-	 */
 	kvm_flush_remote_tlbs(kvm);
 
 	/*
@@ -336,46 +330,39 @@ void kvm_hisi_dvmbm_load(struct kvm_vcpu *vcpu)
 	 * out to reload the LSUDVMBM configuration.
 	 */
 	kvm_update_vm_lsudvmbm(kvm);
-	kvm_make_all_cpus_request(kvm, KVM_REQ_RELOAD_DVMBM);
+	kvm_make_all_cpus_request(kvm, KVM_REQ_RELOAD_TLBI_DVMBM);
 
 out_unlock:
 	__kvm_write_lsudvmbm(kvm);
-	spin_unlock(&kvm->arch.dvm_lock);
+	spin_unlock(&kvm->arch.sched_lock);
 }
 
-void kvm_hisi_dvmbm_put(struct kvm_vcpu *vcpu)
+void kvm_tlbi_dvmbm_vcpu_put(struct kvm_vcpu *vcpu)
 {
 	if (!kvm_dvmbm_support)
 		return;
 
-	cpumask_copy(vcpu->arch.pre_cpus_ptr, vcpu->arch.cpus_ptr);
-
-	/*
-	 * We're pretty sure that host kernel runs at EL2 (as
-	 * DVMBM is disabled in case of nVHE) and can't be affected
-	 * by the configured SYS_LSUDVMBM_EL2.
-	 */
+	cpumask_copy(vcpu->arch.pre_sched_cpus, vcpu->arch.sched_cpus);
 }
 
-int kvm_hisi_init_dvmbm(struct kvm *kvm)
+int kvm_sched_affinity_vm_init(struct kvm *kvm)
 {
 	if (!kvm_dvmbm_support)
 		return 0;
 
-	spin_lock_init(&kvm->arch.dvm_lock);
-	kvm->arch.dvm_cpumask = kzalloc(sizeof(cpumask_t), GFP_ATOMIC);
-	if (!kvm->arch.dvm_cpumask)
+	spin_lock_init(&kvm->arch.sched_lock);
+	if (!zalloc_cpumask_var(&kvm->arch.sched_cpus, GFP_ATOMIC))
 		return -ENOMEM;
 
 	return 0;
 }
 
-void kvm_hisi_destroy_dvmbm(struct kvm *kvm)
+void kvm_sched_affinity_vm_destroy(struct kvm *kvm)
 {
 	if (!kvm_dvmbm_support)
 		return;
 
-	kfree(kvm->arch.dvm_cpumask);
+	free_cpumask_var(kvm->arch.sched_cpus);
 }
 
 void kvm_hisi_reload_lsudvmbm(struct kvm *kvm)

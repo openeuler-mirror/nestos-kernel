@@ -5,8 +5,6 @@
 #ifndef _ASM_X86_FPU_H
 #define _ASM_X86_FPU_H
 
-#include <linux/kabi.h>
-
 /*
  * The legacy x87 FPU state format, as saved by FSAVE and
  * restored by the FRSTOR instructions:
@@ -117,8 +115,8 @@ enum xfeature {
 	XFEATURE_PT_UNIMPLEMENTED_SO_FAR,
 	XFEATURE_PKRU,
 	XFEATURE_PASID,
-	XFEATURE_RSRVD_COMP_11,
-	XFEATURE_RSRVD_COMP_12,
+	XFEATURE_CET_USER,
+	XFEATURE_CET_KERNEL_UNUSED,
 	XFEATURE_RSRVD_COMP_13,
 	XFEATURE_RSRVD_COMP_14,
 	XFEATURE_LBR,
@@ -140,6 +138,8 @@ enum xfeature {
 #define XFEATURE_MASK_PT		(1 << XFEATURE_PT_UNIMPLEMENTED_SO_FAR)
 #define XFEATURE_MASK_PKRU		(1 << XFEATURE_PKRU)
 #define XFEATURE_MASK_PASID		(1 << XFEATURE_PASID)
+#define XFEATURE_MASK_CET_USER		(1 << XFEATURE_CET_USER)
+#define XFEATURE_MASK_CET_KERNEL	(1 << XFEATURE_CET_KERNEL_UNUSED)
 #define XFEATURE_MASK_LBR		(1 << XFEATURE_LBR)
 #define XFEATURE_MASK_XTILE_CFG		(1 << XFEATURE_XTILE_CFG)
 #define XFEATURE_MASK_XTILE_DATA	(1 << XFEATURE_XTILE_DATA)
@@ -255,6 +255,16 @@ struct pkru_state {
 } __packed;
 
 /*
+ * State component 11 is Control-flow Enforcement user states
+ */
+struct cet_user_state {
+	/* user control-flow settings */
+	u64 user_cet;
+	/* user shadow stack pointer */
+	u64 user_ssp;
+};
+
+/*
  * State component 15: Architectural LBR configuration state.
  * The size of Arch LBR state depends on the number of LBRs (lbr_depth).
  */
@@ -323,7 +333,7 @@ struct xstate_header {
 struct xregs_state {
 	struct fxregs_state		i387;
 	struct xstate_header		header;
-	u8				extended_state_area[0];
+	u8				extended_state_area[];
 } __attribute__ ((packed, aligned (64)));
 
 /*
@@ -463,7 +473,7 @@ struct fpu {
 	 * Pointer to the active struct fpstate. Initialized to
 	 * point at @__fpstate below.
 	 */
-	KABI_EXTEND(struct fpstate *fpstate)
+	struct fpstate			*fpstate;
 
 	/*
 	 * @__task_fpstate:
@@ -471,21 +481,21 @@ struct fpu {
 	 * Pointer to an inactive struct fpstate. Initialized to NULL. Is
 	 * used only for KVM support to swap out the regular task fpstate.
 	 */
-	KABI_EXTEND(struct fpstate *__task_fpstate)
+	struct fpstate			*__task_fpstate;
 
 	/*
 	 * @perm:
 	 *
 	 * Permission related information
 	 */
-	KABI_EXTEND(struct fpu_state_perm perm)
+	struct fpu_state_perm		perm;
 
 	/*
 	 * @guest_perm:
 	 *
 	 * Permission related information for guest pseudo FPUs
 	 */
-	KABI_EXTEND(struct fpu_state_perm guest_perm)
+	struct fpu_state_perm		guest_perm;
 
 	/*
 	 * @__fpstate:
@@ -494,12 +504,8 @@ struct fpu {
 	 * context switch and when the kernel uses the FPU. The registers
 	 * are restored from this storage on return to user space if they
 	 * are not longer containing the tasks FPU register state.
-	 *
-	 * For kabi fix:
-	 * Assuming that no 3rd party driver will reach into struct fpu
 	 */
-	KABI_BROKEN_REMOVE(union fpregs_state state)
-	KABI_EXTEND(struct fpstate __fpstate)
+	struct fpstate			__fpstate;
 	/*
 	 * WARNING: '__fpstate' is dynamically-sized.  Do not put
 	 * anything after it here.

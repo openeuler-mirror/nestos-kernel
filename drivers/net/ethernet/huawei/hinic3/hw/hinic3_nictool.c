@@ -895,7 +895,7 @@ int nictool_k_init(void *hwdev, void *chip_node)
 
 	/* Create equipment */
 	/*lint -save -e160*/
-	g_nictool_class = class_create(THIS_MODULE, HIADM3_DEV_CLASS);
+	g_nictool_class = class_create(HIADM3_DEV_CLASS);
 	/*lint -restore*/
 	if (IS_ERR(g_nictool_class)) {
 		pr_err("Create nictool_class fail\n");

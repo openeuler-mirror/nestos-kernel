@@ -527,7 +527,7 @@ int hinic3_get_chip_name(struct hinic3_lld_dev *lld_dev, char *chip_name, u16 ma
 		return -EFAULT;
 
 	lld_hold();
-	strncpy(chip_name, pci_adapter->chip_node->chip_name, max_len);
+	strscpy(chip_name, pci_adapter->chip_node->chip_name, max_len);
 	chip_name[max_len - 1] = '\0';
 
 	lld_put();
@@ -620,9 +620,9 @@ void hinic3_get_card_info(const void *hwdev, void *bufin)
 		}
 
 		if (hinic3_func_for_mgmt(fun_hwdev))
-			strlcpy(info->pf[i].name, "FOR_MGMT", IFNAMSIZ);
+			strscpy(info->pf[i].name, "FOR_MGMT", IFNAMSIZ);
 
-		strlcpy(info->pf[i].bus_info, pci_name(dev->pcidev),
+		strscpy(info->pf[i].bus_info, pci_name(dev->pcidev),
 			sizeof(info->pf[i].bus_info));
 		info->pf_num++;
 		i = info->pf_num;
@@ -678,7 +678,6 @@ bool hinic3_is_in_host(void)
 
 	return false;
 }
-
 
 static bool chip_node_is_exist(struct hinic3_pcidev *pci_adapter,
 			       unsigned char *bus_number)

@@ -9,6 +9,7 @@
 #include <net/flow.h>
 #include <net/neighbour.h>
 #include <net/sock.h>
+#include <linux/kabi.h>
 
 /* structs from net/ip6_fib.h */
 struct fib6_info;
@@ -67,6 +68,11 @@ struct ipv6_stub {
 
 	int (*ipv6_fragment)(struct net *net, struct sock *sk, struct sk_buff *skb,
 			     int (*output)(struct net *, struct sock *, struct sk_buff *));
+	struct net_device *(*ipv6_dev_find)(struct net *net, const struct in6_addr *addr,
+					    struct net_device *dev);
+
+	KABI_RESERVE(1)
+	KABI_RESERVE(2)
 };
 extern const struct ipv6_stub *ipv6_stub __read_mostly;
 
@@ -79,6 +85,15 @@ struct ipv6_bpf_stub {
 				     const struct in6_addr *daddr, __be16 dport,
 				     int dif, int sdif, struct udp_table *tbl,
 				     struct sk_buff *skb);
+	int (*ipv6_setsockopt)(struct sock *sk, int level, int optname,
+			       sockptr_t optval, unsigned int optlen);
+	int (*ipv6_getsockopt)(struct sock *sk, int level, int optname,
+			       sockptr_t optval, sockptr_t optlen);
+	int (*ipv6_dev_get_saddr)(struct net *net,
+				  const struct net_device *dst_dev,
+				  const struct in6_addr *daddr,
+				  unsigned int prefs,
+				  struct in6_addr *saddr);
 };
 extern const struct ipv6_bpf_stub *ipv6_bpf_stub __read_mostly;
 

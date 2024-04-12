@@ -50,23 +50,20 @@ struct thread_struct {
 };
 #define INIT_THREAD  { }
 
-/* Return saved PC of a blocked thread.  */
 struct task_struct;
-extern unsigned long thread_saved_pc(struct task_struct *);
+struct pt_regs;
 
 /* Do necessary setup to start up a newly executed thread.  */
-struct pt_regs;
-extern void start_thread(struct pt_regs *, unsigned long, unsigned long);
+extern void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long sp);
 
 /* Free all resources held by a thread. */
-extern void release_thread(struct task_struct *);
+extern void release_thread(struct task_struct *dead_task);
 
-unsigned long get_wchan(struct task_struct *p);
+unsigned long __get_wchan(struct task_struct *p);
 
 #define KSTK_EIP(tsk) (task_pt_regs(tsk)->pc)
 
-#define KSTK_ESP(tsk) \
-	((tsk) == current ? rdusp() : task_thread_info(tsk)->pcb.usp)
+#define KSTK_ESP(tsk) (task_pt_regs(tsk)->regs[30])
 
 #define cpu_relax()	barrier()
 

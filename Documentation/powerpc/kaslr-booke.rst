@@ -65,5 +65,5 @@ put the kernel in::
 
                               kernstart_virt_addr
 
-To enable KASLR, set CONFIG_RANDOMIZE_BASE = y. If KASLR is enable and you
+To enable KASLR, set CONFIG_RANDOMIZE_BASE = y. If KASLR is enabled and you
 want to disable it at runtime, add "nokaslr" to the kernel cmdline.

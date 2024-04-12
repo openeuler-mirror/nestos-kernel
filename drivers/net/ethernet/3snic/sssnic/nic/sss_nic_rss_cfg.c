@@ -104,7 +104,7 @@ static void sss_nic_fill_indir_tbl(struct sss_nic_rss_indirect_table *indir_tbl,
 		indir_tbl->entry[i] = (u16)indir_table[i];
 
 	temp_entry = (u32 *)indir_tbl->entry;
-	tbl_size = sizeof(indir_tbl->entry) / sizeof(u32);
+	tbl_size = sizeof(indir_tbl->entry) / (sizeof(u32));
 	for (i = 0; i < tbl_size; i++)
 		temp_entry[i] = cpu_to_be32(temp_entry[i]);
 }
@@ -339,4 +339,3 @@ int sss_nic_init_hw_rss(struct sss_nic_dev *nic_dev, u16 qp_num)
 
 	return 0;
 }
-

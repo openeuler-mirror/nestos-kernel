@@ -70,8 +70,9 @@ void walk_stackframe(struct task_struct *tsk, struct pt_regs *regs,
 
 	if (regs) {
 		unsigned long offset;
+
 		pc = regs->pc;
-		fp = regs->r15;
+		fp = regs->regs[15];
 		if (kallsyms_lookup_size_offset(pc, NULL, &offset)
 				&& offset < 16) {
 			/* call stack has not been setup
@@ -79,7 +80,7 @@ void walk_stackframe(struct task_struct *tsk, struct pt_regs *regs,
 			 */
 			if (fn(pc, data))
 				return;
-			pc = regs->r26;
+			pc = regs->regs[26];
 		}
 	} else if (tsk == current || tsk == NULL) {
 		fp = (unsigned long)__builtin_frame_address(0);
@@ -96,6 +97,7 @@ void walk_stackframe(struct task_struct *tsk, struct pt_regs *regs,
 	frame.fp = fp;
 	while (1) {
 		int ret;
+
 		ret = unwind_frame(tsk, &frame);
 		if (ret < 0)
 			break;
@@ -130,7 +132,7 @@ void walk_stackframe(struct task_struct *tsk, struct pt_regs *regs,
 	while (!kstack_end(ksp)) {
 		if (__kernel_text_address(pc) && fn(pc, data))
 			break;
-		pc = (*ksp++) - 0x4;
+		pc = *ksp++;
 	}
 }
 EXPORT_SYMBOL_GPL(walk_stackframe);
@@ -174,6 +176,19 @@ int save_trace(unsigned long pc, void *d)
 	return (trace->nr_entries >= trace->max_entries);
 }
 
+void save_stack_trace_regs(struct pt_regs *regs, struct stack_trace *trace)
+{
+	struct stack_trace_data data;
+
+	data.trace = trace;
+	data.nosched = 0;
+
+	walk_stackframe(current, regs, save_trace, &data);
+
+	if (trace->nr_entries < trace->max_entries)
+		trace->entries[trace->nr_entries++] = ULONG_MAX;
+}
+
 static void __save_stack_trace(struct task_struct *tsk,
 		struct stack_trace *trace, unsigned int nosched)
 {
@@ -212,11 +227,11 @@ static int save_pc(unsigned long pc, void *data)
 	return *p;
 }
 
-unsigned long get_wchan(struct task_struct *tsk)
+unsigned long __get_wchan(struct task_struct *tsk)
 {
 	unsigned long pc;
 
-	if (!tsk || tsk == current || tsk->state == TASK_RUNNING)
+	if (!tsk || tsk == current || task_is_running(tsk))
 		return 0;
 	walk_stackframe(tsk, NULL, save_pc, &pc);
 

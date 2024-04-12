@@ -28,6 +28,7 @@ config EXT3_FS_SECURITY
 
 config EXT4_FS
 	tristate "The Extended 4 (ext4) filesystem"
+	select BUFFER_HEAD
 	select JBD2
 	select CRC16
 	select CRYPTO
@@ -118,11 +119,10 @@ config EXT4_KUNIT_TESTS
 
 	  If unsure, say N.
 
-config EXT4_MITIGATION_FALSE_SHARING
-	bool "mitigation false sharing in ext4 inode"
-	depends on EXT4_FS
+config EXT4_ERROR_REPORT
+	bool "Ext4 error reporting by netlink"
+	depends on EXT4_FS && NET
 	default n
 	help
-	  Enable this to mitigation cacheline false sharing in ext4 inode info.
-
-	  If unsure, say N.
+	  Implement the ext3/ext4 file system error report. Report error to
+	  userspace by netlink

@@ -6,10 +6,6 @@
 
 #include <bpf/bpf_helpers.h>
 
-#ifndef __always_inline
-#define __always_inline inline __attribute__((always_inline))
-#endif
-
 /* Need to keep consistent with definitions in include/linux/fs.h */
 #define FMODE_CTL_RANDOM 0x1000
 #define FMODE_CTL_WILLNEED 0x400000
@@ -47,14 +43,14 @@ struct file_rd_hist {
 	__u32 tot_nr;
 };
 
-struct bpf_map_def SEC("maps") htab = {
-	.type = BPF_MAP_TYPE_HASH,
-	.key_size = sizeof(long),
-	.value_size = sizeof(struct file_rd_hist),
-	.max_entries = 10000,
-};
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u64);
+	__type(value, struct file_rd_hist);
+	__uint(max_entries, 10000);
+} htab SEC(".maps");
 
-static __always_inline bool is_expected_file(void *name)
+static bool is_expected_file(void *name)
 {
 	char prefix[5];
 	int err;
@@ -139,4 +135,3 @@ int fs_file_release(struct fs_file_release_args *args)
 }
 
 char _license[] SEC("license") = "GPL";
-__u32 _version SEC("version") = 1;

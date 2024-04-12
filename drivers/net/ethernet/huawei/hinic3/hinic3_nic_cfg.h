@@ -200,7 +200,7 @@ int hinic3_flush_tcam_rule(void *hwdev);
  * @retval zero: success
  * @retval non-zero: failure
  */
-int hinic3_update_mac(void *hwdev, u8 *old_mac, u8 *new_mac, u16 vlan_id,
+int hinic3_update_mac(void *hwdev, const u8 *old_mac, u8 *new_mac, u16 vlan_id,
 		      u16 func_id);
 
 /* *

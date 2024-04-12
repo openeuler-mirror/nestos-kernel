@@ -15,7 +15,6 @@
 #include <linux/platform_device.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
 #include <linux/syscore_ops.h>
 
 /* Registers */
@@ -50,8 +49,8 @@ static void htvec_irq_dispatch(struct irq_desc *desc)
 		while (pending) {
 			int bit = __ffs(pending);
 
-			generic_handle_irq(irq_linear_revmap(priv->htvec_domain, bit +
-							     VEC_COUNT_PER_REG * i));
+			generic_handle_domain_irq(priv->htvec_domain,
+						  bit + VEC_COUNT_PER_REG * i);
 			pending &= ~BIT(bit);
 			handled = true;
 		}
@@ -259,18 +258,16 @@ IRQCHIP_DECLARE(htvec, "loongson,htvec-1.0", htvec_of_init);
 #endif
 
 #ifdef CONFIG_ACPI
-static int __init
-pch_pic_parse_madt(union acpi_subtable_headers *header,
-		       const unsigned long end)
+static int __init pch_pic_parse_madt(union acpi_subtable_headers *header,
+					const unsigned long end)
 {
 	struct acpi_madt_bio_pic *pchpic_entry = (struct acpi_madt_bio_pic *)header;
 
 	return pch_pic_acpi_init(htvec_priv->htvec_domain, pchpic_entry);
 }
 
-static int __init
-pch_msi_parse_madt(union acpi_subtable_headers *header,
-		       const unsigned long end)
+static int __init pch_msi_parse_madt(union acpi_subtable_headers *header,
+					const unsigned long end)
 {
 	struct acpi_madt_msi_pic *pchmsi_entry = (struct acpi_madt_msi_pic *)header;
 
@@ -279,10 +276,16 @@ pch_msi_parse_madt(union acpi_subtable_headers *header,
 
 static int __init acpi_cascade_irqdomain_init(void)
 {
-	acpi_table_parse_madt(ACPI_MADT_TYPE_BIO_PIC,
-			      pch_pic_parse_madt, 0);
-	acpi_table_parse_madt(ACPI_MADT_TYPE_MSI_PIC,
-			      pch_msi_parse_madt, 0);
+	int r;
+
+	r = acpi_table_parse_madt(ACPI_MADT_TYPE_BIO_PIC, pch_pic_parse_madt, 0);
+	if (r < 0)
+		return r;
+
+	r = acpi_table_parse_madt(ACPI_MADT_TYPE_MSI_PIC, pch_msi_parse_madt, 0);
+	if (r < 0)
+		return r;
+
 	return 0;
 }
 
@@ -298,7 +301,7 @@ int __init htvec_acpi_init(struct irq_domain *parent,
 
 	num_parents = HTVEC_MAX_PARENT_IRQ;
 
-	domain_handle = irq_domain_alloc_fwnode((phys_addr_t *)acpi_htvec);
+	domain_handle = irq_domain_alloc_fwnode(&acpi_htvec->address);
 	if (!domain_handle) {
 		pr_err("Unable to allocate domain handle\n");
 		return -ENOMEM;
@@ -312,7 +315,7 @@ int __init htvec_acpi_init(struct irq_domain *parent,
 			num_parents, parent_irq, domain_handle);
 
 	if (ret == 0)
-		acpi_cascade_irqdomain_init();
+		ret = acpi_cascade_irqdomain_init();
 	else
 		irq_domain_free_fwnode(domain_handle);
 

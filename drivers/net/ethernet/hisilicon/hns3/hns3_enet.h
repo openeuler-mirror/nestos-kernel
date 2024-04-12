@@ -6,7 +6,7 @@
 
 #include <linux/dim.h>
 #include <linux/if_vlan.h>
-#include <net/page_pool.h>
+#include <net/page_pool/types.h>
 #include <asm/barrier.h>
 
 #include "hnae3.h"
@@ -471,6 +471,15 @@ struct hns3_tx_spare {
 	u32 len;
 };
 
+struct hns3_arp_reply {
+	__be32 dest_ip;
+	__be32 src_ip;
+	u8 dest_hw[ETH_ALEN];
+	u8 src_hw[ETH_ALEN];
+	u8 has_vlan;
+	__be16 vlan_tci;
+};
+
 struct hns3_enet_ring {
 	struct hns3_desc *desc; /* dma map address space */
 	struct hns3_desc_cb *desc_cb;
@@ -495,6 +504,11 @@ struct hns3_enet_ring {
 	 */
 	int next_to_clean;
 	u32 flag;          /* ring attribute */
+
+#define HNS3_APR_REPLY_LTH 32
+	struct hns3_arp_reply arp_reply[HNS3_APR_REPLY_LTH];
+	int arp_reply_head;
+	int arp_reply_tail;
 
 	int pending_buf;
 	union {
@@ -814,4 +828,5 @@ void hns3_cq_period_mode_init(struct hns3_nic_priv *priv,
 
 void hns3_external_lb_prepare(struct net_device *ndev, bool if_running);
 void hns3_external_lb_restore(struct net_device *ndev, bool if_running);
+bool hns3_is_page_pool_enabled(void);
 #endif

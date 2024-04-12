@@ -2,6 +2,8 @@
 #ifndef _ASM_SW64_UACCESS_H
 #define _ASM_SW64_UACCESS_H
 
+#include <asm-generic/access_ok.h>
+
 /*
  * The fs value determines whether argument validity checking should be
  * performed or not.  If get_fs() == USER_DS, checking is performed, with
@@ -22,27 +24,6 @@
 #define set_fs(x)	(current_thread_info()->addr_limit = (x))
 
 #define uaccess_kernel()       (get_fs().seg == KERNEL_DS.seg)
-
-/*
- * Is a address valid? This does a straightforward calculation rather
- * than tests.
- *
- * Address valid if:
- *  - "addr" doesn't have any high-bits set
- *  - AND "size" doesn't have any high-bits set
- *  - AND "addr+size-(size != 0)" doesn't have any high-bits set
- *  - OR we are in kernel mode.
- */
-#define __access_ok(addr, size) ({				\
-	unsigned long __ao_a = (addr), __ao_b = (size);		\
-	unsigned long __ao_end = __ao_a + __ao_b - !!__ao_b;	\
-	(get_fs().seg & (__ao_a | __ao_b | __ao_end)) == 0; })
-
-#define access_ok(addr, size)				\
-({							\
-	__chk_user_ptr(addr);				\
-	__access_ok(((unsigned long)(addr)), (size));		\
-})
 
 /*
  * These are the main single-value transfer routines.  They automatically
@@ -110,7 +91,7 @@ extern void __get_user_unknown(void);
 	long __gu_err = -EFAULT;				\
 	unsigned long __gu_val = 0;				\
 	const __typeof__(*(ptr)) __user *__gu_addr = (ptr);	\
-	if (__access_ok((unsigned long)__gu_addr, size)) {	\
+	if (__access_ok(__gu_addr, size)) {	\
 		__gu_err = 0;					\
 		switch (size) {					\
 		case 1:						\
@@ -207,7 +188,7 @@ extern void __put_user_unknown(void);
 ({								\
 	long __pu_err = -EFAULT;				\
 	__typeof__(*(ptr)) __user *__pu_addr = (ptr);		\
-	if (__access_ok((unsigned long)__pu_addr, size)) {	\
+	if (__access_ok(__pu_addr, size)) {	\
 		__pu_err = 0;					\
 		switch (size) {					\
 		case 1:						\
@@ -300,7 +281,7 @@ extern long __clear_user(void __user *to, long len);
 static inline long
 clear_user(void __user *to, long len)
 {
-	if (__access_ok((unsigned long)to, len))
+	if (__access_ok(to, len))
 		len = __clear_user(to, len);
 	return len;
 }
@@ -319,7 +300,7 @@ extern unsigned long __must_check __copy_user_flushcache(void *to,
 		const void __user *from, unsigned long n);
 
 static inline int
-__copy_from_user_flushcache(void *dst, const void __user *src, unsigned size)
+__copy_from_user_flushcache(void *dst, const void __user *src, unsigned long size)
 {
 	kasan_check_write(dst, size);
 	return __copy_user_flushcache(dst, src, size);

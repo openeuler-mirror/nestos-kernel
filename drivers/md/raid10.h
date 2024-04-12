@@ -75,9 +75,8 @@ struct r10conf {
 
 	/* queue pending writes and submit them on unplug */
 	struct bio_list		pending_bio_list;
-	int			pending_count;
 
-	spinlock_t		resync_lock;
+	seqlock_t		resync_lock;
 	atomic_t		nr_pending;
 	int			nr_waiting;
 	int			nr_queued;
@@ -101,7 +100,7 @@ struct r10conf {
 	/* When taking over an array from a different personality, we store
 	 * the new thread here until we fully activate the array.
 	 */
-	struct md_thread	*thread;
+	struct md_thread __rcu	*thread;
 
 	/*
 	 * Keep track of cluster resync window to send to other nodes.
@@ -124,7 +123,6 @@ struct r10bio {
 	sector_t		sector;	/* virtual sector number */
 	int			sectors;
 	unsigned long		state;
-	unsigned long		start_time;
 	struct mddev		*mddev;
 	/*
 	 * original bio going to /dev/mdx
@@ -146,12 +144,12 @@ struct r10bio {
 	 */
 	struct r10dev {
 		struct bio	*bio;
-		/* Currently just used for normal reads and writes */
-		struct md_rdev	*rdev;
-		/* used for resync and writes */
-		struct bio	*repl_bio;
-		/* Currently just used for normal writes */
-		struct md_rdev	*replacement;
+		union {
+			struct bio	*repl_bio; /* used for resync and
+						    * writes */
+			struct md_rdev	*rdev;	   /* used for reads
+						    * (read_slot >= 0) */
+		};
 		sector_t	addr;
 		int		devnum;
 	} devs[];
@@ -180,5 +178,6 @@ enum r10bio_state {
 	R10BIO_Previous,
 /* failfast devices did receive failfast requests. */
 	R10BIO_FailFast,
+	R10BIO_Discard,
 };
 #endif

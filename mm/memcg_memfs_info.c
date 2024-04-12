@@ -163,8 +163,8 @@ void mem_cgroup_print_memfs_info(struct mem_cgroup *memcg, char *pathbuf,
 	struct print_files_control pfc = {
 		.memcg = memcg,
 		.m = m,
-		.max_print_files = memfs_max_print_files,
-		.size_threshold = memfs_size_threshold,
+		.max_print_files = READ_ONCE(memfs_max_print_files),
+		.size_threshold = READ_ONCE(memfs_size_threshold),
 	};
 	int i;
 
@@ -208,7 +208,7 @@ static ssize_t memfs_size_threshold_show(struct kobject *kobj,
 					 struct kobj_attribute *attr,
 					 char *buf)
 {
-	return sprintf(buf, "%lu\n", memfs_size_threshold);
+	return sprintf(buf, "%lu\n", READ_ONCE(memfs_size_threshold));
 }
 
 static ssize_t memfs_size_threshold_store(struct kobject *kobj,
@@ -221,7 +221,8 @@ static ssize_t memfs_size_threshold_store(struct kobject *kobj,
 	err = kstrtoul(buf, 10, &count);
 	if (err)
 		return err;
-	memfs_size_threshold = count;
+
+	WRITE_ONCE(memfs_size_threshold, count);
 	return len;
 }
 
@@ -235,7 +236,7 @@ static ssize_t memfs_max_print_files_show(struct kobject *kobj,
 					  struct kobj_attribute *attr,
 					  char *buf)
 {
-	return sprintf(buf, "%lu\n", memfs_max_print_files);
+	return sprintf(buf, "%lu\n", READ_ONCE(memfs_max_print_files));
 }
 
 static ssize_t memfs_max_print_files_store(struct kobject *kobj,
@@ -248,7 +249,8 @@ static ssize_t memfs_max_print_files_store(struct kobject *kobj,
 	err = kstrtoul(buf, 10, &count);
 	if (err)
 		return err;
-	memfs_max_print_files = count;
+
+	WRITE_ONCE(memfs_max_print_files, count);
 	return len;
 }
 

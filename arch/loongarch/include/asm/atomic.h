@@ -7,8 +7,6 @@
 #ifndef _ASM_ATOMIC_H
 #define _ASM_ATOMIC_H
 
-#define ARCH_ATOMIC
-
 #include <linux/types.h>
 #include <asm/barrier.h>
 #include <asm/cmpxchg.h>
@@ -31,21 +29,7 @@
 
 #define ATOMIC_INIT(i)	  { (i) }
 
-/*
- * arch_atomic_read - read atomic variable
- * @v: pointer of type atomic_t
- *
- * Atomically reads the value of @v.
- */
 #define arch_atomic_read(v)	READ_ONCE((v)->counter)
-
-/*
- * arch_atomic_set - set atomic variable
- * @v: pointer of type atomic_t
- * @i: required value
- *
- * Atomically sets the value of @v to @i.
- */
 #define arch_atomic_set(v, i)	WRITE_ONCE((v)->counter, (i))
 
 #define ATOMIC_OP(op, I, asm_op)					\
@@ -141,14 +125,6 @@ static inline int arch_atomic_fetch_add_unless(atomic_t *v, int a, int u)
 }
 #define arch_atomic_fetch_add_unless arch_atomic_fetch_add_unless
 
-/*
- * arch_atomic_sub_if_positive - conditionally subtract integer from atomic variable
- * @i: integer value to subtract
- * @v: pointer of type atomic_t
- *
- * Atomically test @v and subtract @i if @v is greater or equal than @i.
- * The function returns the old value of @v minus @i.
- */
 static inline int arch_atomic_sub_if_positive(int i, atomic_t *v)
 {
 	int result;
@@ -162,10 +138,8 @@ static inline int arch_atomic_sub_if_positive(int i, atomic_t *v)
 		"	bltz	%0, 2f					\n"
 		"	sc.w	%1, %2					\n"
 		"	beqz	%1, 1b					\n"
-		"	b	3f					\n"
 		"2:							\n"
 		__WEAK_LLSC_MB
-		"3:							\n"
 		: "=&r" (result), "=&r" (temp), "+ZC" (v->counter)
 		: "I" (-i));
 	} else {
@@ -176,10 +150,8 @@ static inline int arch_atomic_sub_if_positive(int i, atomic_t *v)
 		"	bltz	%0, 2f					\n"
 		"	sc.w	%1, %2					\n"
 		"	beqz	%1, 1b					\n"
-		"	b	3f					\n"
 		"2:							\n"
 		__WEAK_LLSC_MB
-		"3:							\n"
 		: "=&r" (result), "=&r" (temp), "+ZC" (v->counter)
 		: "r" (i));
 	}
@@ -187,31 +159,13 @@ static inline int arch_atomic_sub_if_positive(int i, atomic_t *v)
 	return result;
 }
 
-#define arch_atomic_cmpxchg(v, o, n) (arch_cmpxchg(&((v)->counter), (o), (n)))
-#define arch_atomic_xchg(v, new) (arch_xchg(&((v)->counter), (new)))
-
-/*
- * arch_atomic_dec_if_positive - decrement by 1 if old value positive
- * @v: pointer of type atomic_t
- */
 #define arch_atomic_dec_if_positive(v)	arch_atomic_sub_if_positive(1, v)
 
 #ifdef CONFIG_64BIT
 
 #define ATOMIC64_INIT(i)    { (i) }
 
-/*
- * arch_atomic64_read - read atomic variable
- * @v: pointer of type atomic64_t
- *
- */
 #define arch_atomic64_read(v)	READ_ONCE((v)->counter)
-
-/*
- * arch_atomic64_set - set atomic variable
- * @v: pointer of type atomic64_t
- * @i: required value
- */
 #define arch_atomic64_set(v, i)	WRITE_ONCE((v)->counter, (i))
 
 #define ATOMIC64_OP(op, I, asm_op)					\
@@ -306,14 +260,6 @@ static inline long arch_atomic64_fetch_add_unless(atomic64_t *v, long a, long u)
 }
 #define arch_atomic64_fetch_add_unless arch_atomic64_fetch_add_unless
 
-/*
- * arch_atomic64_sub_if_positive - conditionally subtract integer from atomic variable
- * @i: integer value to subtract
- * @v: pointer of type atomic64_t
- *
- * Atomically test @v and subtract @i if @v is greater or equal than @i.
- * The function returns the old value of @v minus @i.
- */
 static inline long arch_atomic64_sub_if_positive(long i, atomic64_t *v)
 {
 	long result;
@@ -327,10 +273,8 @@ static inline long arch_atomic64_sub_if_positive(long i, atomic64_t *v)
 		"	bltz	%0, 2f					\n"
 		"	sc.d	%1, %2					\n"
 		"	beqz	%1, 1b					\n"
-		"	b	3f					\n"
 		"2:							\n"
 		__WEAK_LLSC_MB
-		"3:							\n"
 		: "=&r" (result), "=&r" (temp), "+ZC" (v->counter)
 		: "I" (-i));
 	} else {
@@ -341,10 +285,8 @@ static inline long arch_atomic64_sub_if_positive(long i, atomic64_t *v)
 		"	bltz	%0, 2f					\n"
 		"	sc.d	%1, %2					\n"
 		"	beqz	%1, 1b					\n"
-		"	b	3f					\n"
 		"2:							\n"
 		__WEAK_LLSC_MB
-		"3:							\n"
 		: "=&r" (result), "=&r" (temp), "+ZC" (v->counter)
 		: "r" (i));
 	}
@@ -352,14 +294,6 @@ static inline long arch_atomic64_sub_if_positive(long i, atomic64_t *v)
 	return result;
 }
 
-#define arch_atomic64_cmpxchg(v, o, n) \
-	((__typeof__((v)->counter))arch_cmpxchg(&((v)->counter), (o), (n)))
-#define arch_atomic64_xchg(v, new) (arch_xchg(&((v)->counter), (new)))
-
-/*
- * arch_atomic64_dec_if_positive - decrement by 1 if old value positive
- * @v: pointer of type atomic64_t
- */
 #define arch_atomic64_dec_if_positive(v)	arch_atomic64_sub_if_positive(1, v)
 
 #endif /* CONFIG_64BIT */

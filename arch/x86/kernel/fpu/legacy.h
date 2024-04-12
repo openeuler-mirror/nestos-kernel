@@ -24,11 +24,7 @@ static inline void ldmxcsr(u32 mxcsr)
 	asm volatile(ASM_STAC "\n"					\
 		     "1: " #insn "\n"					\
 		     "2: " ASM_CLAC "\n"				\
-		     ".section .fixup,\"ax\"\n"                         \
-		     "3:  negl %%eax\n"                                 \
-		     "    jmp  2b\n"                                    \
-		     ".previous\n"                                      \
-		     _ASM_EXTABLE_FAULT(1b, 2b)                         \
+		     _ASM_EXTABLE_TYPE(1b, 2b, EX_TYPE_FAULT_MCE_SAFE)	\
 		     : [err] "=a" (err), output				\
 		     : "0"(0), input);					\
 	err;								\
@@ -39,11 +35,7 @@ static inline void ldmxcsr(u32 mxcsr)
 	int err;							\
 	asm volatile("1:" #insn "\n\t"					\
 		     "2:\n"						\
-		     ".section .fixup,\"ax\"\n"				\
-		     "3:  movl $-1,%[err]\n"				\
-		     "    jmp  2b\n"					\
-		     ".previous\n"					\
-		     _ASM_EXTABLE(1b, 2b)				\
+		     _ASM_EXTABLE_TYPE_REG(1b, 2b, EX_TYPE_EFAULT_REG, %[err]) \
 		     : [err] "=r" (err), output				\
 		     : "0"(0), input);					\
 	err;								\
@@ -52,7 +44,7 @@ static inline void ldmxcsr(u32 mxcsr)
 #define kernel_insn(insn, output, input...)				\
 	asm volatile("1:" #insn "\n\t"					\
 		     "2:\n"						\
-		     _ASM_EXTABLE_HANDLE(1b, 2b, ex_handler_fprestore)  \
+		     _ASM_EXTABLE_TYPE(1b, 2b, EX_TYPE_FPU_RESTORE)	\
 		     : output : input)
 
 static inline int fnsave_to_user_sigframe(struct fregs_state __user *fx)

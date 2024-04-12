@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Kernel Debug Core
  *
@@ -22,10 +23,6 @@
  *
  * Original KGDB stub: David Grothe <dave@gcom.com>,
  * Tigran Aivazian <tigran@sco.com>
- *
- * This file is licensed under the terms of the GNU General Public License
- * version 2. This program is licensed "as is" without any warranty of any
- * kind, whether express or implied.
  */
 
 #define pr_fmt(fmt) "KGDB: " fmt
@@ -53,7 +50,6 @@
 #include <linux/pid.h>
 #include <linux/smp.h>
 #include <linux/mm.h>
-#include <linux/vmacache.h>
 #include <linux/rcupdate.h>
 #include <linux/irq.h>
 #include <linux/security.h>
@@ -120,7 +116,6 @@ static DEFINE_RAW_SPINLOCK(dbg_slave_lock);
  */
 static atomic_t			masters_in_kgdb;
 static atomic_t			slaves_in_kgdb;
-static atomic_t			kgdb_break_tasklet_var;
 atomic_t			kgdb_setting_breakpoint;
 
 struct task_struct		*kgdb_usethread;
@@ -243,7 +238,11 @@ NOKPROBE_SYMBOL(kgdb_call_nmi_hook);
 static DEFINE_PER_CPU(call_single_data_t, kgdb_roundup_csd) =
 	CSD_INIT(kgdb_call_nmi_hook, NULL);
 
+#ifdef CONFIG_IPI_AS_NMI
 void kgdb_smp_call_nmi_hook(void)
+#else
+void __weak kgdb_roundup_cpus(void)
+#endif
 {
 	call_single_data_t *csd;
 	int this_cpu = raw_smp_processor_id();
@@ -274,12 +273,14 @@ void kgdb_smp_call_nmi_hook(void)
 			kgdb_info[cpu].rounding_up = false;
 	}
 }
+#ifdef CONFIG_IPI_AS_NMI
 NOKPROBE_SYMBOL(kgdb_smp_call_nmi_hook);
 
 void __weak kgdb_roundup_cpus(void)
 {
 	kgdb_smp_call_nmi_hook();
 }
+#endif
 NOKPROBE_SYMBOL(kgdb_roundup_cpus);
 
 #endif
@@ -292,17 +293,6 @@ static void kgdb_flush_swbreak_addr(unsigned long addr)
 {
 	if (!CACHE_FLUSH_IS_SAFE)
 		return;
-
-	if (current->mm) {
-		int i;
-
-		for (i = 0; i < VMACACHE_SIZE; i++) {
-			if (!current->vmacache.vmas[i])
-				continue;
-			flush_cache_range(current->vmacache.vmas[i],
-					  addr, addr + BREAK_INSTR_SIZE);
-		}
-	}
 
 	/* Force flush instruction cache if it was outside the mm */
 	flush_icache_range(addr, addr + BREAK_INSTR_SIZE);
@@ -990,7 +980,7 @@ static int __init opt_kgdb_con(char *str)
 early_param("kgdbcon", opt_kgdb_con);
 
 #ifdef CONFIG_MAGIC_SYSRQ
-static void sysrq_handle_dbg(int key)
+static void sysrq_handle_dbg(u8 key)
 {
 	if (!dbg_io_ops) {
 		pr_crit("ERROR: No KGDB I/O module available\n");
@@ -1028,6 +1018,9 @@ void kgdb_panic(const char *msg)
 	if (panic_timeout)
 		return;
 
+	debug_locks_off();
+	console_flush_on_panic(CONSOLE_FLUSH_PENDING);
+
 	if (dbg_kdb_mode)
 		kdb_printf("PANIC: %s\n", msg);
 
@@ -1063,12 +1056,13 @@ dbg_notify_reboot(struct notifier_block *this, unsigned long code, void *x)
 	/*
 	 * Take the following action on reboot notify depending on value:
 	 *    1 == Enter debugger
-	 *    0 == [the default] detatch debug client
+	 *    0 == [the default] detach debug client
 	 *   -1 == Do nothing... and use this until the board resets
 	 */
 	switch (kgdbreboot) {
 	case 1:
 		kgdb_breakpoint();
+		goto done;
 	case -1:
 		goto done;
 	}
@@ -1124,31 +1118,6 @@ static void kgdb_unregister_callbacks(void)
 		}
 	}
 }
-
-/*
- * There are times a tasklet needs to be used vs a compiled in
- * break point so as to cause an exception outside a kgdb I/O module,
- * such as is the case with kgdboe, where calling a breakpoint in the
- * I/O driver itself would be fatal.
- */
-static void kgdb_tasklet_bpt(unsigned long ing)
-{
-	kgdb_breakpoint();
-	atomic_set(&kgdb_break_tasklet_var, 0);
-}
-
-static DECLARE_TASKLET_OLD(kgdb_tasklet_breakpoint, kgdb_tasklet_bpt);
-
-void kgdb_schedule_breakpoint(void)
-{
-	if (atomic_read(&kgdb_break_tasklet_var) ||
-		atomic_read(&kgdb_active) != -1 ||
-		atomic_read(&kgdb_setting_breakpoint))
-		return;
-	atomic_inc(&kgdb_break_tasklet_var);
-	tasklet_schedule(&kgdb_tasklet_breakpoint);
-}
-EXPORT_SYMBOL_GPL(kgdb_schedule_breakpoint);
 
 /**
  *	kgdb_register_io_module - register KGDB IO module
@@ -1207,7 +1176,7 @@ int kgdb_register_io_module(struct kgdb_io *new_dbg_io_ops)
 EXPORT_SYMBOL_GPL(kgdb_register_io_module);
 
 /**
- *	kkgdb_unregister_io_module - unregister KGDB IO module
+ *	kgdb_unregister_io_module - unregister KGDB IO module
  *	@old_dbg_io_ops: the io ops vector
  *
  *	Unregister it with the KGDB core.

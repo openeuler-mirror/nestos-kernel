@@ -6,7 +6,11 @@
  * SW-64 floating-point control register defines:
  */
 #define FPCR_DNOD	(1UL << 47)		/* denorm INV trap disable */
+#ifdef CONFIG_SUBARCH_C3B
 #define FPCR_DNZ	(1UL << 48)		/* denorms to zero */
+#else
+#define FPCR_DNOE	(1UL << 48)		/* hardware denormal support */
+#endif
 #define FPCR_INVD	(1UL << 49)		/* invalid op disable (opt.) */
 #define FPCR_DZED	(1UL << 50)		/* division by zero disable (opt.) */
 #define FPCR_OVFD	(1UL << 51)		/* overflow disable (optional) */
@@ -29,6 +33,12 @@
 #define FPCR_DYN_MASK		(0x3UL << FPCR_DYN_SHIFT)
 
 #define FPCR_MASK		0xffff800000000000L
+
+#ifdef CONFIG_SUBARCH_C3B
+#define FPCR_INIT		FPCR_DYN_NORMAL
+#else
+#define FPCR_INIT		(FPCR_DYN_NORMAL | FPCR_DNOE)
+#endif
 
 /* status bit coming from hardware fpcr . definde by fire3 */
 #define FPCR_STATUS_INV0	(1UL << 52)
@@ -175,6 +185,11 @@
 /*
  * Convert the software IEEE trap enable and status bits into the
  * hardware fpcr format.
+ *
+ * Digital Unix engineers receive my thanks for not defining the
+ * software bits identical to the hardware bits.  The chip designers
+ * receive my thanks for making all the not-implemented fpcr bits
+ * RAZ forcing us to use system calls to read/write this value.
  */
 static inline unsigned long
 ieee_swcr_to_fpcr(unsigned long sw)

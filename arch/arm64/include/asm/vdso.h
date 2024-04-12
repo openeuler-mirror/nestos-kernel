@@ -32,6 +32,12 @@
 	(void *)(vdso_offset_##name - VDSO_LBASE + (unsigned long)(base)); \
 })
 
+extern char vdso_start[], vdso_end[];
+extern char vdso32_start[], vdso32_end[];
+#ifdef CONFIG_ARM64_ILP32
+extern char vdso_ilp32_start[], vdso_ilp32_end[];
+#endif
+
 #endif /* !__ASSEMBLY__ */
 
 #endif /* __ASM_VDSO_H */

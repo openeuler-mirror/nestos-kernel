@@ -332,10 +332,8 @@ static int hinic3_init_intr_coalesce(struct hinic3_nic_dev *nic_dev)
 		return -EINVAL;
 	}
 	nic_dev->intr_coalesce = kzalloc(size, GFP_KERNEL);
-	if (!nic_dev->intr_coalesce) {
-		nic_err(&nic_dev->pdev->dev, "Failed to alloc intr coalesce\n");
+	if (!nic_dev->intr_coalesce)
 		return -ENOMEM;
-	}
 
 	init_intr_coal_param(nic_dev);
 
@@ -411,6 +409,7 @@ static void hinic3_sw_deinit(struct hinic3_nic_dev *nic_dev)
 static int hinic3_sw_init(struct hinic3_nic_dev *nic_dev)
 {
 	struct net_device *netdev = nic_dev->netdev;
+	u8 mac_addr[ETH_ALEN];
 	u64 nic_features;
 	int err = 0;
 
@@ -434,11 +433,12 @@ static int hinic3_sw_init(struct hinic3_nic_dev *nic_dev)
 
 	hinic3_try_to_enable_rss(nic_dev);
 
-	err = hinic3_get_default_mac(nic_dev->hwdev, netdev->dev_addr);
+	err = hinic3_get_default_mac(nic_dev->hwdev, mac_addr);
 	if (err) {
 		nic_err(&nic_dev->pdev->dev, "Failed to get MAC address\n");
 		goto get_mac_err;
 	}
+	eth_hw_addr_set(netdev, mac_addr);
 
 	if (!is_valid_ether_addr(netdev->dev_addr)) {
 		if (!HINIC3_FUNC_IS_VF(nic_dev->hwdev)) {
@@ -722,10 +722,8 @@ static int setup_nic_dev(struct net_device *netdev,
 	mutex_init(&nic_dev->nic_mutex);
 
 	nic_dev->vlan_bitmap = kzalloc(VLAN_BITMAP_SIZE(nic_dev), GFP_KERNEL);
-	if (!nic_dev->vlan_bitmap) {
-		nic_err(&pdev->dev, "Failed to allocate vlan bitmap\n");
+	if (!nic_dev->vlan_bitmap)
 		return -ENOMEM;
-	}
 
 	nic_dev->workq = create_singlethread_workqueue(HINIC3_NIC_DEV_WQ_NAME);
 	if (!nic_dev->workq) {
@@ -749,7 +747,7 @@ static int setup_nic_dev(struct net_device *netdev,
 
 	netdev_name_fmt = hinic3_get_dft_netdev_name_fmt(nic_dev);
 	if (netdev_name_fmt)
-		strncpy(netdev->name, netdev_name_fmt, IFNAMSIZ);
+		strscpy(netdev->name, netdev_name_fmt, IFNAMSIZ);
 
 	return 0;
 }

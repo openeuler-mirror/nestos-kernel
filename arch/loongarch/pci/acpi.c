@@ -26,15 +26,17 @@ void pcibios_add_bus(struct pci_bus *bus)
 
 int pcibios_root_bridge_prepare(struct pci_host_bridge *bridge)
 {
+
 	if (!acpi_disabled) {
-		struct pci_config_window *cfg = bridge->bus->sysdata;
-		struct acpi_device *adev = to_acpi_device(cfg->parent);
+		struct acpi_device *adev = NULL;
 		struct device *bus_dev = &bridge->bus->dev;
+		struct pci_config_window *cfg = bridge->bus->sysdata;
+
+		adev = to_acpi_device(cfg->parent);
 
 		ACPI_COMPANION_SET(&bridge->dev, adev);
 		set_dev_node(bus_dev, pa_to_nid(cfg->res.start));
 	}
-
 	return 0;
 }
 
@@ -65,7 +67,7 @@ static void arch_pci_root_validate_resources(struct device *dev,
 	struct resource *res1, *res2, *root = NULL;
 	struct resource_entry *tmp, *entry, *entry2;
 
-	BUG_ON((type & (IORESOURCE_MEM | IORESOURCE_IO)) == 0);
+	WARN_ON((type & (IORESOURCE_MEM | IORESOURCE_IO)) == 0);
 	root = (type & IORESOURCE_MEM) ? &iomem_resource : &ioport_resource;
 
 	list_splice_init(resources, &list);
@@ -127,6 +129,7 @@ static void arch_pci_root_remap_iospace(struct fwnode_handle *fwnode,
 	resource_size_t pci_addr = cpu_addr - entry->offset;
 	resource_size_t length = resource_size(res);
 	unsigned long port;
+
 	if (pci_register_io_range(fwnode, cpu_addr, length)) {
 		res->start += ISA_IOSIZE;
 		cpu_addr = res->start;
@@ -212,7 +215,7 @@ static int acpi_prepare_root_resources(struct acpi_pci_root_info *ci)
 	if (status > 0) {
 		resource_list_for_each_entry_safe(entry, tmp, &ci->resources) {
 			if (entry->res->flags & IORESOURCE_MEM) {
-				if(!entry->offset) {
+				if (!entry->offset) {
 					entry->offset = ci->root->mcfg_addr & GENMASK_ULL(63, 40);
 					entry->res->start |= entry->offset;
 					entry->res->end   |= entry->offset;
@@ -237,7 +240,7 @@ static int acpi_prepare_root_resources(struct acpi_pci_root_info *ci)
  *  - alloc struct pci_config_window with space for all mappings
  *  - ioremap the config space
  */
-struct pci_config_window *arch_pci_ecam_create(struct device *dev,
+static struct pci_config_window *arch_pci_ecam_create(struct device *dev,
 		struct resource *cfgres, struct resource *busr, const struct pci_ecam_ops *ops)
 {
 	int bsz, bus_range, err;

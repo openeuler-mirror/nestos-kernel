@@ -12,9 +12,9 @@
 #include <linux/irqdomain.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
 #include <linux/syscore_ops.h>
 
 /* Registers */
@@ -33,6 +33,10 @@
 #define PIC_COUNT		(PIC_COUNT_PER_REG * PIC_REG_COUNT)
 #define PIC_REG_IDX(irq_id)	((irq_id) / PIC_COUNT_PER_REG)
 #define PIC_REG_BIT(irq_id)	((irq_id) % PIC_COUNT_PER_REG)
+#define PIC_COUNT_PER_REG64	64
+#define PIC_REG64_COUNT		1
+#define PIC_REG64_IDX(irq_id)	((irq_id) / PIC_COUNT_PER_REG64)
+#define PIC_REG64_BIT(irq_id)	((irq_id) % PIC_COUNT_PER_REG64)
 
 static int nr_pics;
 
@@ -51,6 +55,11 @@ struct pch_pic {
 static struct pch_pic *pch_pic_priv[MAX_IO_PICS];
 
 struct fwnode_handle *pch_pic_handle[MAX_IO_PICS];
+
+struct irq_domain *get_pchpic_irq_domain(void)
+{
+	return pch_pic_priv[0]->pic_domain;
+}
 
 static void pch_pic_bitset(struct pch_pic *priv, int offset, int bit)
 {
@@ -88,8 +97,8 @@ static void pch_pic_unmask_irq(struct irq_data *d)
 {
 	struct pch_pic *priv = irq_data_get_irq_chip_data(d);
 
-	writel(BIT(PIC_REG_BIT(d->hwirq)),
-			priv->base + PCH_PIC_CLR + PIC_REG_IDX(d->hwirq) * 4);
+	writeq(BIT(PIC_REG64_BIT(d->hwirq)),
+			priv->base + PCH_PIC_CLR + PIC_REG64_IDX(d->hwirq) * 8);
 
 	irq_chip_unmask_parent(d);
 	pch_pic_bitclr(priv, PCH_PIC_MASK, d->hwirq);
@@ -136,8 +145,8 @@ static void pch_pic_ack_irq(struct irq_data *d)
 
 	reg = readl(priv->base + PCH_PIC_EDGE + PIC_REG_IDX(d->hwirq) * 4);
 	if (reg & BIT(PIC_REG_BIT(d->hwirq))) {
-		writel(BIT(PIC_REG_BIT(d->hwirq)),
-			priv->base + PCH_PIC_CLR + PIC_REG_IDX(d->hwirq) * 4);
+		writeq(BIT(PIC_REG64_BIT(d->hwirq)),
+			priv->base + PCH_PIC_CLR + PIC_REG64_IDX(d->hwirq) * 8);
 	}
 	irq_chip_ack_parent(d);
 }
@@ -160,15 +169,21 @@ static int pch_pic_domain_translate(struct irq_domain *d,
 	struct pch_pic *priv = d->host_data;
 	struct device_node *of_node = to_of_node(fwspec->fwnode);
 
-	if (fwspec->param_count < 1)
-		return -EINVAL;
-
 	if (of_node) {
-		*hwirq = fwspec->param[0] + priv->ht_vec_base;
+		if (fwspec->param_count < 2)
+			return -EINVAL;
+
+		*hwirq = fwspec->param[0];
 		*type = fwspec->param[1] & IRQ_TYPE_SENSE_MASK;
 	} else {
+		if (fwspec->param_count < 1)
+			return -EINVAL;
+
 		*hwirq = fwspec->param[0] - priv->gsi_base;
-		*type = IRQ_TYPE_NONE;
+		if (fwspec->param_count > 1)
+			*type = fwspec->param[1] & IRQ_TYPE_SENSE_MASK;
+		else
+			*type = IRQ_TYPE_NONE;
 	}
 
 	return 0;
@@ -190,7 +205,7 @@ static int pch_pic_alloc(struct irq_domain *domain, unsigned int virq,
 
 	parent_fwspec.fwnode = domain->parent->fwnode;
 	parent_fwspec.param_count = 1;
-	parent_fwspec.param[0] = hwirq;
+	parent_fwspec.param[0] = hwirq + priv->ht_vec_base;
 
 	err = irq_domain_alloc_irqs_parent(domain, virq, 1, &parent_fwspec);
 	if (err)
@@ -215,7 +230,7 @@ static void pch_pic_reset(struct pch_pic *priv)
 	int i;
 
 	for (i = 0; i < PIC_COUNT; i++) {
-		/* Write vectore ID */
+		/* Write vector ID */
 		writeb(priv->ht_vec_base + i, priv->base + PCH_INT_HTVEC(i));
 		/* Hardcode route to HT0 Lo */
 		writeb(1, priv->base + PCH_INT_ROUTE(i));
@@ -224,13 +239,15 @@ static void pch_pic_reset(struct pch_pic *priv)
 	for (i = 0; i < PIC_REG_COUNT; i++) {
 		/* Clear IRQ cause registers, mask all interrupts */
 		writel_relaxed(0xFFFFFFFF, priv->base + PCH_PIC_MASK + 4 * i);
-		writel_relaxed(0xFFFFFFFF, priv->base + PCH_PIC_CLR + 4 * i);
 		/* Clear auto bounce, we don't need that */
 		writel_relaxed(0, priv->base + PCH_PIC_AUTO0 + 4 * i);
 		writel_relaxed(0, priv->base + PCH_PIC_AUTO1 + 4 * i);
 		/* Enable HTMSI transformer */
 		writel_relaxed(0xFFFFFFFF, priv->base + PCH_PIC_HTMSI_EN + 4 * i);
 	}
+
+	for (i = 0; i < PIC_REG64_COUNT; i++)
+		writeq_relaxed((u64)-1, priv->base + PCH_PIC_CLR + 8 * i);
 }
 
 static int pch_pic_suspend(void)
@@ -373,9 +390,8 @@ int find_pch_pic(u32 gsi)
 	return -1;
 }
 
-static int __init
-pch_lpc_parse_madt(union acpi_subtable_headers *header,
-		       const unsigned long end)
+static int __init pch_lpc_parse_madt(union acpi_subtable_headers *header,
+					const unsigned long end)
 {
 	struct acpi_madt_lpc_pic *pchlpc_entry = (struct acpi_madt_lpc_pic *)header;
 
@@ -384,8 +400,12 @@ pch_lpc_parse_madt(union acpi_subtable_headers *header,
 
 static int __init acpi_cascade_irqdomain_init(void)
 {
-	acpi_table_parse_madt(ACPI_MADT_TYPE_LPC_PIC,
-			      pch_lpc_parse_madt, 0);
+	int r;
+
+	r = acpi_table_parse_madt(ACPI_MADT_TYPE_LPC_PIC, pch_lpc_parse_madt, 0);
+	if (r < 0)
+		return r;
+
 	return 0;
 }
 
@@ -413,7 +433,7 @@ int __init pch_pic_acpi_init(struct irq_domain *parent,
 	}
 
 	if (acpi_pchpic->id == 0)
-		acpi_cascade_irqdomain_init();
+		ret = acpi_cascade_irqdomain_init();
 
 	return ret;
 }

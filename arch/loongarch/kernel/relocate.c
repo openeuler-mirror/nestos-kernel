@@ -8,22 +8,20 @@
 #include <linux/elf.h>
 #include <linux/kernel.h>
 #include <linux/printk.h>
+#include <linux/panic_notifier.h>
 #include <linux/start_kernel.h>
 #include <asm/bootinfo.h>
 #include <asm/early_ioremap.h>
 #include <asm/inst.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
-#include <linux/of_fdt.h>
 
 #define RELOCATED(x) ((void *)((long)x + reloc_offset))
 #define RELOCATED_KASLR(x) ((void *)((long)x + random_offset))
 
-extern void fw_init_cmdline(unsigned long argc, unsigned long cmdp);
-
 static unsigned long reloc_offset;
 
-static inline __init void relocate_relative(void)
+static inline void __init relocate_relative(void)
 {
 	Elf64_Rela *rela, *rela_end;
 	rela = (Elf64_Rela *)&__rela_dyn_begin;
@@ -43,7 +41,7 @@ static inline __init void relocate_relative(void)
 	}
 }
 
-static inline void __init relocate_la_abs(long random_offset)
+static inline void __init relocate_absolute(long random_offset)
 {
 	void *begin, *end;
 	struct rela_la_abs *p;
@@ -54,7 +52,7 @@ static inline void __init relocate_la_abs(long random_offset)
 	for (p = begin; (void *)p < end; p++) {
 		long v = p->symvalue;
 		uint32_t lu12iw, ori, lu32id, lu52id;
-		union loongarch_instruction *insn = (void *)p - p->offset;
+		union loongarch_instruction *insn = (void *)p->pc;
 
 		lu12iw = (v >> 12) & 0xfffff;
 		ori    = v & 0xfff;
@@ -103,6 +101,14 @@ static inline __init unsigned long get_random_boot(void)
 
 	return hash;
 }
+
+static int __init nokaslr(char *p)
+{
+	pr_info("KASLR is disabled.\n");
+
+	return 0; /* Print a notice and silence the boot warning */
+}
+early_param("nokaslr", nokaslr);
 
 static inline __init bool kaslr_disabled(void)
 {
@@ -159,27 +165,14 @@ static inline void __init update_reloc_offset(unsigned long *addr, long random_o
 	*new_addr = (unsigned long)reloc_offset;
 }
 
-void * __init relocate_kernel(void)
+unsigned long __init relocate_kernel(void)
 {
 	unsigned long kernel_length;
 	unsigned long random_offset = 0;
 	void *location_new = _text; /* Default to original kernel start */
-	void *kernel_entry = start_kernel; /* Default to original kernel entry point */
-	char *cmdline;
+	char *cmdline = early_ioremap(fw_arg1, COMMAND_LINE_SIZE); /* Boot command line is passed in fw_arg1 */
 
-	/* Get the command line */
-	if (!fw_arg2) {
-		/* a0 = efi flag, a1 = small fdt */
-		early_init_dt_scan(early_ioremap(fw_arg1, SZ_64K));
-	} else if (fw_arg0 == 1 || fw_arg0 == 0) {
-		/* a0 = efi flag, a1 = cmdline, a2 = systemtab */
-		cmdline = early_ioremap(fw_arg1, COMMAND_LINE_SIZE);
-		strscpy(boot_command_line, cmdline, COMMAND_LINE_SIZE);
-		early_iounmap(cmdline, COMMAND_LINE_SIZE);
-	} else {
-		/* a0 = argc, a1 = argv, a3 = envp */
-		fw_init_cmdline(fw_arg0, fw_arg1);
-	}
+	strscpy(boot_command_line, cmdline, COMMAND_LINE_SIZE);
 
 #ifdef CONFIG_RANDOMIZE_BASE
 	location_new = determine_relocation_address();
@@ -189,9 +182,6 @@ void * __init relocate_kernel(void)
 		random_offset = (unsigned long)location_new - (unsigned long)(_text);
 #endif
 	reloc_offset = (unsigned long)_text - VMLINUX_LOAD_ADDRESS;
-
-	/* Reset the command line now so we don't end up with a duplicate */
-	boot_command_line[0] = '\0';
 
 	if (random_offset) {
 		kernel_length = (long)(_end) - (long)(_text);
@@ -207,15 +197,8 @@ void * __init relocate_kernel(void)
 
 		reloc_offset += random_offset;
 
-		/* Return the new kernel's entry point */
-		kernel_entry = RELOCATED_KASLR(start_kernel);
-
 		/* The current thread is now within the relocated kernel */
-		__asm__ __volatile__ (
-			"move $t0, %0\t\n"
-			"add.d $tp, $tp, $t0\t\n"
-			::"r" (random_offset)
-			:);
+		__current_thread_info = RELOCATED_KASLR(__current_thread_info);
 
 		update_reloc_offset(&reloc_offset, random_offset);
 	}
@@ -223,9 +206,9 @@ void * __init relocate_kernel(void)
 	if (reloc_offset)
 		relocate_relative();
 
-	relocate_la_abs(random_offset);
+	relocate_absolute(random_offset);
 
-	return kernel_entry;
+	return random_offset;
 }
 
 /*

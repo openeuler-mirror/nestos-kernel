@@ -17,54 +17,12 @@
 #include <asm/pgtable.h>
 #include <asm/extable.h>
 #include <asm/asm-extable.h>
+#include <asm-generic/access_ok.h>
 
 extern u64 __ua_limit;
 
 #define __UA_ADDR	".dword"
 #define __UA_LIMIT	__ua_limit
-
-/*
- * Is a address valid? This does a straightforward calculation rather
- * than tests.
- *
- * Address valid if:
- *  - "addr" doesn't have any high-bits set
- *  - AND "size" doesn't have any high-bits set
- *  - AND "addr+size" doesn't have any high-bits set
- *  - OR we are in kernel mode.
- *
- * __ua_size() is a trick to avoid runtime checking of positive constant
- * sizes; for those we already know at compile time that the size is ok.
- */
-#define __ua_size(size)							\
-	((__builtin_constant_p(size) && (signed long) (size) > 0) ? 0 : (size))
-
-/*
- * access_ok: - Checks if a user space pointer is valid
- * @addr: User space pointer to start of block to check
- * @size: Size of block to check
- *
- * Context: User context only. This function may sleep if pagefaults are
- *          enabled.
- *
- * Checks if a pointer to a block of memory in user space is valid.
- *
- * Returns true (nonzero) if the memory block may be valid, false (zero)
- * if it is definitely invalid.
- *
- * Note that, depending on architecture, this function probably just
- * checks that the pointer is in the user space range - after calling
- * this function, memory access functions may still return -EFAULT.
- */
-
-static inline int __access_ok(const void __user *p, unsigned long size)
-{
-	unsigned long addr = (unsigned long)p;
-	return (__UA_LIMIT & (addr | (addr + size) | __ua_size(size))) == 0;
-}
-
-#define access_ok(addr, size)					\
-	likely(__access_ok((addr), (size)))
 
 /*
  * get_user: - Get a simple variable from user space.
@@ -227,12 +185,10 @@ do {									\
 	__asm__ __volatile__(						\
 	"1:	" insn "	%z2, %1		# __put_user_asm\n"	\
 	"2:							\n"	\
-	_ASM_EXTABLE_UACCESS_ERR(1b, 2b,%0)				\
+	_ASM_EXTABLE_UACCESS_ERR(1b, 2b, %0)				\
 	: "+r" (__pu_err), "=m" (__m(ptr))				\
 	: "Jr" (__pu_val));						\
 }
-
-#define HAVE_GET_KERNEL_NOFAULT
 
 #define __get_kernel_nofault(dst, src, type, err_label)			\
 do {									\
@@ -294,58 +250,7 @@ extern unsigned long __clear_user(void __user *addr, __kernel_size_t size);
 	__cl_size;							\
 })
 
-extern long __strncpy_from_user(char *to, const char __user *from, long len);
-
-/*
- * strncpy_from_user: - Copy a NUL terminated string from userspace.
- * @to:   Destination address, in kernel space.  This buffer must be at
- *	  least @len bytes long.
- * @from: Source address, in user space.
- * @len:  Maximum number of bytes to copy, including the trailing NUL.
- *
- * Copies a NUL-terminated string from userspace to kernel space.
- *
- * On success, returns the length of the string (not including the trailing
- * NUL).
- *
- * If access to userspace fails, returns -EFAULT (some data may have been
- * copied).
- *
- * If @len is smaller than the length of the string, copies @len bytes
- * and returns @len.
- */
-static inline long
-strncpy_from_user(char *to, const char __user *from, long len)
-{
-	if (!access_ok(from, len))
-		return -EFAULT;
-
-	might_fault();
-	return __strncpy_from_user(to, from, len);
-}
-
-extern long __strnlen_user(const char __user *s, long n);
-
-/*
- * strnlen_user: - Get the size of a string in user space.
- * @s: The string to measure.
- *
- * Context: User context only. This function may sleep if pagefaults are
- *          enabled.
- *
- * Get the size of a NUL-terminated string in user space.
- *
- * Returns the size of the string INCLUDING the terminating NUL.
- * On exception, returns 0.
- * If the string is too long, returns a value greater than @n.
- */
-static inline long strnlen_user(const char __user *s, long n)
-{
-	if (!access_ok(s, 1))
-		return 0;
-
-	might_fault();
-	return __strnlen_user(s, n);
-}
+extern long strncpy_from_user(char *to, const char __user *from, long n);
+extern long strnlen_user(const char __user *str, long n);
 
 #endif /* _ASM_UACCESS_H */

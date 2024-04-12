@@ -30,7 +30,6 @@ static inline unsigned long hcall(unsigned long hcall, unsigned long arg0,
 	register unsigned long __r17 __asm__("$17") = arg0;
 	register unsigned long __r18 __asm__("$18") = arg1;
 	register unsigned long __r19 __asm__("$19") = arg2;
-
 	__asm__ __volatile__(
 		"sys_call %5 "
 		: "=r"(__r16), "=r"(__r17), "=r"(__r18), "=r"(__r19), "=r"(__r0)

@@ -15,6 +15,8 @@
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/err.h>
+#include <linux/ima.h>
+#include <generated/utsrelease.h>
 
 #include "ima.h"
 
@@ -45,12 +47,9 @@ static int __init ima_add_boot_aggregate(void)
 	struct integrity_iint_cache tmp_iint, *iint = &tmp_iint;
 	struct ima_event_data event_data = { .iint = iint,
 					     .filename = boot_aggregate_name };
+	struct ima_max_digest_data hash;
 	int result = -ENOMEM;
 	int violation = 0;
-	struct {
-		struct ima_digest_data hdr;
-		char digest[TPM_MAX_DIGEST_SIZE];
-	} hash;
 
 	memset(iint, 0, sizeof(*iint));
 	memset(&hash, 0, sizeof(hash));
@@ -86,7 +85,11 @@ static int __init ima_add_boot_aggregate(void)
 
 	result = ima_store_template(entry, violation, NULL,
 				    boot_aggregate_name,
+#ifdef CONFIG_IMA_DIGEST_LIST
 				    CONFIG_IMA_MEASURE_PCR_IDX, NULL);
+#else
+				    CONFIG_IMA_MEASURE_PCR_IDX);
+#endif
 	if (result < 0) {
 		ima_free_template_entry(entry);
 		audit_cause = "store_entry";
@@ -150,6 +153,10 @@ int __init ima_init(void)
 		return rc;
 
 	ima_init_key_queue();
+
+	ima_measure_critical_data("kernel_info", "kernel_version",
+				  UTS_RELEASE, strlen(UTS_RELEASE), false,
+				  NULL, 0);
 
 	return rc;
 }

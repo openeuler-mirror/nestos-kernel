@@ -475,7 +475,7 @@ static struct skcipher_alg cbc_aes_alg = {
 };
 
 static const struct x86_cpu_id padlock_cpu_id[] = {
-	X86_MATCH_FEATURE(X86_FEATURE_XCRYPT, NULL),
+	X86_MATCH_VENDOR_FAM_FEATURE(CENTAUR, 6, X86_FEATURE_XCRYPT, NULL),
 	{}
 };
 MODULE_DEVICE_TABLE(x86cpu, padlock_cpu_id);

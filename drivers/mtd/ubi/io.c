@@ -193,6 +193,11 @@ retry:
 	} else {
 		ubi_assert(len == read);
 
+		if (ubi_dbg_is_bitflip(ubi)) {
+			dbg_gen("bit-flip (emulated)");
+			return UBI_IO_BITFLIPS;
+		}
+
 		if (ubi_dbg_is_read_failure(ubi, MASK_READ_FAILURE)) {
 			ubi_warn(ubi, "cannot read %d bytes from PEB %d:%d (emulated)",
 				 len, pnum, offset);
@@ -203,11 +208,6 @@ retry:
 			ubi_warn(ubi, "ECC error (emulated) while reading %d bytes from PEB %d:%d, read %zd bytes",
 				 len, pnum, offset, read);
 			return -EBADMSG;
-		}
-
-		if (ubi_dbg_is_bitflip(ubi)) {
-			dbg_gen("bit-flip (emulated)");
-			err = UBI_IO_BITFLIPS;
 		}
 	}
 
@@ -547,7 +547,14 @@ int ubi_io_sync_erase(struct ubi_device *ubi, int pnum, int torture)
 		return -EROFS;
 	}
 
-	if (ubi->nor_flash) {
+	/*
+	 * If the flash is ECC-ed then we have to erase the ECC block before we
+	 * can write to it. But the write is in preparation to an erase in the
+	 * first place. This means we cannot zero out EC and VID before the
+	 * erase and we just have to hope the flash starts erasing from the
+	 * start of the page.
+	 */
+	if (ubi->nor_flash && ubi->mtd->writesize == 1) {
 		err = nor_erase_prepare(ubi, pnum);
 		if (err)
 			return err;
@@ -791,7 +798,7 @@ int ubi_io_read_ec_hdr(struct ubi_device *ubi, int pnum,
 		return UBI_IO_BITFLIPS;
 
 	if (ubi_dbg_is_read_failure(ubi, MASK_READ_FAILURE_EC)) {
-		ubi_warn(ubi, "cannot read EC header from PEB %d(emulated)",
+		ubi_warn(ubi, "cannot read EC header from PEB %d (emulated)",
 			 pnum);
 		return -EIO;
 	}
@@ -855,8 +862,8 @@ int ubi_io_write_ec_hdr(struct ubi_device *ubi, int pnum,
 	if (err)
 		return err;
 
-	if (ubi_dbg_power_cut(ubi, MASK_POWER_CUT_EC)) {
-		ubi_warn(ubi, "XXXXX emulating a power cut when writing EC header XXXXX");
+	if (ubi_dbg_is_power_cut(ubi, MASK_POWER_CUT_EC)) {
+		ubi_warn(ubi, "emulating a power cut when writing EC header");
 		ubi_ro_mode(ubi);
 		return -EROFS;
 	}
@@ -950,12 +957,7 @@ static int validate_vid_hdr(const struct ubi_device *ubi,
 				ubi_err(ubi, "bad data_size");
 				goto bad;
 			}
-		} else if (lnum == used_ebs - 1) {
-			if (data_size == 0) {
-				ubi_err(ubi, "bad data_size at last LEB");
-				goto bad;
-			}
-		} else {
+		} else if (lnum > used_ebs - 1) {
 			ubi_err(ubi, "too high lnum");
 			goto bad;
 		}
@@ -1075,28 +1077,28 @@ int ubi_io_read_vid_hdr(struct ubi_device *ubi, int pnum,
 		return UBI_IO_BITFLIPS;
 
 	if (ubi_dbg_is_read_failure(ubi, MASK_READ_FAILURE_VID)) {
-		ubi_warn(ubi, "cannot read VID header from PEB %d(emulated)",
+		ubi_warn(ubi, "cannot read VID header from PEB %d (emulated)",
 			 pnum);
 		return -EIO;
 	}
 
 	if (ubi_dbg_is_ff(ubi, MASK_IO_FF_VID)) {
-		ubi_warn(ubi, "bit-all-ff (emulated)\n");
+		ubi_warn(ubi, "bit-all-ff (emulated)");
 		return UBI_IO_FF;
 	}
 
 	if (ubi_dbg_is_ff_bitflips(ubi, MASK_IO_FF_BITFLIPS_VID)) {
-		ubi_warn(ubi, "bit-all-ff with error reported by MTD driver (emulated)\n");
+		ubi_warn(ubi, "bit-all-ff with error reported by MTD driver (emulated)");
 		return UBI_IO_FF_BITFLIPS;
 	}
 
 	if (ubi_dbg_is_bad_hdr(ubi, MASK_BAD_HDR_VID)) {
-		ubi_warn(ubi, "bad_hdr (emulated)\n");
+		ubi_warn(ubi, "bad_hdr (emulated)");
 		return UBI_IO_BAD_HDR;
 	}
 
 	if (ubi_dbg_is_bad_hdr_ebadmsg(ubi, MASK_BAD_HDR_EBADMSG_VID)) {
-		ubi_warn(ubi, "bad_hdr with ECC error (emulated)\n");
+		ubi_warn(ubi, "bad_hdr with ECC error (emulated)");
 		return UBI_IO_BAD_HDR_EBADMSG;
 	}
 
@@ -1142,8 +1144,8 @@ int ubi_io_write_vid_hdr(struct ubi_device *ubi, int pnum,
 	if (err)
 		return err;
 
-	if (ubi_dbg_power_cut(ubi, MASK_POWER_CUT_VID)) {
-		ubi_warn(ubi, "XXXXX emulating a power cut when writing VID header XXXXX");
+	if (ubi_dbg_is_power_cut(ubi, MASK_POWER_CUT_VID)) {
+		ubi_warn(ubi, "emulating a power cut when writing VID header");
 		ubi_ro_mode(ubi);
 		return -EROFS;
 	}
@@ -1221,7 +1223,7 @@ fail:
  * @ubi: UBI device description object
  * @pnum: the physical eraseblock number to check
  *
- * This function returns zero if the erase counter header is all right and and
+ * This function returns zero if the erase counter header is all right and
  * a negative error code if not or if an error occurred.
  */
 static int self_check_peb_ec_hdr(const struct ubi_device *ubi, int pnum)

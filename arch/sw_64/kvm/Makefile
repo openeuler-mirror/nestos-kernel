@@ -3,11 +3,18 @@
 # Makefile for Kernel-based Virtual Machine module
 #
 
-KVM := ../../../virt/kvm
+ccflags-y += -I $(srctree)/$(src)
 
-ccflags-y += -Ivirt/kvm -Iarch/sw_64/kvm
+include $(srctree)/virt/kvm/Makefile.kvm
 
-kvm-$(CONFIG_KVM_SW64_HOST) += $(KVM)/kvm_main.o $(KVM)/eventfd.o $(KVM)/irqchip.o $(KVM)/vfio.o
-kvm-$(CONFIG_KVM_SW64_HOST) += kvm-sw64.o entry.o emulate.o mmio.o kvm_timer.o handle_exit.o perf.o
+obj-$(CONFIG_KVM) += kvm.o
 
-obj-$(CONFIG_KVM_SW64_HOST) += kvm.o
+kvm-y += sw64.o
+kvm-y += entry.o
+kvm-y += emulate.o
+kvm-y += mmio.o
+kvm-y += kvm_timer.o
+kvm-y += handle_exit.o
+kvm-y += perf.o
+kvm-$(CONFIG_SUBARCH_C3B) += kvm_core3.o kvm_cma.o
+kvm-$(CONFIG_SUBARCH_C4) += kvm_core4.o mmu.o

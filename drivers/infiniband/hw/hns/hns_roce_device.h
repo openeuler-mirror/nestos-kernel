@@ -33,8 +33,10 @@
 #ifndef _HNS_ROCE_DEVICE_H
 #define _HNS_ROCE_DEVICE_H
 
+#include <linux/pci.h>
 #include <rdma/ib_verbs.h>
 #include <rdma/hns-abi.h>
+#include "hns_roce_debugfs.h"
 #include "hns_roce_bond.h"
 
 #define PCI_REVISION_ID_HIP08			0x21
@@ -92,8 +94,6 @@
 /* Configure to HW for PAGE_SIZE larger than 4KB */
 #define PG_SHIFT_OFFSET				(PAGE_SHIFT - 12)
 
-#define ATOMIC_WR_LEN				8
-
 #define HNS_ROCE_IDX_QUE_ENTRY_SZ		4
 #define SRQ_DB_REG				0x230
 
@@ -134,15 +134,6 @@ enum hns_roce_event {
 	HNS_ROCE_EVENT_TYPE_INVALID_XRCETH	      = 0x17,
 };
 
-/* Private QP creation flags to be passed in ib_qp_init_attr.create_flags.
- *
- * These flags are intended for internal use by the hns driver, and they
- * rely on the range reserved for that use in the ib_qp_create_flags enum.
- */
-enum hns_roce_qp_create_flags {
-	HNS_ROCE_QP_CREATE_DCA_EN = IB_QP_CREATE_RESERVED_START,
-};
-
 enum {
 	HNS_ROCE_CAP_FLAG_REREG_MR		= BIT(0),
 	HNS_ROCE_CAP_FLAG_ROCE_V1_V2		= BIT(1),
@@ -156,12 +147,11 @@ enum {
 	HNS_ROCE_CAP_FLAG_QP_FLOW_CTRL		= BIT(9),
 	HNS_ROCE_CAP_FLAG_ATOMIC		= BIT(10),
 	HNS_ROCE_CAP_FLAG_DIRECT_WQE		= BIT(12),
-	HNS_ROCE_CAP_FLAG_SVE_DIRECT_WQE	= BIT(13),
 	HNS_ROCE_CAP_FLAG_SDI_MODE		= BIT(14),
-	HNS_ROCE_CAP_FLAG_DCA_MODE		= BIT(15),
 	HNS_ROCE_CAP_FLAG_STASH			= BIT(17),
 	HNS_ROCE_CAP_FLAG_CQE_INLINE		= BIT(19),
 	HNS_ROCE_CAP_FLAG_BOND			= BIT(21),
+	HNS_ROCE_CAP_FLAG_SRQ_RECORD_DB         = BIT(22),
 };
 
 #define HNS_ROCE_DB_TYPE_COUNT			2
@@ -185,6 +175,7 @@ enum hns_roce_instance_state {
 	HNS_ROCE_STATE_INIT,
 	HNS_ROCE_STATE_INITED,
 	HNS_ROCE_STATE_UNINIT,
+	HNS_ROCE_STATE_BOND_UNINIT,
 };
 
 enum {
@@ -194,7 +185,6 @@ enum {
 #define HNS_ROCE_CMD_SUCCESS			1
 
 #define HNS_ROCE_MAX_HOP_NUM			3
-
 /* The minimum page size is 4K for hardware */
 #define HNS_HW_PAGE_SHIFT			12
 #define HNS_HW_PAGE_SIZE			(1 << HNS_HW_PAGE_SHIFT)
@@ -208,8 +198,7 @@ struct hns_roce_uar {
 enum hns_roce_mmap_type {
 	HNS_ROCE_MMAP_TYPE_DB = 1,
 	HNS_ROCE_MMAP_TYPE_DWQE,
-	HNS_ROCE_MMAP_TYPE_DCA,
-	HNS_ROCE_MMAP_TYPE_RESET,
+	HNS_ROCE_MMAP_TYPE_RESET = 4,
 };
 
 struct hns_user_mmap_entry {
@@ -218,44 +207,14 @@ struct hns_user_mmap_entry {
 	u64 address;
 };
 
-struct hns_roce_dca_ctx {
-	struct list_head pool; /* all DCA mems link to @pool */
-	spinlock_t pool_lock; /* protect @pool */
-	unsigned int free_mems; /* free mem num in pool */
-	size_t free_size; /* free mem size in pool */
-	size_t total_size; /* total size in pool */
-	size_t max_size; /* max size the pool can expand to */
-	size_t min_size; /* shrink if @free_size > @min_size */
-	unsigned int unit_size; /* unit size per DCA mem */
-
-	unsigned int max_qps;
-	unsigned int status_npage;
-	struct ida ida;
-
-#define HNS_DCA_BITS_PER_STATUS 1
-	unsigned long *buf_status;
-	unsigned long *sync_status;
-
-	bool exit_aging;
-	struct list_head aging_proc_list;
-	struct list_head aging_new_list;
-	spinlock_t aging_lock;
-	struct delayed_work aging_dwork;
-	struct hns_user_mmap_entry *dca_mmap_entry;
-};
-
 struct hns_roce_ucontext {
 	struct ib_ucontext	ibucontext;
-	struct list_head list; /* link all uctx to uctx_list on hr_dev */
-	pid_t pid; /* process id to which the uctx belongs */
 	struct hns_roce_uar	uar;
 	struct list_head	page_list;
 	struct mutex		page_mutex;
 	struct hns_user_mmap_entry *db_mmap_entry;
 	struct hns_user_mmap_entry *reset_mmap_entry;
 	u32			config;
-	struct hns_roce_dca_ctx	dca_ctx;
-	void *dca_dbgfs;
 };
 
 struct hns_roce_pd {
@@ -318,6 +277,11 @@ struct hns_roce_hem_list {
 	dma_addr_t root_ba; /* pointer to the root ba table */
 };
 
+enum mtr_type {
+	MTR_DEFAULT = 0,
+	MTR_PBL,
+};
+
 struct hns_roce_buf_attr {
 	struct {
 		size_t	size;  /* region size */
@@ -327,6 +291,7 @@ struct hns_roce_buf_attr {
 	unsigned int page_shift;  /* buffer page shift */
 	unsigned int user_access; /* umem access flag */
 	u64 iova;
+	enum mtr_type type;
 	bool mtt_only; /* only alloc buffer-required MTT memory */
 	bool adaptive; /* adaptive for page_shift and hopnum */
 };
@@ -347,19 +312,6 @@ struct hns_roce_mtr {
 	struct ib_umem		*umem; /* user space buffer */
 	struct hns_roce_buf	*kmem; /* kernel space buffer */
 	struct hns_roce_hem_cfg  hem_cfg; /* config for hardware addressing */
-};
-
-/* DCA config */
-struct hns_roce_dca_cfg {
-	spinlock_t		lock;
-	u16			attach_count;
-	u32			buf_id;
-	u32			dcan;
-	void			**buf_list;
-	u32			npages;
-	u32			sq_idx;
-	bool			aging_enable;
-	struct list_head	aging_node;
 };
 
 struct hns_roce_mw {
@@ -399,7 +351,6 @@ struct hns_roce_wq {
 	u32		max_gs;
 	u32		rsv_sge;
 	u32		offset;
-	int		wqe_offset;
 	u32		wqe_shift; /* WQE size */
 	u32		head;
 	u32		tail;
@@ -411,7 +362,6 @@ struct hns_roce_sge {
 	unsigned int	sge_cnt; /* SGE num */
 	u32		offset;
 	u32		sge_shift; /* SGE size */
-	int		wqe_offset;
 };
 
 struct hns_roce_buf_list {
@@ -521,6 +471,8 @@ struct hns_roce_srq {
 	spinlock_t		lock;
 	struct mutex		mutex;
 	void (*event)(struct hns_roce_srq *srq, enum hns_roce_event event);
+	struct hns_roce_db	rdb;
+	u32			cap_flags;
 };
 
 struct hns_roce_uar_table {
@@ -649,19 +601,23 @@ struct hns_roce_work {
 	u32 queue_num;
 };
 
+enum hns_roce_cong_type {
+	CONG_TYPE_DCQCN,
+	CONG_TYPE_LDCP,
+	CONG_TYPE_HC3,
+	CONG_TYPE_DIP,
+};
+
 struct hns_roce_qp {
 	struct ib_qp		ibqp;
 	struct hns_roce_wq	rq;
 	struct hns_roce_db	rdb;
 	struct hns_roce_db	sdb;
 	unsigned long		en_flags;
-	unsigned long		congest_type;
-	u32			doorbell_qpn;
 	enum ib_sig_type	sq_signal_bits;
 	struct hns_roce_wq	sq;
 
 	struct hns_roce_mtr	mtr;
-	struct hns_roce_dca_cfg	dca_cfg;
 
 	u32			buff_size;
 	struct mutex		mutex;
@@ -697,6 +653,7 @@ struct hns_roce_qp {
 	u32			config;
 	u8			tc_mode;
 	u8			priority;
+	enum hns_roce_cong_type cong_type;
 };
 
 struct hns_roce_ib_iboe {
@@ -777,13 +734,6 @@ enum hns_roce_scc_algo {
 	HNS_ROCE_SCC_ALGO_TOTAL,
 };
 
-enum congest_type {
-	HNS_ROCE_CONGEST_TYPE_DCQCN = 1 << HNS_ROCE_SCC_ALGO_DCQCN,
-	HNS_ROCE_CONGEST_TYPE_LDCP = 1 << HNS_ROCE_SCC_ALGO_LDCP,
-	HNS_ROCE_CONGEST_TYPE_HC3 = 1 << HNS_ROCE_SCC_ALGO_HC3,
-	HNS_ROCE_CONGEST_TYPE_DIP = 1 << HNS_ROCE_SCC_ALGO_DIP,
-};
-
 struct hns_roce_caps {
 	u64		fw_ver;
 	u8		num_ports;
@@ -798,14 +748,13 @@ struct hns_roce_caps {
 	u32		rsv0;
 	u32		num_qps;
 	u32		reserved_qps;
-	int		num_qpc_timer;
 	u32		num_srqs;
 	u32		max_wqes;
 	u32		max_srq_wrs;
 	u32		max_srq_sges;
 	u32		max_sq_desc_sz;
 	u32		max_rq_desc_sz;
-	u32		max_srq_desc_sz;
+	u32		rsv2;
 	int		max_qp_init_rdma;
 	int		max_qp_dest_rdma;
 	u32		num_cqs;
@@ -914,8 +863,8 @@ struct hns_roce_caps {
 	u16		default_aeq_period;
 	u16		default_aeq_arm_st;
 	u16		default_ceq_arm_st;
-	u8		congest_type;
-	u8		default_congest_type;
+	u8		cong_cap;
+	enum hns_roce_cong_type default_cong_type;
 };
 
 enum hns_roce_device_state {
@@ -947,10 +896,10 @@ enum hns_roce_hw_pkt_stat_index {
 	HNS_ROCE_HW_CQ_CQE_CNT,
 	HNS_ROCE_HW_CQ_POE_CNT,
 	HNS_ROCE_HW_CQ_NOTIFY_CNT,
-	HNS_ROCE_HW_CNT_TOTAL,
+	HNS_ROCE_HW_CNT_TOTAL
 };
 
-enum hns_roce_hw_dfx_stat_index {
+enum hns_roce_sw_dfx_stat_index {
 	HNS_ROCE_DFX_AEQE_CNT,
 	HNS_ROCE_DFX_CEQE_CNT,
 	HNS_ROCE_DFX_CMDS_CNT,
@@ -961,7 +910,9 @@ enum hns_roce_hw_dfx_stat_index {
 	HNS_ROCE_DFX_QP_CREATE_ERR_CNT,
 	HNS_ROCE_DFX_QP_MODIFY_ERR_CNT,
 	HNS_ROCE_DFX_CQ_CREATE_ERR_CNT,
+	HNS_ROCE_DFX_CQ_MODIFY_ERR_CNT,
 	HNS_ROCE_DFX_SRQ_CREATE_ERR_CNT,
+	HNS_ROCE_DFX_SRQ_MODIFY_ERR_CNT,
 	HNS_ROCE_DFX_XRCD_ALLOC_ERR_CNT,
 	HNS_ROCE_DFX_MR_REG_ERR_CNT,
 	HNS_ROCE_DFX_MR_REREG_ERR_CNT,
@@ -1001,10 +952,6 @@ struct hns_roce_hw {
 	int (*clear_hem)(struct hns_roce_dev *hr_dev,
 			 struct hns_roce_hem_table *table, int obj,
 			 u32 step_idx);
-	int (*set_dca_buf)(struct hns_roce_dev *hr_dev,
-			   struct hns_roce_qp *hr_qp);
-	bool (*chk_dca_buf_inactive)(struct hns_roce_dev *hr_dev,
-				     struct hns_roce_qp *hr_qp);
 	int (*modify_qp)(struct ib_qp *ibqp, const struct ib_qp_attr *attr,
 			 int attr_mask, enum ib_qp_state cur_state,
 			 enum ib_qp_state new_state, struct ib_udata *udata);
@@ -1019,17 +966,19 @@ struct hns_roce_hw {
 	int (*query_mpt)(struct hns_roce_dev *hr_dev, u32 key, void *buffer);
 	int (*get_dscp)(struct hns_roce_dev *hr_dev, u8 dscp,
 			u8 *tc_mode, u8 *priority);
+	int (*query_sccc)(struct hns_roce_dev *hr_dev, u32 qpn, void *buffer);
+	int (*query_srqc)(struct hns_roce_dev *hr_dev, u32 srqn, void *buffer);
 	int (*query_hw_counter)(struct hns_roce_dev *hr_dev,
 				u64 *stats, u32 port, int *hw_counters);
 	const struct ib_device_ops *hns_roce_dev_ops;
 	const struct ib_device_ops *hns_roce_dev_srq_ops;
+	int (*config_scc_param)(struct hns_roce_dev *hr_dev,
+				enum hns_roce_scc_algo algo);
+	int (*query_scc_param)(struct hns_roce_dev *hr_dev,
+			       enum hns_roce_scc_algo alog);
 	int (*bond_init)(struct hns_roce_dev *hr_dev);
 	bool (*bond_is_active)(struct hns_roce_dev *hr_dev);
 	struct net_device *(*get_bond_netdev)(struct hns_roce_dev *hr_dev);
-	int (*config_scc_param)(struct hns_roce_dev *hr_dev, u8 port_num,
-				enum hns_roce_scc_algo algo);
-	int (*query_scc_param)(struct hns_roce_dev *hr_dev, u8 port_num,
-			       enum hns_roce_scc_algo alog);
 };
 
 #define HNS_ROCE_SCC_PARAM_SIZE 4
@@ -1040,25 +989,12 @@ struct hns_roce_scc_param {
 	enum hns_roce_scc_algo algo_type;
 	struct delayed_work scc_cfg_dwork;
 	struct hns_roce_dev *hr_dev;
-	u8 port_num;
-};
-
-struct hns_roce_port {
-	struct hns_roce_dev *hr_dev;
-	u8 port_num;
-	struct kobject kobj;
-	struct hns_roce_scc_param *scc_param;
 };
 
 struct hns_roce_dev {
 	struct ib_device	ib_dev;
 	struct pci_dev		*pci_dev;
 	struct device		*dev;
-	void			*dbgfs; /* debugfs for this dev */
-
-	struct list_head	uctx_list; /* list of all uctx on this dev */
-	spinlock_t		uctx_list_lock; /* protect @uctx_list */
-
 	struct hns_roce_uar     priv_uar;
 	const char		*irq_names[HNS_ROCE_MAX_IRQ_NUM];
 	spinlock_t		sm_lock;
@@ -1080,8 +1016,6 @@ struct hns_roce_dev {
 	void __iomem		*mem_base;
 	struct hns_roce_caps	caps;
 	struct xarray		qp_table_xa;
-
-	struct hns_roce_dca_ctx	dca_ctx;
 
 	unsigned char	dev_addr[HNS_ROCE_MAX_PORTS][ETH_ALEN];
 	u64			sys_image_guid;
@@ -1107,7 +1041,6 @@ struct hns_roce_dev {
 	struct hns_roce_hem_table  gmv_table;
 
 	int			cmd_mod;
-	u8			mac_type;
 	int			loop_idc;
 	u32			sdb_offset;
 	u32			odb_offset;
@@ -1119,12 +1052,12 @@ struct hns_roce_dev {
 	struct work_struct ecc_work;
 	u32 func_num;
 	u32 is_vf;
-	u32 congest_algo_tmpl_id;
+	u32 cong_algo_tmpl_id;
 	u64 dwqe_page;
-
-	struct notifier_block bond_nb;
-	struct hns_roce_port port_data[HNS_ROCE_MAX_PORTS];
+	struct hns_roce_dev_debugfs dbgfs;
 	atomic64_t *dfx_cnt;
+	struct hns_roce_scc_param *scc_param;
+	struct notifier_block bond_nb;
 };
 
 static inline struct hns_roce_dev *to_hr_dev(struct ib_device *ib_dev)
@@ -1271,6 +1204,19 @@ static inline enum ib_port_state get_port_state(struct net_device *net_dev)
 		IB_PORT_ACTIVE : IB_PORT_DOWN;
 }
 
+static inline struct net_device *get_hr_netdev(struct hns_roce_dev *hr_dev,
+					       u8 port)
+{
+	return hr_dev->iboe.netdevs[port];
+}
+
+static inline u8 get_hr_bus_num(struct hns_roce_dev *hr_dev)
+{
+	return hr_dev->pci_dev->bus->number;
+}
+
+extern const struct attribute_group *hns_attr_port_groups[];
+
 void hns_roce_init_uar_table(struct hns_roce_dev *dev);
 int hns_roce_uar_alloc(struct hns_roce_dev *dev, struct hns_roce_uar *uar);
 
@@ -1283,8 +1229,13 @@ void hns_roce_cmd_use_polling(struct hns_roce_dev *hr_dev);
 
 /* hns roce hw need current block and next block addr from mtt */
 #define MTT_MIN_COUNT	 2
+static inline dma_addr_t hns_roce_get_mtr_ba(struct hns_roce_mtr *mtr)
+{
+	return mtr->hem_cfg.root_ba;
+}
+
 int hns_roce_mtr_find(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
-		      u32 offset, u64 *mtt_buf, int mtt_max, u64 *base_addr);
+		      u32 offset, u64 *mtt_buf, int mtt_max);
 int hns_roce_mtr_create(struct hns_roce_dev *hr_dev, struct hns_roce_mtr *mtr,
 			struct hns_roce_buf_attr *buf_attr,
 			unsigned int page_shift, struct ib_udata *udata,
@@ -1301,7 +1252,6 @@ int hns_roce_init_qp_table(struct hns_roce_dev *hr_dev);
 void hns_roce_init_srq_table(struct hns_roce_dev *hr_dev);
 void hns_roce_init_xrcd_table(struct hns_roce_dev *hr_dev);
 
-void hns_roce_cleanup_eq_table(struct hns_roce_dev *hr_dev);
 void hns_roce_cleanup_cq_table(struct hns_roce_dev *hr_dev);
 void hns_roce_cleanup_qp_table(struct hns_roce_dev *hr_dev);
 
@@ -1322,9 +1272,10 @@ struct ib_mr *hns_roce_get_dma_mr(struct ib_pd *pd, int acc);
 struct ib_mr *hns_roce_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 				   u64 virt_addr, int access_flags,
 				   struct ib_udata *udata);
-int hns_roce_rereg_user_mr(struct ib_mr *mr, int flags, u64 start, u64 length,
-			   u64 virt_addr, int mr_access_flags, struct ib_pd *pd,
-			   struct ib_udata *udata);
+struct ib_mr *hns_roce_rereg_user_mr(struct ib_mr *mr, int flags, u64 start,
+				     u64 length, u64 virt_addr,
+				     int mr_access_flags, struct ib_pd *pd,
+				     struct ib_udata *udata);
 struct ib_mr *hns_roce_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
 				u32 max_num_sg);
 int hns_roce_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg, int sg_nents,
@@ -1349,17 +1300,13 @@ int hns_roce_get_umem_bufs(struct hns_roce_dev *hr_dev, dma_addr_t *bufs,
 int hns_roce_create_srq(struct ib_srq *srq,
 			struct ib_srq_init_attr *srq_init_attr,
 			struct ib_udata *udata);
-int hns_roce_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *srq_attr,
-			enum ib_srq_attr_mask srq_attr_mask,
-			struct ib_udata *udata);
 int hns_roce_destroy_srq(struct ib_srq *ibsrq, struct ib_udata *udata);
 
 int hns_roce_alloc_xrcd(struct ib_xrcd *ib_xrcd, struct ib_udata *udata);
 int hns_roce_dealloc_xrcd(struct ib_xrcd *ib_xrcd, struct ib_udata *udata);
 
-struct ib_qp *hns_roce_create_qp(struct ib_pd *ib_pd,
-				 struct ib_qp_init_attr *init_attr,
-				 struct ib_udata *udata);
+int hns_roce_create_qp(struct ib_qp *ib_qp, struct ib_qp_init_attr *init_attr,
+		       struct ib_udata *udata);
 int hns_roce_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 		       int attr_mask, struct ib_udata *udata);
 void init_flush_work(struct hns_roce_dev *hr_dev, struct hns_roce_qp *hr_qp);
@@ -1395,7 +1342,6 @@ void hns_roce_cq_event(struct hns_roce_dev *hr_dev, u32 cqn, int event_type);
 void flush_cqe(struct hns_roce_dev *dev, struct hns_roce_qp *qp);
 void hns_roce_qp_event(struct hns_roce_dev *hr_dev, u32 qpn, int event_type);
 void hns_roce_srq_event(struct hns_roce_dev *hr_dev, u32 srqn, int event_type);
-u8 hns_get_gid_index(struct hns_roce_dev *hr_dev, u8 port, int gid_index);
 void hns_roce_handle_device_err(struct hns_roce_dev *hr_dev);
 int hns_roce_init(struct hns_roce_dev *hr_dev);
 void hns_roce_exit(struct hns_roce_dev *hr_dev, bool bond_cleanup);
@@ -1405,11 +1351,12 @@ int hns_roce_fill_res_qp_entry(struct sk_buff *msg, struct ib_qp *ib_qp);
 int hns_roce_fill_res_qp_entry_raw(struct sk_buff *msg, struct ib_qp *ib_qp);
 int hns_roce_fill_res_mr_entry(struct sk_buff *msg, struct ib_mr *ib_mr);
 int hns_roce_fill_res_mr_entry_raw(struct sk_buff *msg, struct ib_mr *ib_mr);
+int hns_roce_fill_res_srq_entry(struct sk_buff *msg, struct ib_srq *ib_srq);
+int hns_roce_fill_res_srq_entry_raw(struct sk_buff *msg, struct ib_srq *ib_srq);
 struct hns_user_mmap_entry *
 hns_roce_user_mmap_entry_insert(struct ib_ucontext *ucontext, u64 address,
 				size_t length,
 				enum hns_roce_mmap_type mmap_type);
-int hns_roce_create_port_files(struct ib_device *ibdev, u8 port_num,
-			       struct kobject *kobj);
+void hns_roce_register_sysfs(struct hns_roce_dev *hr_dev);
 void hns_roce_unregister_sysfs(struct hns_roce_dev *hr_dev);
 #endif /* _HNS_ROCE_DEVICE_H */

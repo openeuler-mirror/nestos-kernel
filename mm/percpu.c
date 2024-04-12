@@ -69,9 +69,9 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/bitmap.h>
+#include <linux/cpumask.h>
 #include <linux/memblock.h>
 #include <linux/err.h>
-#include <linux/lcm.h>
 #include <linux/list.h>
 #include <linux/log2.h>
 #include <linux/mm.h>
@@ -134,7 +134,7 @@ static int pcpu_unit_size __ro_after_init;
 static int pcpu_nr_units __ro_after_init;
 static int pcpu_atom_size __ro_after_init;
 int pcpu_nr_slots __ro_after_init;
-int pcpu_free_slot __ro_after_init;
+static int pcpu_free_slot __ro_after_init;
 int pcpu_sidelined_slot __ro_after_init;
 int pcpu_to_depopulate_slot __ro_after_init;
 static size_t pcpu_chunk_struct_size __ro_after_init;
@@ -145,7 +145,6 @@ static unsigned int pcpu_high_unit_cpu __ro_after_init;
 
 /* the address of the first chunk which starts with the kernel static area */
 void *pcpu_base_addr __ro_after_init;
-EXPORT_SYMBOL_GPL(pcpu_base_addr);
 
 static const int *pcpu_unit_map __ro_after_init;		/* cpu -> unit */
 const unsigned long *pcpu_unit_offsets __ro_after_init;	/* cpu -> unit offset */
@@ -174,14 +173,11 @@ static DEFINE_MUTEX(pcpu_alloc_mutex);	/* chunk create/destroy, [de]pop, map ext
 
 struct list_head *pcpu_chunk_lists __ro_after_init; /* chunk list slots */
 
-/* chunks which need their map areas extended, protected by pcpu_lock */
-static LIST_HEAD(pcpu_map_extend_chunks);
-
 /*
- * The number of empty populated pages by chunk type, protected by pcpu_lock.
+ * The number of empty populated pages, protected by pcpu_lock.
  * The reserved chunk doesn't contribute to the count.
  */
-int pcpu_nr_empty_pop_pages[PCPU_NR_CHUNK_TYPES];
+int pcpu_nr_empty_pop_pages;
 
 /*
  * The number of populated pages in use by the allocator, protected by
@@ -531,13 +527,10 @@ static void __pcpu_chunk_move(struct pcpu_chunk *chunk, int slot,
 			      bool move_front)
 {
 	if (chunk != pcpu_reserved_chunk) {
-		struct list_head *pcpu_slot;
-
-		pcpu_slot = pcpu_chunk_list(pcpu_chunk_type(chunk));
 		if (move_front)
-			list_move(&chunk->list, &pcpu_slot[slot]);
+			list_move(&chunk->list, &pcpu_chunk_lists[slot]);
 		else
-			list_move_tail(&chunk->list, &pcpu_slot[slot]);
+			list_move_tail(&chunk->list, &pcpu_chunk_lists[slot]);
 	}
 }
 
@@ -573,27 +566,22 @@ static void pcpu_chunk_relocate(struct pcpu_chunk *chunk, int oslot)
 
 static void pcpu_isolate_chunk(struct pcpu_chunk *chunk)
 {
-	enum pcpu_chunk_type type = pcpu_chunk_type(chunk);
-	struct list_head *pcpu_slot = pcpu_chunk_list(type);
-
 	lockdep_assert_held(&pcpu_lock);
 
 	if (!chunk->isolated) {
 		chunk->isolated = true;
-		pcpu_nr_empty_pop_pages[type] -= chunk->nr_empty_pop_pages;
+		pcpu_nr_empty_pop_pages -= chunk->nr_empty_pop_pages;
 	}
-	list_move(&chunk->list, &pcpu_slot[pcpu_to_depopulate_slot]);
+	list_move(&chunk->list, &pcpu_chunk_lists[pcpu_to_depopulate_slot]);
 }
 
 static void pcpu_reintegrate_chunk(struct pcpu_chunk *chunk)
 {
-	enum pcpu_chunk_type type = pcpu_chunk_type(chunk);
-
 	lockdep_assert_held(&pcpu_lock);
 
 	if (chunk->isolated) {
 		chunk->isolated = false;
-		pcpu_nr_empty_pop_pages[type] += chunk->nr_empty_pop_pages;
+		pcpu_nr_empty_pop_pages += chunk->nr_empty_pop_pages;
 		pcpu_chunk_relocate(chunk, -1);
 	}
 }
@@ -611,7 +599,7 @@ static inline void pcpu_update_empty_pages(struct pcpu_chunk *chunk, int nr)
 {
 	chunk->nr_empty_pop_pages += nr;
 	if (chunk != pcpu_reserved_chunk && !chunk->isolated)
-		pcpu_nr_empty_pop_pages[pcpu_chunk_type(chunk)] += nr;
+		pcpu_nr_empty_pop_pages += nr;
 }
 
 /*
@@ -787,7 +775,7 @@ static void pcpu_block_refresh_hint(struct pcpu_chunk *chunk, int index)
 {
 	struct pcpu_block_md *block = chunk->md_blocks + index;
 	unsigned long *alloc_map = pcpu_index_alloc_map(chunk, index);
-	unsigned int rs, re, start;	/* region start, region end */
+	unsigned int start, end;	/* region start, region end */
 
 	/* promote scan_hint to contig_hint */
 	if (block->scan_hint) {
@@ -803,9 +791,8 @@ static void pcpu_block_refresh_hint(struct pcpu_chunk *chunk, int index)
 	block->right_free = 0;
 
 	/* iterate over free areas and update the contig hints */
-	bitmap_for_each_clear_region(alloc_map, rs, re, start,
-				     PCPU_BITMAP_BLOCK_BITS)
-		pcpu_block_update(block, rs, re);
+	for_each_clear_bitrange_from(start, end, alloc_map, PCPU_BITMAP_BLOCK_BITS)
+		pcpu_block_update(block, start, end);
 }
 
 /**
@@ -843,13 +830,15 @@ static void pcpu_block_update_hint_alloc(struct pcpu_chunk *chunk, int bit_off,
 
 	/*
 	 * Update s_block.
-	 * block->first_free must be updated if the allocation takes its place.
-	 * If the allocation breaks the contig_hint, a scan is required to
-	 * restore this hint.
 	 */
 	if (s_block->contig_hint == PCPU_BITMAP_BLOCK_BITS)
 		nr_empty_pages++;
 
+	/*
+	 * block->first_free must be updated if the allocation takes its place.
+	 * If the allocation breaks the contig_hint, a scan is required to
+	 * restore this hint.
+	 */
 	if (s_off == s_block->first_free)
 		s_block->first_free = find_next_zero_bit(
 					pcpu_index_alloc_map(chunk, s_index),
@@ -924,6 +913,12 @@ static void pcpu_block_update_hint_alloc(struct pcpu_chunk *chunk, int bit_off,
 		}
 	}
 
+	/*
+	 * If the allocation is not atomic, some blocks may not be
+	 * populated with pages, while we account it here.  The number
+	 * of pages will be added back with pcpu_chunk_populated()
+	 * when populating pages.
+	 */
 	if (nr_empty_pages)
 		pcpu_update_empty_pages(chunk, -nr_empty_pages);
 
@@ -1078,17 +1073,18 @@ static void pcpu_block_update_hint_free(struct pcpu_chunk *chunk, int bit_off,
 static bool pcpu_is_populated(struct pcpu_chunk *chunk, int bit_off, int bits,
 			      int *next_off)
 {
-	unsigned int page_start, page_end, rs, re;
+	unsigned int start, end;
 
-	page_start = PFN_DOWN(bit_off * PCPU_MIN_ALLOC_SIZE);
-	page_end = PFN_UP((bit_off + bits) * PCPU_MIN_ALLOC_SIZE);
+	start = PFN_DOWN(bit_off * PCPU_MIN_ALLOC_SIZE);
+	end = PFN_UP((bit_off + bits) * PCPU_MIN_ALLOC_SIZE);
 
-	rs = page_start;
-	bitmap_next_clear_region(chunk->populated, &rs, &re, page_end);
-	if (rs >= page_end)
+	start = find_next_zero_bit(chunk->populated, end, start);
+	if (start >= end)
 		return true;
 
-	*next_off = re * PAGE_SIZE / PCPU_MIN_ALLOC_SIZE;
+	end = find_next_bit(chunk->populated, end, start + 1);
+
+	*next_off = end * PAGE_SIZE / PCPU_MIN_ALLOC_SIZE;
 	return false;
 }
 
@@ -1350,7 +1346,7 @@ static struct pcpu_chunk * __init pcpu_alloc_first_chunk(unsigned long tmp_addr,
 							 int map_size)
 {
 	struct pcpu_chunk *chunk;
-	unsigned long aligned_addr, lcm_align;
+	unsigned long aligned_addr;
 	int start_offset, offset_bits, region_size, region_bits;
 	size_t alloc_size;
 
@@ -1358,14 +1354,7 @@ static struct pcpu_chunk * __init pcpu_alloc_first_chunk(unsigned long tmp_addr,
 	aligned_addr = tmp_addr & PAGE_MASK;
 
 	start_offset = tmp_addr - aligned_addr;
-
-	/*
-	 * Align the end of the region with the LCM of PAGE_SIZE and
-	 * PCPU_BITMAP_BLOCK_SIZE.  One of these constants is a multiple of
-	 * the other.
-	 */
-	lcm_align = lcm(PAGE_SIZE, PCPU_BITMAP_BLOCK_SIZE);
-	region_size = ALIGN(start_offset + map_size, lcm_align);
+	region_size = ALIGN(start_offset + map_size, PAGE_SIZE);
 
 	/* allocate chunk */
 	alloc_size = struct_size(chunk, populated,
@@ -1404,7 +1393,7 @@ static struct pcpu_chunk * __init pcpu_alloc_first_chunk(unsigned long tmp_addr,
 		      alloc_size);
 
 #ifdef CONFIG_MEMCG_KMEM
-	/* first chunk isn't memcg-aware */
+	/* first chunk is free to use */
 	chunk->obj_cgroups = NULL;
 #endif
 	pcpu_init_md_blocks(chunk);
@@ -1446,7 +1435,7 @@ static struct pcpu_chunk * __init pcpu_alloc_first_chunk(unsigned long tmp_addr,
 	return chunk;
 }
 
-static struct pcpu_chunk *pcpu_alloc_chunk(enum pcpu_chunk_type type, gfp_t gfp)
+static struct pcpu_chunk *pcpu_alloc_chunk(gfp_t gfp)
 {
 	struct pcpu_chunk *chunk;
 	int region_bits;
@@ -1475,7 +1464,7 @@ static struct pcpu_chunk *pcpu_alloc_chunk(enum pcpu_chunk_type type, gfp_t gfp)
 		goto md_blocks_fail;
 
 #ifdef CONFIG_MEMCG_KMEM
-	if (pcpu_is_memcg_chunk(type)) {
+	if (!mem_cgroup_kmem_disabled()) {
 		chunk->obj_cgroups =
 			pcpu_mem_zalloc(pcpu_chunk_map_bits(chunk) *
 					sizeof(struct obj_cgroup *), gfp);
@@ -1527,9 +1516,6 @@ static void pcpu_free_chunk(struct pcpu_chunk *chunk)
  * Pages in [@page_start,@page_end) have been populated to @chunk.  Update
  * the bookkeeping information accordingly.  Must be called after each
  * successful population.
- *
- * If this is @for_alloc, do not increment pcpu_nr_empty_pop_pages because it
- * is to serve an allocation in that area.
  */
 static void pcpu_chunk_populated(struct pcpu_chunk *chunk, int page_start,
 				 int page_end)
@@ -1589,10 +1575,9 @@ static int pcpu_populate_chunk(struct pcpu_chunk *chunk,
 			       int page_start, int page_end, gfp_t gfp);
 static void pcpu_depopulate_chunk(struct pcpu_chunk *chunk,
 				  int page_start, int page_end);
-static struct pcpu_chunk *pcpu_create_chunk(enum pcpu_chunk_type type,
-					    gfp_t gfp);
 static void pcpu_post_unmap_tlb_flush(struct pcpu_chunk *chunk,
 				      int page_start, int page_end);
+static struct pcpu_chunk *pcpu_create_chunk(gfp_t gfp);
 static void pcpu_destroy_chunk(struct pcpu_chunk *chunk);
 static struct page *pcpu_addr_to_page(void *addr);
 static int __init pcpu_verify_alloc_info(const struct pcpu_alloc_info *ai);
@@ -1635,25 +1620,23 @@ static struct pcpu_chunk *pcpu_chunk_addr_search(void *addr)
 }
 
 #ifdef CONFIG_MEMCG_KMEM
-static enum pcpu_chunk_type pcpu_memcg_pre_alloc_hook(size_t size, gfp_t gfp,
-						     struct obj_cgroup **objcgp)
+static bool pcpu_memcg_pre_alloc_hook(size_t size, gfp_t gfp,
+				      struct obj_cgroup **objcgp)
 {
 	struct obj_cgroup *objcg;
 
-	if (!memcg_kmem_enabled() || !(gfp & __GFP_ACCOUNT))
-		return PCPU_CHUNK_ROOT;
+	if (!memcg_kmem_online() || !(gfp & __GFP_ACCOUNT))
+		return true;
 
-	objcg = get_obj_cgroup_from_current();
+	objcg = current_obj_cgroup();
 	if (!objcg)
-		return PCPU_CHUNK_ROOT;
+		return true;
 
-	if (obj_cgroup_charge(objcg, gfp, size * num_possible_cpus())) {
-		obj_cgroup_put(objcg);
-		return PCPU_FAIL_ALLOC;
-	}
+	if (obj_cgroup_charge(objcg, gfp, pcpu_obj_full_size(size)))
+		return false;
 
 	*objcgp = objcg;
-	return PCPU_CHUNK_MEMCG;
+	return true;
 }
 
 static void pcpu_memcg_post_alloc_hook(struct obj_cgroup *objcg,
@@ -1663,16 +1646,16 @@ static void pcpu_memcg_post_alloc_hook(struct obj_cgroup *objcg,
 	if (!objcg)
 		return;
 
-	if (chunk) {
+	if (likely(chunk && chunk->obj_cgroups)) {
+		obj_cgroup_get(objcg);
 		chunk->obj_cgroups[off >> PCPU_MIN_ALLOC_SHIFT] = objcg;
 
 		rcu_read_lock();
 		mod_memcg_state(obj_cgroup_memcg(objcg), MEMCG_PERCPU_B,
-				size * num_possible_cpus());
+				pcpu_obj_full_size(size));
 		rcu_read_unlock();
 	} else {
-		obj_cgroup_uncharge(objcg, size * num_possible_cpus());
-		obj_cgroup_put(objcg);
+		obj_cgroup_uncharge(objcg, pcpu_obj_full_size(size));
 	}
 }
 
@@ -1680,27 +1663,29 @@ static void pcpu_memcg_free_hook(struct pcpu_chunk *chunk, int off, size_t size)
 {
 	struct obj_cgroup *objcg;
 
-	if (!pcpu_is_memcg_chunk(pcpu_chunk_type(chunk)))
+	if (unlikely(!chunk->obj_cgroups))
 		return;
 
 	objcg = chunk->obj_cgroups[off >> PCPU_MIN_ALLOC_SHIFT];
+	if (!objcg)
+		return;
 	chunk->obj_cgroups[off >> PCPU_MIN_ALLOC_SHIFT] = NULL;
 
-	obj_cgroup_uncharge(objcg, size * num_possible_cpus());
+	obj_cgroup_uncharge(objcg, pcpu_obj_full_size(size));
 
 	rcu_read_lock();
 	mod_memcg_state(obj_cgroup_memcg(objcg), MEMCG_PERCPU_B,
-			-(size * num_possible_cpus()));
+			-pcpu_obj_full_size(size));
 	rcu_read_unlock();
 
 	obj_cgroup_put(objcg);
 }
 
 #else /* CONFIG_MEMCG_KMEM */
-static enum pcpu_chunk_type
+static bool
 pcpu_memcg_pre_alloc_hook(size_t size, gfp_t gfp, struct obj_cgroup **objcgp)
 {
-	return PCPU_CHUNK_ROOT;
+	return true;
 }
 
 static void pcpu_memcg_post_alloc_hook(struct obj_cgroup *objcg,
@@ -1735,8 +1720,6 @@ static void __percpu *pcpu_alloc(size_t size, size_t align, bool reserved,
 	gfp_t pcpu_gfp;
 	bool is_atomic;
 	bool do_warn;
-	enum pcpu_chunk_type type;
-	struct list_head *pcpu_slot;
 	struct obj_cgroup *objcg = NULL;
 	static int warn_limit = 10;
 	struct pcpu_chunk *chunk, *next;
@@ -1772,10 +1755,8 @@ static void __percpu *pcpu_alloc(size_t size, size_t align, bool reserved,
 		return NULL;
 	}
 
-	type = pcpu_memcg_pre_alloc_hook(size, gfp, &objcg);
-	if (unlikely(type == PCPU_FAIL_ALLOC))
+	if (unlikely(!pcpu_memcg_pre_alloc_hook(size, gfp, &objcg)))
 		return NULL;
-	pcpu_slot = pcpu_chunk_list(type);
 
 	if (!is_atomic) {
 		/*
@@ -1814,7 +1795,8 @@ static void __percpu *pcpu_alloc(size_t size, size_t align, bool reserved,
 restart:
 	/* search through normal chunks */
 	for (slot = pcpu_size_to_slot(size); slot <= pcpu_free_slot; slot++) {
-		list_for_each_entry_safe(chunk, next, &pcpu_slot[slot], list) {
+		list_for_each_entry_safe(chunk, next, &pcpu_chunk_lists[slot],
+					 list) {
 			off = pcpu_find_block_fit(chunk, bits, bit_align,
 						  is_atomic);
 			if (off < 0) {
@@ -1833,18 +1815,14 @@ restart:
 
 	spin_unlock_irqrestore(&pcpu_lock, flags);
 
-	/*
-	 * No space left.  Create a new chunk.  We don't want multiple
-	 * tasks to create chunks simultaneously.  Serialize and create iff
-	 * there's still no empty chunk after grabbing the mutex.
-	 */
 	if (is_atomic) {
 		err = "atomic alloc failed, no space left";
 		goto fail;
 	}
 
-	if (list_empty(&pcpu_slot[pcpu_free_slot])) {
-		chunk = pcpu_create_chunk(type, pcpu_gfp);
+	/* No space left.  Create a new chunk. */
+	if (list_empty(&pcpu_chunk_lists[pcpu_free_slot])) {
+		chunk = pcpu_create_chunk(pcpu_gfp);
 		if (!chunk) {
 			err = "failed to allocate new chunk";
 			goto fail;
@@ -1864,13 +1842,12 @@ area_found:
 
 	/* populate if not all pages are already there */
 	if (!is_atomic) {
-		unsigned int page_start, page_end, rs, re;
+		unsigned int page_end, rs, re;
 
-		page_start = PFN_DOWN(off);
+		rs = PFN_DOWN(off);
 		page_end = PFN_UP(off + size);
 
-		bitmap_for_each_clear_region(chunk->populated, rs, re,
-					     page_start, page_end) {
+		for_each_clear_bitrange_from(rs, re, chunk->populated, page_end) {
 			WARN_ON(chunk->immutable);
 
 			ret = pcpu_populate_chunk(chunk, rs, re, pcpu_gfp);
@@ -1888,7 +1865,7 @@ area_found:
 		mutex_unlock(&pcpu_alloc_mutex);
 	}
 
-	if (pcpu_nr_empty_pop_pages[type] < PCPU_EMPTY_POP_PAGES_LOW)
+	if (pcpu_nr_empty_pop_pages < PCPU_EMPTY_POP_PAGES_LOW)
 		pcpu_schedule_balance_work();
 
 	/* clear the areas and return address relative to base address */
@@ -1898,8 +1875,9 @@ area_found:
 	ptr = __addr_to_pcpu_ptr(chunk->base_addr + off);
 	kmemleak_alloc_percpu(ptr, size, gfp);
 
-	trace_percpu_alloc_percpu(reserved, is_atomic, size, align,
-			chunk->base_addr, off, ptr);
+	trace_percpu_alloc_percpu(_RET_IP_, reserved, is_atomic, size, align,
+				  chunk->base_addr, off, ptr,
+				  pcpu_obj_full_size(size), gfp);
 
 	pcpu_memcg_post_alloc_hook(objcg, chunk, off, size);
 
@@ -1910,15 +1888,17 @@ fail_unlock:
 fail:
 	trace_percpu_alloc_percpu_fail(reserved, is_atomic, size, align);
 
-	if (!is_atomic && do_warn && warn_limit) {
+	if (do_warn && warn_limit) {
 		pr_warn("allocation failed, size=%zu align=%zu atomic=%d, %s\n",
 			size, align, is_atomic, err);
-		dump_stack();
+		if (!is_atomic)
+			dump_stack();
 		if (!--warn_limit)
 			pr_info("limit reached, disable warning\n");
 	}
+
 	if (is_atomic) {
-		/* see the flag handling in pcpu_blance_workfn() */
+		/* see the flag handling in pcpu_balance_workfn() */
 		pcpu_atomic_alloc_failed = true;
 		pcpu_schedule_balance_work();
 	} else {
@@ -1987,26 +1967,27 @@ void __percpu *__alloc_reserved_percpu(size_t size, size_t align)
 
 /**
  * pcpu_balance_free - manage the amount of free chunks
- * @type: chunk type
  * @empty_only: free chunks only if there are no populated pages
  *
  * If empty_only is %false, reclaim all fully free chunks regardless of the
  * number of populated pages.  Otherwise, only reclaim chunks that have no
  * populated pages.
+ *
+ * CONTEXT:
+ * pcpu_lock (can be dropped temporarily)
  */
-static void pcpu_balance_free(enum pcpu_chunk_type type, bool empty_only)
+static void pcpu_balance_free(bool empty_only)
 {
 	LIST_HEAD(to_free);
-	struct list_head *pcpu_slot = pcpu_chunk_list(type);
-	struct list_head *free_head = &pcpu_slot[pcpu_free_slot];
+	struct list_head *free_head = &pcpu_chunk_lists[pcpu_free_slot];
 	struct pcpu_chunk *chunk, *next;
+
+	lockdep_assert_held(&pcpu_lock);
 
 	/*
 	 * There's no reason to keep around multiple unused chunks and VM
 	 * areas can be scarce.  Destroy all free chunks except for one.
 	 */
-	spin_lock_irq(&pcpu_lock);
-
 	list_for_each_entry_safe(chunk, next, free_head, list) {
 		WARN_ON(chunk->immutable);
 
@@ -2018,13 +1999,14 @@ static void pcpu_balance_free(enum pcpu_chunk_type type, bool empty_only)
 			list_move(&chunk->list, &to_free);
 	}
 
-	spin_unlock_irq(&pcpu_lock);
+	if (list_empty(&to_free))
+		return;
 
+	spin_unlock_irq(&pcpu_lock);
 	list_for_each_entry_safe(chunk, next, &to_free, list) {
 		unsigned int rs, re;
 
-		bitmap_for_each_set_region(chunk->populated, rs, re, 0,
-					   chunk->nr_pages) {
+		for_each_set_bitrange(rs, re, chunk->populated, chunk->nr_pages) {
 			pcpu_depopulate_chunk(chunk, rs, re);
 			spin_lock_irq(&pcpu_lock);
 			pcpu_chunk_depopulated(chunk, rs, re);
@@ -2033,25 +2015,29 @@ static void pcpu_balance_free(enum pcpu_chunk_type type, bool empty_only)
 		pcpu_destroy_chunk(chunk);
 		cond_resched();
 	}
+	spin_lock_irq(&pcpu_lock);
 }
 
 /**
  * pcpu_balance_populated - manage the amount of populated pages
- * @type: chunk type
  *
  * Maintain a certain amount of populated pages to satisfy atomic allocations.
  * It is possible that this is called when physical memory is scarce causing
  * OOM killer to be triggered.  We should avoid doing so until an actual
  * allocation causes the failure as it is possible that requests can be
  * serviced from already backed regions.
+ *
+ * CONTEXT:
+ * pcpu_lock (can be dropped temporarily)
  */
-static void pcpu_balance_populated(enum pcpu_chunk_type type)
+static void pcpu_balance_populated(void)
 {
 	/* gfp flags passed to underlying allocators */
 	const gfp_t gfp = GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN;
-	struct list_head *pcpu_slot = pcpu_chunk_list(type);
 	struct pcpu_chunk *chunk;
 	int slot, nr_to_pop, ret;
+
+	lockdep_assert_held(&pcpu_lock);
 
 	/*
 	 * Ensure there are certain number of free populated pages for
@@ -2070,7 +2056,7 @@ retry_pop:
 		pcpu_atomic_alloc_failed = false;
 	} else {
 		nr_to_pop = clamp(PCPU_EMPTY_POP_PAGES_HIGH -
-				  pcpu_nr_empty_pop_pages[type],
+				  pcpu_nr_empty_pop_pages,
 				  0, PCPU_EMPTY_POP_PAGES_HIGH);
 	}
 
@@ -2080,28 +2066,26 @@ retry_pop:
 		if (!nr_to_pop)
 			break;
 
-		spin_lock_irq(&pcpu_lock);
-		list_for_each_entry(chunk, &pcpu_slot[slot], list) {
+		list_for_each_entry(chunk, &pcpu_chunk_lists[slot], list) {
 			nr_unpop = chunk->nr_pages - chunk->nr_populated;
 			if (nr_unpop)
 				break;
 		}
-		spin_unlock_irq(&pcpu_lock);
 
 		if (!nr_unpop)
 			continue;
 
 		/* @chunk can't go away while pcpu_alloc_mutex is held */
-		bitmap_for_each_clear_region(chunk->populated, rs, re, 0,
-					     chunk->nr_pages) {
+		for_each_clear_bitrange(rs, re, chunk->populated, chunk->nr_pages) {
 			int nr = min_t(int, re - rs, nr_to_pop);
 
+			spin_unlock_irq(&pcpu_lock);
 			ret = pcpu_populate_chunk(chunk, rs, rs + nr, gfp);
+			cond_resched();
+			spin_lock_irq(&pcpu_lock);
 			if (!ret) {
 				nr_to_pop -= nr;
-				spin_lock_irq(&pcpu_lock);
 				pcpu_chunk_populated(chunk, rs, rs + nr);
-				spin_unlock_irq(&pcpu_lock);
 			} else {
 				nr_to_pop = 0;
 			}
@@ -2113,11 +2097,12 @@ retry_pop:
 
 	if (nr_to_pop) {
 		/* ran out of chunks to populate, create a new one and retry */
-		chunk = pcpu_create_chunk(type, gfp);
+		spin_unlock_irq(&pcpu_lock);
+		chunk = pcpu_create_chunk(gfp);
+		cond_resched();
+		spin_lock_irq(&pcpu_lock);
 		if (chunk) {
-			spin_lock_irq(&pcpu_lock);
 			pcpu_chunk_relocate(chunk, -1);
-			spin_unlock_irq(&pcpu_lock);
 			goto retry_pop;
 		}
 	}
@@ -2125,7 +2110,6 @@ retry_pop:
 
 /**
  * pcpu_reclaim_populated - scan over to_depopulate chunks and free empty pages
- * @type: chunk type
  *
  * Scan over chunks in the depopulate list and try to release unused populated
  * pages back to the system.  Depopulated chunks are sidelined to prevent
@@ -2134,17 +2118,20 @@ retry_pop:
  * populated pages threshold, reintegrate the chunk if it has empty free pages.
  * Each chunk is scanned in the reverse order to keep populated pages close to
  * the beginning of the chunk.
+ *
+ * CONTEXT:
+ * pcpu_lock (can be dropped temporarily)
+ *
  */
-static void pcpu_reclaim_populated(enum pcpu_chunk_type type)
+static void pcpu_reclaim_populated(void)
 {
-	struct list_head *pcpu_slot = pcpu_chunk_list(type);
 	struct pcpu_chunk *chunk;
 	struct pcpu_block_md *block;
 	int freed_page_start, freed_page_end;
 	int i, end;
 	bool reintegrate;
 
-	spin_lock_irq(&pcpu_lock);
+	lockdep_assert_held(&pcpu_lock);
 
 	/*
 	 * Once a chunk is isolated to the to_depopulate list, the chunk is no
@@ -2152,9 +2139,9 @@ static void pcpu_reclaim_populated(enum pcpu_chunk_type type)
 	 * other accessor is the free path which only returns area back to the
 	 * allocator not touching the populated bitmap.
 	 */
-	while (!list_empty(&pcpu_slot[pcpu_to_depopulate_slot])) {
-		chunk = list_first_entry(&pcpu_slot[pcpu_to_depopulate_slot],
-					 struct pcpu_chunk, list);
+	while ((chunk = list_first_entry_or_null(
+			&pcpu_chunk_lists[pcpu_to_depopulate_slot],
+			struct pcpu_chunk, list))) {
 		WARN_ON(chunk->immutable);
 
 		/*
@@ -2170,10 +2157,9 @@ static void pcpu_reclaim_populated(enum pcpu_chunk_type type)
 				break;
 
 			/* reintegrate chunk to prevent atomic alloc failures */
-			if (pcpu_nr_empty_pop_pages[type] <
-			    PCPU_EMPTY_POP_PAGES_HIGH) {
+			if (pcpu_nr_empty_pop_pages < PCPU_EMPTY_POP_PAGES_HIGH) {
 				reintegrate = true;
-				goto end_chunk;
+				break;
 			}
 
 			/*
@@ -2209,7 +2195,6 @@ static void pcpu_reclaim_populated(enum pcpu_chunk_type type)
 			end = -1;
 		}
 
-end_chunk:
 		/* batch tlb flush per chunk to amortize cost */
 		if (freed_page_start < freed_page_end) {
 			spin_unlock_irq(&pcpu_lock);
@@ -2224,10 +2209,8 @@ end_chunk:
 			pcpu_reintegrate_chunk(chunk);
 		else
 			list_move_tail(&chunk->list,
-				       &pcpu_slot[pcpu_sidelined_slot]);
+				       &pcpu_chunk_lists[pcpu_sidelined_slot]);
 	}
-
-	spin_unlock_irq(&pcpu_lock);
 }
 
 /**
@@ -2240,8 +2223,6 @@ end_chunk:
  */
 static void pcpu_balance_workfn(struct work_struct *work)
 {
-	enum pcpu_chunk_type type;
-
 	/*
 	 * pcpu_balance_free() is called twice because the first time we may
 	 * trim pages in the active pcpu_nr_empty_pop_pages which may cause us
@@ -2249,14 +2230,16 @@ static void pcpu_balance_workfn(struct work_struct *work)
 	 * to move fully free chunks to the active list to be freed if
 	 * appropriate.
 	 */
-	for (type = 0; type < PCPU_NR_CHUNK_TYPES; type++) {
-		mutex_lock(&pcpu_alloc_mutex);
-		pcpu_balance_free(type, false);
-		pcpu_reclaim_populated(type);
-		pcpu_balance_populated(type);
-		pcpu_balance_free(type, true);
-		mutex_unlock(&pcpu_alloc_mutex);
-	}
+	mutex_lock(&pcpu_alloc_mutex);
+	spin_lock_irq(&pcpu_lock);
+
+	pcpu_balance_free(false);
+	pcpu_reclaim_populated();
+	pcpu_balance_populated();
+	pcpu_balance_free(true);
+
+	spin_unlock_irq(&pcpu_lock);
+	mutex_unlock(&pcpu_alloc_mutex);
 }
 
 /**
@@ -2275,7 +2258,6 @@ void free_percpu(void __percpu *ptr)
 	unsigned long flags;
 	int size, off;
 	bool need_balance = false;
-	struct list_head *pcpu_slot;
 
 	if (!ptr)
 		return;
@@ -2291,8 +2273,6 @@ void free_percpu(void __percpu *ptr)
 
 	size = pcpu_free_area(chunk, off);
 
-	pcpu_slot = pcpu_chunk_list(pcpu_chunk_type(chunk));
-
 	pcpu_memcg_free_hook(chunk, off, size);
 
 	/*
@@ -2303,7 +2283,7 @@ void free_percpu(void __percpu *ptr)
 	if (!chunk->isolated && chunk->free_bytes == pcpu_unit_size) {
 		struct pcpu_chunk *pos;
 
-		list_for_each_entry(pos, &pcpu_slot[pcpu_free_slot], list)
+		list_for_each_entry(pos, &pcpu_chunk_lists[pcpu_free_slot], list)
 			if (pos != chunk) {
 				need_balance = true;
 				break;
@@ -2482,7 +2462,7 @@ struct pcpu_alloc_info * __init pcpu_alloc_alloc_info(int nr_groups,
  */
 void __init pcpu_free_alloc_info(struct pcpu_alloc_info *ai)
 {
-	memblock_free_early(__pa(ai), ai->__ai_size);
+	memblock_free(ai, ai->__ai_size);
 }
 
 /**
@@ -2601,17 +2581,14 @@ void __init pcpu_setup_first_chunk(const struct pcpu_alloc_info *ai,
 {
 	size_t size_sum = ai->static_size + ai->reserved_size + ai->dyn_size;
 	size_t static_size, dyn_size;
-	struct pcpu_chunk *chunk;
 	unsigned long *group_offsets;
 	size_t *group_sizes;
 	unsigned long *unit_off;
 	unsigned int cpu;
 	int *unit_map;
 	int group, unit, i;
-	int map_size;
 	unsigned long tmp_addr;
 	size_t alloc_size;
-	enum pcpu_chunk_type type;
 
 #define PCPU_SETUP_BUG_ON(cond)	do {					\
 	if (unlikely(cond)) {						\
@@ -2636,7 +2613,6 @@ void __init pcpu_setup_first_chunk(const struct pcpu_alloc_info *ai,
 	PCPU_SETUP_BUG_ON(ai->unit_size < PCPU_MIN_UNIT_SIZE);
 	PCPU_SETUP_BUG_ON(!IS_ALIGNED(ai->unit_size, PCPU_BITMAP_BLOCK_SIZE));
 	PCPU_SETUP_BUG_ON(ai->dyn_size < PERCPU_DYNAMIC_EARLY_SIZE);
-	PCPU_SETUP_BUG_ON(!ai->dyn_size);
 	PCPU_SETUP_BUG_ON(!IS_ALIGNED(ai->reserved_size, PCPU_MIN_ALLOC_SIZE));
 	PCPU_SETUP_BUG_ON(!(IS_ALIGNED(PCPU_BITMAP_BLOCK_SIZE, PAGE_SIZE) ||
 			    IS_ALIGNED(PAGE_SIZE, PCPU_BITMAP_BLOCK_SIZE)));
@@ -2719,7 +2695,7 @@ void __init pcpu_setup_first_chunk(const struct pcpu_alloc_info *ai,
 	pcpu_unit_pages = ai->unit_size >> PAGE_SHIFT;
 	pcpu_unit_size = pcpu_unit_pages << PAGE_SHIFT;
 	pcpu_atom_size = ai->atom_size;
-	pcpu_chunk_struct_size = struct_size(chunk, populated,
+	pcpu_chunk_struct_size = struct_size((struct pcpu_chunk *)0, populated,
 					     BITS_TO_LONGS(pcpu_unit_pages));
 
 	pcpu_stats_save_ai(ai);
@@ -2735,17 +2711,14 @@ void __init pcpu_setup_first_chunk(const struct pcpu_alloc_info *ai,
 	pcpu_to_depopulate_slot = pcpu_free_slot + 1;
 	pcpu_nr_slots = pcpu_to_depopulate_slot + 1;
 	pcpu_chunk_lists = memblock_alloc(pcpu_nr_slots *
-					  sizeof(pcpu_chunk_lists[0]) *
-					  PCPU_NR_CHUNK_TYPES,
+					  sizeof(pcpu_chunk_lists[0]),
 					  SMP_CACHE_BYTES);
 	if (!pcpu_chunk_lists)
 		panic("%s: Failed to allocate %zu bytes\n", __func__,
-		      pcpu_nr_slots * sizeof(pcpu_chunk_lists[0]) *
-		      PCPU_NR_CHUNK_TYPES);
+		      pcpu_nr_slots * sizeof(pcpu_chunk_lists[0]));
 
-	for (type = 0; type < PCPU_NR_CHUNK_TYPES; type++)
-		for (i = 0; i < pcpu_nr_slots; i++)
-			INIT_LIST_HEAD(&pcpu_chunk_list(type)[i]);
+	for (i = 0; i < pcpu_nr_slots; i++)
+		INIT_LIST_HEAD(&pcpu_chunk_lists[i]);
 
 	/*
 	 * The end of the static region needs to be aligned with the
@@ -2759,30 +2732,24 @@ void __init pcpu_setup_first_chunk(const struct pcpu_alloc_info *ai,
 	dyn_size = ai->dyn_size - (static_size - ai->static_size);
 
 	/*
-	 * Initialize first chunk.
-	 * If the reserved_size is non-zero, this initializes the reserved
-	 * chunk.  If the reserved_size is zero, the reserved chunk is NULL
-	 * and the dynamic region is initialized here.  The first chunk,
-	 * pcpu_first_chunk, will always point to the chunk that serves
-	 * the dynamic region.
+	 * Initialize first chunk:
+	 * This chunk is broken up into 3 parts:
+	 *		< static | [reserved] | dynamic >
+	 * - static - there is no backing chunk because these allocations can
+	 *   never be freed.
+	 * - reserved (pcpu_reserved_chunk) - exists primarily to serve
+	 *   allocations from module load.
+	 * - dynamic (pcpu_first_chunk) - serves the dynamic part of the first
+	 *   chunk.
 	 */
 	tmp_addr = (unsigned long)base_addr + static_size;
-	map_size = ai->reserved_size ?: dyn_size;
-	chunk = pcpu_alloc_first_chunk(tmp_addr, map_size);
+	if (ai->reserved_size)
+		pcpu_reserved_chunk = pcpu_alloc_first_chunk(tmp_addr,
+						ai->reserved_size);
+	tmp_addr = (unsigned long)base_addr + static_size + ai->reserved_size;
+	pcpu_first_chunk = pcpu_alloc_first_chunk(tmp_addr, dyn_size);
 
-	/* init dynamic chunk if necessary */
-	if (ai->reserved_size) {
-		pcpu_reserved_chunk = chunk;
-
-		tmp_addr = (unsigned long)base_addr + static_size +
-			   ai->reserved_size;
-		map_size = dyn_size;
-		chunk = pcpu_alloc_first_chunk(tmp_addr, map_size);
-	}
-
-	/* link the first chunk in */
-	pcpu_first_chunk = chunk;
-	pcpu_nr_empty_pop_pages[PCPU_CHUNK_ROOT] = pcpu_first_chunk->nr_empty_pop_pages;
+	pcpu_nr_empty_pop_pages = pcpu_first_chunk->nr_empty_pop_pages;
 	pcpu_chunk_relocate(pcpu_first_chunk, -1);
 
 	/* include all regions of the first chunk */
@@ -2865,13 +2832,14 @@ early_param("percpu_alloc", percpu_alloc_setup);
  * On success, pointer to the new allocation_info is returned.  On
  * failure, ERR_PTR value is returned.
  */
-static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
+static struct pcpu_alloc_info * __init __flatten pcpu_build_alloc_info(
 				size_t reserved_size, size_t dyn_size,
 				size_t atom_size,
 				pcpu_fc_cpu_distance_fn_t cpu_distance_fn)
 {
 	static int group_map[NR_CPUS] __initdata;
 	static int group_cnt[NR_CPUS] __initdata;
+	static struct cpumask mask __initdata;
 	const size_t static_size = __per_cpu_end - __per_cpu_start;
 	int nr_groups = 1, nr_units = 0;
 	size_t size_sum, min_unit_size, alloc_size;
@@ -2884,6 +2852,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 	/* this function may be called multiple times */
 	memset(group_map, 0, sizeof(group_map));
 	memset(group_cnt, 0, sizeof(group_cnt));
+	cpumask_clear(&mask);
 
 	/* calculate size_sum and ensure dyn_size is enough for early alloc */
 	size_sum = PFN_ALIGN(static_size + reserved_size +
@@ -2905,24 +2874,27 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 		upa--;
 	max_upa = upa;
 
+	cpumask_copy(&mask, cpu_possible_mask);
+
 	/* group cpus according to their proximity */
-	for_each_possible_cpu(cpu) {
-		group = 0;
-	next_group:
-		for_each_possible_cpu(tcpu) {
-			if (cpu == tcpu)
-				break;
-			if (group_map[tcpu] == group && cpu_distance_fn &&
-			    (cpu_distance_fn(cpu, tcpu) > LOCAL_DISTANCE ||
-			     cpu_distance_fn(tcpu, cpu) > LOCAL_DISTANCE)) {
-				group++;
-				nr_groups = max(nr_groups, group + 1);
-				goto next_group;
-			}
-		}
+	for (group = 0; !cpumask_empty(&mask); group++) {
+		/* pop the group's first cpu */
+		cpu = cpumask_first(&mask);
 		group_map[cpu] = group;
 		group_cnt[group]++;
+		cpumask_clear_cpu(cpu, &mask);
+
+		for_each_cpu(tcpu, &mask) {
+			if (!cpu_distance_fn ||
+			    (cpu_distance_fn(cpu, tcpu) == LOCAL_DISTANCE &&
+			     cpu_distance_fn(tcpu, cpu) == LOCAL_DISTANCE)) {
+				group_map[tcpu] = group;
+				group_cnt[group]++;
+				cpumask_clear_cpu(tcpu, &mask);
+			}
+		}
 	}
+	nr_groups = group;
 
 	/*
 	 * Wasted space is caused by a ratio imbalance of upa to group_cnt.
@@ -2930,6 +2902,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 	 * Related to atom_size, which could be much larger than the unit_size.
 	 */
 	last_allocs = INT_MAX;
+	best_upa = 0;
 	for (upa = max_upa; upa; upa--) {
 		int allocs = 0, wasted = 0;
 
@@ -2956,6 +2929,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 		last_allocs = allocs;
 		best_upa = upa;
 	}
+	BUG_ON(!best_upa);
 	upa = best_upa;
 
 	/* allocate and fill alloc_info */
@@ -2999,6 +2973,42 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 
 	return ai;
 }
+
+static void * __init pcpu_fc_alloc(unsigned int cpu, size_t size, size_t align,
+				   pcpu_fc_cpu_to_node_fn_t cpu_to_nd_fn)
+{
+	const unsigned long goal = __pa(MAX_DMA_ADDRESS);
+#ifdef CONFIG_NUMA
+	int node = NUMA_NO_NODE;
+	void *ptr;
+
+	if (cpu_to_nd_fn)
+		node = cpu_to_nd_fn(cpu);
+
+	if (node == NUMA_NO_NODE || !node_online(node) || !NODE_DATA(node)) {
+		ptr = memblock_alloc_from(size, align, goal);
+		pr_info("cpu %d has no node %d or node-local memory\n",
+			cpu, node);
+		pr_debug("per cpu data for cpu%d %zu bytes at 0x%llx\n",
+			 cpu, size, (u64)__pa(ptr));
+	} else {
+		ptr = memblock_alloc_try_nid(size, align, goal,
+					     MEMBLOCK_ALLOC_ACCESSIBLE,
+					     node);
+
+		pr_debug("per cpu data for cpu%d %zu bytes on node%d at 0x%llx\n",
+			 cpu, size, node, (u64)__pa(ptr));
+	}
+	return ptr;
+#else
+	return memblock_alloc_from(size, align, goal);
+#endif
+}
+
+static void __init pcpu_fc_free(void *ptr, size_t size)
+{
+	memblock_free(ptr, size);
+}
 #endif /* BUILD_EMBED_FIRST_CHUNK || BUILD_PAGE_FIRST_CHUNK */
 
 #if defined(BUILD_EMBED_FIRST_CHUNK)
@@ -3008,14 +3018,13 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
  * @dyn_size: minimum free size for dynamic allocation in bytes
  * @atom_size: allocation atom size
  * @cpu_distance_fn: callback to determine distance between cpus, optional
- * @alloc_fn: function to allocate percpu page
- * @free_fn: function to free percpu page
+ * @cpu_to_nd_fn: callback to convert cpu to it's node, optional
  *
  * This is a helper to ease setting up embedded first percpu chunk and
  * can be called where pcpu_setup_first_chunk() is expected.
  *
  * If this function is used to setup the first chunk, it is allocated
- * by calling @alloc_fn and used as-is without being mapped into
+ * by calling pcpu_fc_alloc and used as-is without being mapped into
  * vmalloc area.  Allocations are always whole multiples of @atom_size
  * aligned to @atom_size.
  *
@@ -3029,7 +3038,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
  * @dyn_size specifies the minimum dynamic area size.
  *
  * If the needed size is smaller than the minimum or specified unit
- * size, the leftover is returned using @free_fn.
+ * size, the leftover is returned using pcpu_fc_free.
  *
  * RETURNS:
  * 0 on success, -errno on failure.
@@ -3037,8 +3046,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 int __init pcpu_embed_first_chunk(size_t reserved_size, size_t dyn_size,
 				  size_t atom_size,
 				  pcpu_fc_cpu_distance_fn_t cpu_distance_fn,
-				  pcpu_fc_alloc_fn_t alloc_fn,
-				  pcpu_fc_free_fn_t free_fn)
+				  pcpu_fc_cpu_to_node_fn_t cpu_to_nd_fn)
 {
 	void *base = (void *)ULONG_MAX;
 	void **areas = NULL;
@@ -3073,13 +3081,13 @@ int __init pcpu_embed_first_chunk(size_t reserved_size, size_t dyn_size,
 		BUG_ON(cpu == NR_CPUS);
 
 		/* allocate space for the whole group */
-		ptr = alloc_fn(cpu, gi->nr_units * ai->unit_size, atom_size);
+		ptr = pcpu_fc_alloc(cpu, gi->nr_units * ai->unit_size, atom_size, cpu_to_nd_fn);
 		if (!ptr) {
 			rc = -ENOMEM;
 			goto out_free_areas;
 		}
 		/* kmemleak tracks the percpu allocations separately */
-		kmemleak_free(ptr);
+		kmemleak_ignore_phys(__pa(ptr));
 		areas[group] = ptr;
 
 		base = min(ptr, base);
@@ -3112,12 +3120,12 @@ int __init pcpu_embed_first_chunk(size_t reserved_size, size_t dyn_size,
 		for (i = 0; i < gi->nr_units; i++, ptr += ai->unit_size) {
 			if (gi->cpu_map[i] == NR_CPUS) {
 				/* unused unit, free whole */
-				free_fn(ptr, ai->unit_size);
+				pcpu_fc_free(ptr, ai->unit_size);
 				continue;
 			}
 			/* copy and return the unused part */
 			memcpy(ptr, __per_cpu_load, ai->static_size);
-			free_fn(ptr + size_sum, ai->unit_size - size_sum);
+			pcpu_fc_free(ptr + size_sum, ai->unit_size - size_sum);
 		}
 	}
 
@@ -3136,23 +3144,84 @@ int __init pcpu_embed_first_chunk(size_t reserved_size, size_t dyn_size,
 out_free_areas:
 	for (group = 0; group < ai->nr_groups; group++)
 		if (areas[group])
-			free_fn(areas[group],
+			pcpu_fc_free(areas[group],
 				ai->groups[group].nr_units * ai->unit_size);
 out_free:
 	pcpu_free_alloc_info(ai);
 	if (areas)
-		memblock_free_early(__pa(areas), areas_size);
+		memblock_free(areas, areas_size);
 	return rc;
 }
 #endif /* BUILD_EMBED_FIRST_CHUNK */
 
 #ifdef BUILD_PAGE_FIRST_CHUNK
+#include <asm/pgalloc.h>
+
+#ifndef P4D_TABLE_SIZE
+#define P4D_TABLE_SIZE PAGE_SIZE
+#endif
+
+#ifndef PUD_TABLE_SIZE
+#define PUD_TABLE_SIZE PAGE_SIZE
+#endif
+
+#ifndef PMD_TABLE_SIZE
+#define PMD_TABLE_SIZE PAGE_SIZE
+#endif
+
+#ifndef PTE_TABLE_SIZE
+#define PTE_TABLE_SIZE PAGE_SIZE
+#endif
+void __init __weak pcpu_populate_pte(unsigned long addr)
+{
+	pgd_t *pgd = pgd_offset_k(addr);
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+
+	if (pgd_none(*pgd)) {
+		p4d = memblock_alloc(P4D_TABLE_SIZE, P4D_TABLE_SIZE);
+		if (!p4d)
+			goto err_alloc;
+		pgd_populate(&init_mm, pgd, p4d);
+	}
+
+	p4d = p4d_offset(pgd, addr);
+	if (p4d_none(*p4d)) {
+		pud = memblock_alloc(PUD_TABLE_SIZE, PUD_TABLE_SIZE);
+		if (!pud)
+			goto err_alloc;
+		p4d_populate(&init_mm, p4d, pud);
+	}
+
+	pud = pud_offset(p4d, addr);
+	if (pud_none(*pud)) {
+		pmd = memblock_alloc(PMD_TABLE_SIZE, PMD_TABLE_SIZE);
+		if (!pmd)
+			goto err_alloc;
+		pud_populate(&init_mm, pud, pmd);
+	}
+
+	pmd = pmd_offset(pud, addr);
+	if (!pmd_present(*pmd)) {
+		pte_t *new;
+
+		new = memblock_alloc(PTE_TABLE_SIZE, PTE_TABLE_SIZE);
+		if (!new)
+			goto err_alloc;
+		pmd_populate_kernel(&init_mm, pmd, new);
+	}
+
+	return;
+
+err_alloc:
+	panic("%s: Failed to allocate memory\n", __func__);
+}
+
 /**
  * pcpu_page_first_chunk - map the first chunk using PAGE_SIZE pages
  * @reserved_size: the size of reserved percpu area in bytes
- * @alloc_fn: function to allocate percpu page, always called with PAGE_SIZE
- * @free_fn: function to free percpu page, always called with PAGE_SIZE
- * @populate_pte_fn: function to populate pte
+ * @cpu_to_nd_fn: callback to convert cpu to it's node, optional
  *
  * This is a helper to ease setting up page-remapped first percpu
  * chunk and can be called where pcpu_setup_first_chunk() is expected.
@@ -3163,10 +3232,7 @@ out_free:
  * RETURNS:
  * 0 on success, -errno on failure.
  */
-int __init pcpu_page_first_chunk(size_t reserved_size,
-				 pcpu_fc_alloc_fn_t alloc_fn,
-				 pcpu_fc_free_fn_t free_fn,
-				 pcpu_fc_populate_pte_fn_t populate_pte_fn)
+int __init pcpu_page_first_chunk(size_t reserved_size, pcpu_fc_cpu_to_node_fn_t cpu_to_nd_fn)
 {
 	static struct vm_struct vm;
 	struct pcpu_alloc_info *ai;
@@ -3208,14 +3274,14 @@ int __init pcpu_page_first_chunk(size_t reserved_size,
 		for (i = 0; i < unit_pages; i++) {
 			void *ptr;
 
-			ptr = alloc_fn(cpu, PAGE_SIZE, PAGE_SIZE);
+			ptr = pcpu_fc_alloc(cpu, PAGE_SIZE, PAGE_SIZE, cpu_to_nd_fn);
 			if (!ptr) {
 				pr_warn("failed to allocate %s page for cpu%u\n",
 						psize_str, cpu);
 				goto enomem;
 			}
 			/* kmemleak tracks the percpu allocations separately */
-			kmemleak_free(ptr);
+			kmemleak_ignore_phys(__pa(ptr));
 			pages[j++] = virt_to_page(ptr);
 		}
 	}
@@ -3230,7 +3296,7 @@ int __init pcpu_page_first_chunk(size_t reserved_size,
 			(unsigned long)vm.addr + unit * ai->unit_size;
 
 		for (i = 0; i < unit_pages; i++)
-			populate_pte_fn(unit_addr + (i << PAGE_SHIFT));
+			pcpu_populate_pte(unit_addr + (i << PAGE_SHIFT));
 
 		/* pte already populated, the following shouldn't fail */
 		rc = __pcpu_map_pages(unit_addr, &pages[unit * unit_pages],
@@ -3238,13 +3304,7 @@ int __init pcpu_page_first_chunk(size_t reserved_size,
 		if (rc < 0)
 			panic("failed to map percpu area, err=%d\n", rc);
 
-		/*
-		 * FIXME: Archs with virtual cache should flush local
-		 * cache for the linear mapping here - something
-		 * equivalent to flush_cache_vmap() on the local cpu.
-		 * flush_cache_vmap() can't be used as most supporting
-		 * data structures are not set up yet.
-		 */
+		flush_cache_vmap_early(unit_addr, unit_addr + ai->unit_size);
 
 		/* copy static data */
 		memcpy((void *)unit_addr, __per_cpu_load, ai->static_size);
@@ -3260,10 +3320,10 @@ int __init pcpu_page_first_chunk(size_t reserved_size,
 
 enomem:
 	while (--j >= 0)
-		free_fn(page_address(pages[j]), PAGE_SIZE);
+		pcpu_fc_free(page_address(pages[j]), PAGE_SIZE);
 	rc = -ENOMEM;
 out_free_ar:
-	memblock_free_early(__pa(pages), pages_size);
+	memblock_free(pages, pages_size);
 	pcpu_free_alloc_info(ai);
 	return rc;
 }
@@ -3285,17 +3345,6 @@ out_free_ar:
 unsigned long __per_cpu_offset[NR_CPUS] __read_mostly;
 EXPORT_SYMBOL(__per_cpu_offset);
 
-static void * __init pcpu_dfl_fc_alloc(unsigned int cpu, size_t size,
-				       size_t align)
-{
-	return  memblock_alloc_from(size, align, __pa(MAX_DMA_ADDRESS));
-}
-
-static void __init pcpu_dfl_fc_free(void *ptr, size_t size)
-{
-	memblock_free_early(__pa(ptr), size);
-}
-
 void __init setup_per_cpu_areas(void)
 {
 	unsigned long delta;
@@ -3306,9 +3355,8 @@ void __init setup_per_cpu_areas(void)
 	 * Always reserve area for module percpu variables.  That's
 	 * what the legacy allocator did.
 	 */
-	rc = pcpu_embed_first_chunk(PERCPU_MODULE_RESERVE,
-				    PERCPU_DYNAMIC_RESERVE, PAGE_SIZE, NULL,
-				    pcpu_dfl_fc_alloc, pcpu_dfl_fc_free);
+	rc = pcpu_embed_first_chunk(PERCPU_MODULE_RESERVE, PERCPU_DYNAMIC_RESERVE,
+				    PAGE_SIZE, NULL, NULL);
 	if (rc < 0)
 		panic("Failed to initialize percpu areas.");
 
@@ -3340,7 +3388,7 @@ void __init setup_per_cpu_areas(void)
 	if (!ai || !fc)
 		panic("Failed to allocate memory for percpu areas.");
 	/* kmemleak tracks the percpu allocations separately */
-	kmemleak_free(fc);
+	kmemleak_ignore_phys(__pa(fc));
 
 	ai->dyn_size = unit_size;
 	ai->unit_size = unit_size;

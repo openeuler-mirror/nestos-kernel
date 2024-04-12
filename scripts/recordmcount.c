@@ -38,10 +38,12 @@
 #define R_AARCH64_ABS64	257
 #endif
 
-#ifndef EM_SW64
-#define EM_SW64			0x9916
-#define R_SW64_NONE		0
-#define R_SW64_REFQUAD		2       /* Direct 64 bit */
+#ifndef EM_LOONGARCH
+#define EM_LOONGARCH		258
+#define R_LARCH_32			1
+#define R_LARCH_64			2
+#define R_LARCH_MARK_LA			20
+#define R_LARCH_SOP_PUSH_PLT_PCREL	29
 #endif
 
 #define R_ARM_PC24		1
@@ -49,6 +51,12 @@
 #define R_ARM_CALL		28
 
 #define R_AARCH64_CALL26	283
+
+#ifndef EM_SW64
+#define EM_SW64			0x9916
+#define R_SW64_NONE		0
+#define R_SW64_REFQUAD		2       /* Direct 64 bit */
+#endif
 
 static int fd_map;	/* File descriptor for file being modified. */
 static int mmap_failed; /* Boolean flag. */
@@ -108,6 +116,7 @@ static ssize_t uwrite(void const *const buf, size_t const count)
 {
 	size_t cnt = count;
 	off_t idx = 0;
+	void *p = NULL;
 
 	file_updated = 1;
 
@@ -115,7 +124,10 @@ static ssize_t uwrite(void const *const buf, size_t const count)
 		off_t aoffset = (file_ptr + count) - file_end;
 
 		if (aoffset > file_append_size) {
-			file_append = realloc(file_append, aoffset);
+			p = realloc(file_append, aoffset);
+			if (!p)
+				free(file_append);
+			file_append = p;
 			file_append_size = aoffset;
 		}
 		if (!file_append) {
@@ -457,6 +469,28 @@ static int arm64_is_fake_mcount(Elf64_Rel const *rp)
 	return ELF64_R_TYPE(w8(rp->r_info)) != R_AARCH64_CALL26;
 }
 
+static int LARCH32_is_fake_mcount(Elf32_Rel const *rp)
+{
+	switch (ELF64_R_TYPE(w(rp->r_info))) {
+	case R_LARCH_MARK_LA:
+	case R_LARCH_SOP_PUSH_PLT_PCREL:
+		return 0;
+	}
+
+	return 1;
+}
+
+static int LARCH64_is_fake_mcount(Elf64_Rel const *rp)
+{
+	switch (ELF64_R_TYPE(w(rp->r_info))) {
+	case R_LARCH_MARK_LA:
+	case R_LARCH_SOP_PUSH_PLT_PCREL:
+		return 0;
+	}
+
+	return 1;
+}
+
 #define SW64_FAKEMCOUNT_OFFSET	4
 
 static int sw64_is_fake_mcount(Elf64_Rel const *rp)
@@ -587,6 +621,14 @@ static int do_file(char const *const fname)
 		ideal_nop = ideal_nop4_arm64;
 		is_fake_mcount64 = arm64_is_fake_mcount;
 		break;
+	case EM_IA_64:	reltype = R_IA64_IMM64; break;
+	case EM_MIPS:	/* reltype: e_class    */ break;
+	case EM_LOONGARCH:	/* reltype: e_class    */ break;
+	case EM_PPC:	reltype = R_PPC_ADDR32; break;
+	case EM_PPC64:	reltype = R_PPC64_ADDR64; break;
+	case EM_S390:	/* reltype: e_class    */ break;
+	case EM_SH:	reltype = R_SH_DIR32; gpfx = 0; break;
+	case EM_SPARCV9: reltype = R_SPARC_64; break;
 	case EM_SW64:
 		reltype = R_SW64_REFQUAD;
 		make_nop = make_nop_sw64;
@@ -595,13 +637,6 @@ static int do_file(char const *const fname)
 		mcount_adjust_64 = -12;
 		is_fake_mcount64 = sw64_is_fake_mcount;
 		break;
-	case EM_IA_64:	reltype = R_IA64_IMM64; break;
-	case EM_MIPS:	/* reltype: e_class    */ break;
-	case EM_PPC:	reltype = R_PPC_ADDR32; break;
-	case EM_PPC64:	reltype = R_PPC64_ADDR64; break;
-	case EM_S390:	/* reltype: e_class    */ break;
-	case EM_SH:	reltype = R_SH_DIR32; gpfx = 0; break;
-	case EM_SPARCV9: reltype = R_SPARC_64; break;
 	case EM_X86_64:
 		make_nop = make_nop_x86;
 		ideal_nop = ideal_nop5_x86_64;
@@ -628,6 +663,10 @@ static int do_file(char const *const fname)
 			reltype = R_MIPS_32;
 			is_fake_mcount32 = MIPS32_is_fake_mcount;
 		}
+		if (w2(ehdr->e_machine) == EM_LOONGARCH) {
+			reltype = R_LARCH_32;
+			is_fake_mcount32 = LARCH32_is_fake_mcount;
+		}
 		if (do32(ehdr, fname, reltype) < 0)
 			goto out;
 		break;
@@ -648,6 +687,10 @@ static int do_file(char const *const fname)
 			Elf64_r_sym = MIPS64_r_sym;
 			Elf64_r_info = MIPS64_r_info;
 			is_fake_mcount64 = MIPS64_is_fake_mcount;
+		}
+		if (w2(ghdr->e_machine) == EM_LOONGARCH) {
+			reltype = R_LARCH_64;
+			is_fake_mcount64 = LARCH64_is_fake_mcount;
 		}
 		if (do64(ghdr, fname, reltype) < 0)
 			goto out;

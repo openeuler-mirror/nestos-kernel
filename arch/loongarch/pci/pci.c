@@ -9,8 +9,8 @@
 #include <linux/types.h>
 #include <linux/pci.h>
 #include <linux/vgaarb.h>
-#include <asm/loongson.h>
 #include <asm/cacheflush.h>
+#include <asm/loongson.h>
 
 #define PCI_DEVICE_ID_LOONGSON_HOST     0x7a00
 #define PCI_DEVICE_ID_LOONGSON_DC1      0x7a06
@@ -62,7 +62,7 @@ static int __init pcibios_init(void)
 
 subsys_initcall(pcibios_init);
 
-int pcibios_add_device(struct pci_dev *dev)
+int pcibios_device_add(struct pci_dev *dev)
 {
 	int id;
 	struct irq_domain *dom;

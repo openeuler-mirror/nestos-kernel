@@ -721,7 +721,7 @@ u16 sss_nic_select_queue_by_hash_func(struct net_device *dev, struct sk_buff *sk
 
 	iphdr = ip_hdr(skb);
 
-	if ((iphdr->version != IPV4_VERSION) && (iphdr->version != IPV6_VERSION))
+	if (iphdr->version != IPV4_VERSION && iphdr->version != IPV6_VERSION)
 		return (u16)sq_id;
 
 	if (iphdr->version == IPV4_VERSION) {
@@ -793,7 +793,7 @@ static int sss_nic_restore_vlan(struct sss_nic_dev *nic_dev)
 		vlandev = __vlan_find_dev_deep(netdev, htons(ETH_P_8021Q), i);
 #endif
 
-		if ((!vlandev) && (SSSNIC_TEST_VLAN_BIT(nic_dev, i) != 0)) {
+		if (!vlandev && SSSNIC_TEST_VLAN_BIT(nic_dev, i) != 0) {
 			ret = netdev->netdev_ops->ndo_vlan_rx_kill_vid(netdev,
 								       htons(ETH_P_8021Q), i);
 			if (ret != 0) {
@@ -801,7 +801,7 @@ static int sss_nic_restore_vlan(struct sss_nic_dev *nic_dev)
 					    "Fail to delete vlan %u, ret: %d\n", i, ret);
 				break;
 			}
-		} else if ((vlandev) && (SSSNIC_TEST_VLAN_BIT(nic_dev, i) == 0)) {
+		} else if (vlandev && SSSNIC_TEST_VLAN_BIT(nic_dev, i) == 0) {
 			ret = netdev->netdev_ops->ndo_vlan_rx_add_vid(netdev,
 								      htons(ETH_P_8021Q), i);
 			if (ret != 0) {

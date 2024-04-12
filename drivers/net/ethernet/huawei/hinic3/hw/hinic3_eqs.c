@@ -804,10 +804,8 @@ static int alloc_eq_pages(struct hinic3_eq *eq)
 
 	eq->eq_pages = kcalloc(eq->num_pages, sizeof(*eq->eq_pages),
 			       GFP_KERNEL);
-	if (!eq->eq_pages) {
-		sdk_err(eq->hwdev->dev_hdl, "Failed to alloc eq pages description\n");
+	if (!eq->eq_pages)
 		return -ENOMEM;
-	}
 
 	for (pg_idx = 0; pg_idx < eq->num_pages; pg_idx++) {
 		eq_page = &eq->eq_pages[pg_idx];
@@ -816,7 +814,7 @@ static int alloc_eq_pages(struct hinic3_eq *eq)
 						       HINIC3_MIN_EQ_PAGE_SIZE,
 						       GFP_KERNEL, eq_page);
 		if (err) {
-			sdk_err(eq->hwdev->dev_hdl, "Failed to alloc eq page, page index: %hu\n",
+			sdk_err(eq->hwdev->dev_hdl, "Failed to alloc eq page, page index: %u\n",
 				pg_idx);
 			goto dma_alloc_err;
 		}

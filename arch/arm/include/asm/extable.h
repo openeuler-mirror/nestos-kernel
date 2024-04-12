@@ -22,7 +22,7 @@ extern int fixup_exception(struct pt_regs *regs);
 	/*
 	 * ex_entry - place-relative extable entry
 	 */
-asm(	".macro		ex_entry, insn, fixup		\n"
+asm(".macro		ex_entry, insn, fixup		\n"
 	".pushsection	__ex_table, \"a\", %progbits	\n"
 	".align		3				\n"
 	".long		\\insn - .			\n"
@@ -36,7 +36,7 @@ asm(	".macro		ex_entry, insn, fixup		\n"
 	 * ex_entry - place-relative extable entry
 	 */
 	.macro		ex_entry, insn, fixup
-	.pushsection	__ex_table, "a", %progbits
+	.pushsection	__ex_table, "a", % progbits
 	.align		3
 	.long		\insn - .
 	.long		\fixup - .

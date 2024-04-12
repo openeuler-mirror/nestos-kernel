@@ -309,10 +309,9 @@ static int api_csr_write(void *hwdev, struct msg_module *nt_msg,
 	rd_cnt = rd_len / DW_WIDTH;
 
 	data = kzalloc(rd_len, GFP_KERNEL);
-	if (!data) {
-		pr_err("No more memory\n");
+	if (!data)
 		return -EFAULT;
-	}
+
 	if (copy_from_user(data, (void *)csr_write_msg->data, rd_len)) {
 		pr_err("Copy information from user failed\n");
 		kfree(data);

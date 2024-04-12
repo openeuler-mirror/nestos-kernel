@@ -87,13 +87,15 @@ bool __kprobes sw64_insn_can_kprobe(kprobe_opcode_t *addr)
 	u32 insn = le32_to_cpu(*addr);
 
 	if (!sw64_insn_is_steppable(insn)) {
-		printk("addr can't steppable\n");
+		pr_warn("addr is not steppable\n");
 		return false;
 	}
+#ifdef CONFIG_SUBARCH_C3B
 	if (!is_probed_between_atomic(addr)) {
-		printk("addr between atomic cant probe\n");
+		pr_warn("addr between atomic can't probe\n");
 		return false;
 	}
+#endif
 	return true;
 }
 #endif

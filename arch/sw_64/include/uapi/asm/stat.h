@@ -20,8 +20,7 @@ struct stat {
 	unsigned int	st_gen;
 };
 
-/*
- * The stat64 structure increases the size of dev_t, blkcnt_t, adds
+/* The stat64 structure increases the size of dev_t, blkcnt_t, adds
  * nanosecond resolution times, and padding for expansion.
  */
 

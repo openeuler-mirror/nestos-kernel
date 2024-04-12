@@ -24,6 +24,7 @@
 #include <linux/xattr.h>
 #include <linux/sched/mm.h>
 #include <linux/magic.h>
+#include <linux/module_signature.h>
 
 #include "ima.h"
 #include "ima_digest_list.h"
@@ -152,6 +153,25 @@ static void ima_del_digest_data_entry(u8 *digest, enum hash_algo algo,
 	kfree(d);
 }
 
+static size_t ima_get_compact_list_sig_len(loff_t size, void *buf)
+{
+	const size_t marker_len = strlen(MODULE_SIG_STRING);
+	const struct module_signature *sig;
+	const void *p;
+
+	if (size <= marker_len + sizeof(*sig))
+		return 0;
+
+	p = buf + size - marker_len;
+
+	if (memcmp(p, MODULE_SIG_STRING, marker_len))
+		return 0;
+
+	sig = (const struct module_signature *)(p - sizeof(*sig));
+
+	return be32_to_cpu(sig->sig_len) + marker_len + sizeof(*sig);
+}
+
 /***********************
  * Compact list parser *
  ***********************/
@@ -172,9 +192,18 @@ int ima_parse_compact_list(loff_t size, void *buf, int op)
 	struct compact_list_hdr *hdr;
 	size_t digest_len;
 	int ret = 0, i;
+	ssize_t sig_len;
 
 	if (!(ima_digest_list_actions & ima_policy_flag))
 		return -EACCES;
+
+	sig_len = ima_get_compact_list_sig_len(size, buf);
+	if (sig_len >= size) {
+		pr_err("compact list, invalid signature\n");
+		return -EINVAL;
+	}
+
+	bufendp -= sig_len;
 
 	while (bufp < bufendp) {
 		if (bufp + sizeof(*hdr) > bufendp) {
@@ -235,7 +264,7 @@ int ima_parse_compact_list(loff_t size, void *buf, int op)
 		}
 	}
 
-	return bufp - buf;
+	return bufp - buf + sig_len;
 }
 
 /***************************
@@ -263,16 +292,15 @@ void ima_check_measured_appraised(struct file *file)
 	mutex_lock(&iint->mutex);
 	if ((ima_digest_list_actions & IMA_MEASURE) &&
 	    !(iint->flags & IMA_MEASURED)) {
-		pr_err("%s not measured, disabling digest lists lookup "
-		       "for measurement\n", file_dentry(file)->d_name.name);
+		pr_err("%s not measured, disabling digest lists lookup for measurement\n",
+			file_dentry(file)->d_name.name);
 		ima_digest_list_actions &= ~IMA_MEASURE;
 	}
 
 	if ((ima_digest_list_actions & IMA_APPRAISE) &&
-	    (!(iint->flags & IMA_APPRAISED) ||
-	    !test_bit(IMA_DIGSIG, &iint->atomic_flags))) {
-		pr_err("%s not appraised, disabling digest lists lookup "
-		       "for appraisal\n", file_dentry(file)->d_name.name);
+	    (!(iint->flags & IMA_APPRAISED))) {
+		pr_err("%s not appraised, disabling digest lists lookup for appraisal\n",
+			file_dentry(file)->d_name.name);
 		ima_digest_list_actions &= ~IMA_APPRAISE;
 	}
 
@@ -295,7 +323,7 @@ struct readdir_callback {
 	struct path *path;
 };
 
-static int __init load_digest_list(struct dir_context *__ctx, const char *name,
+static bool __init load_digest_list(struct dir_context *__ctx, const char *name,
 				   int namelen, loff_t offset, u64 ino,
 				   unsigned int d_type)
 {
@@ -303,42 +331,33 @@ static int __init load_digest_list(struct dir_context *__ctx, const char *name,
 	struct path *dir = ctx->path;
 	struct dentry *dentry;
 	struct file *file;
-	u8 *xattr_value = NULL;
 	char *type_start, *format_start, *format_end;
 	void *datap = NULL;
 	loff_t size;
 	int ret;
 
 	if (!strcmp(name, ".") || !strcmp(name, ".."))
-		return 0;
+		return true;
 
 	type_start = strchr(name, '-');
 	if (!type_start)
-		return 0;
+		return true;
 
 	format_start = strchr(type_start + 1, '-');
 	if (!format_start)
-		return 0;
+		return true;
 
 	format_end = strchr(format_start + 1, '-');
 	if (!format_end)
-		return 0;
+		return true;
 
 	if (format_end - format_start - 1 != strlen("compact") ||
 	    strncmp(format_start + 1, "compact", format_end - format_start - 1))
-		return 0;
+		return true;
 
 	dentry = lookup_one_len(name, dir->dentry, strlen(name));
 	if (IS_ERR(dentry))
-		return 0;
-
-	size = vfs_getxattr(dentry, XATTR_NAME_EVM, NULL, 0);
-	if (size < 0) {
-		size = vfs_getxattr_alloc(dentry, XATTR_NAME_IMA,
-					  (char **)&xattr_value, 0, GFP_NOFS);
-		if (size < 0 || xattr_value[0] != EVM_IMA_XATTR_DIGSIG)
-			goto out;
-	}
+		return true;
 
 	file = file_open_root(dir, name, O_RDONLY, 0);
 	if (IS_ERR(file)) {
@@ -357,6 +376,7 @@ static int __init load_digest_list(struct dir_context *__ctx, const char *name,
 
 	if (size > ima_digest_db_max_size - ima_digest_db_size) {
 		pr_err_once("digest DB is full: %d\n", ima_digest_db_size);
+		vfree(datap);
 		goto out_fput;
 	}
 
@@ -370,8 +390,7 @@ static int __init load_digest_list(struct dir_context *__ctx, const char *name,
 out_fput:
 	fput(file);
 out:
-	kfree(xattr_value);
-	return 0;
+	return true;
 }
 
 static void ima_exec_parser(void)

@@ -91,7 +91,7 @@ static int lpc_irq_set_type(struct irq_data *d, unsigned int type)
 	return 0;
 }
 
-static struct irq_chip pch_lpc_irq_chip = {
+static const struct irq_chip pch_lpc_irq_chip = {
 	.name			= "PCH LPC",
 	.irq_mask		= lpc_irq_mask,
 	.irq_unmask		= lpc_irq_unmask,
@@ -102,7 +102,7 @@ static struct irq_chip pch_lpc_irq_chip = {
 
 static void lpc_irq_dispatch(struct irq_desc *desc)
 {
-	u32 pending, bit, virq;
+	u32 pending, bit;
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	struct pch_lpc *priv = irq_desc_get_handler_data(desc);
 
@@ -116,8 +116,7 @@ static void lpc_irq_dispatch(struct irq_desc *desc)
 	while (pending) {
 		bit = __ffs(pending);
 
-		virq = irq_find_mapping(priv->lpc_domain, bit);
-		generic_handle_irq(virq);
+		generic_handle_domain_irq(priv->lpc_domain, bit);
 		pending &= ~BIT(bit);
 	}
 	chained_irq_exit(chip, desc);

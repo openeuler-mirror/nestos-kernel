@@ -106,10 +106,12 @@ __mmap_switched:
 	mov	r1, #0
 	bl	__memset			@ clear .bss
 
+	adr_l	r0, init_task			@ get swapper task_struct
+	set_current r0, r1
+
 #ifdef CONFIG_KASAN
 	bl	kasan_early_init
 #endif
-
 	str_l	r9, processor_id, r4		@ Save processor ID
 	str_l	r7, __machine_arch_type, r4	@ Save machine type
 	str_l	r8, __atags_pointer, r4		@ Save atags pointer

@@ -28,6 +28,7 @@
 #include <linux/sched/task.h>
 #include <linux/sched/debug.h>
 #include <linux/swap.h>
+#include <linux/syscalls.h>
 #include <linux/timex.h>
 #include <linux/jiffies.h>
 #include <linux/cpuset.h>
@@ -43,7 +44,6 @@
 #include <linux/kthread.h>
 #include <linux/init.h>
 #include <linux/mmu_notifier.h>
-#include <linux/fault_event.h>
 
 #include <asm/tlb.h>
 #include "internal.h"
@@ -52,10 +52,10 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/oom.h>
 
-int sysctl_panic_on_oom;
-int sysctl_oom_kill_allocating_task;
-int sysctl_oom_dump_tasks = 1;
-int sysctl_enable_oom_killer = 1;
+static int sysctl_panic_on_oom;
+static int sysctl_oom_kill_allocating_task;
+static int sysctl_oom_dump_tasks = 1;
+static int sysctl_enable_oom_killer = 1;
 
 /*
  * Serializes oom killer invocations (out_of_memory()) from all contexts to
@@ -76,7 +76,7 @@ static inline bool is_memcg_oom(struct oom_control *oc)
 
 #ifdef CONFIG_NUMA
 /**
- * oom_cpuset_eligible() - check task eligiblity for kill
+ * oom_cpuset_eligible() - check task eligibility for kill
  * @start: task struct of which task to consider
  * @oc: pointer to struct oom_control
  *
@@ -94,9 +94,6 @@ static bool oom_cpuset_eligible(struct task_struct *start,
 	bool ret = false;
 	const nodemask_t *mask = oc->nodemask;
 
-	if (is_memcg_oom(oc))
-		return true;
-
 	rcu_read_lock();
 	for_each_thread(start, tsk) {
 		if (mask) {
@@ -106,7 +103,7 @@ static bool oom_cpuset_eligible(struct task_struct *start,
 			 * mempolicy intersects current, otherwise it may be
 			 * needlessly killed.
 			 */
-			ret = mempolicy_nodemask_intersects(tsk, mask);
+			ret = mempolicy_in_oom_domain(tsk, mask);
 		} else {
 			/*
 			 * This is not a mempolicy constrained oom, so only
@@ -173,10 +170,12 @@ static bool oom_unkillable_task(struct task_struct *p)
 }
 
 /*
- * Print out unreclaimble slabs info when unreclaimable slabs amount is greater
- * than all user memory (LRU pages)
- */
-static bool is_dump_unreclaim_slabs(void)
+ * Check whether unreclaimable slab amount is greater than
+ * all user memory(LRU pages).
+ * dump_unreclaimable_slab() could help in the case that
+ * oom due to too much unreclaimable slab used by kernel.
+*/
+static bool should_dump_unreclaim_slab(void)
 {
 	unsigned long nr_lru;
 
@@ -307,7 +306,7 @@ static enum oom_constraint constrained_alloc(struct oom_control *oc)
 	return CONSTRAINT_NONE;
 }
 
-#ifdef CONFIG_MEMCG_QOS
+#ifdef CONFIG_MEMCG_OOM_PRIORITY
 /**
  * We choose the task in low-priority memcg firstly. For the same state, we
  * choose the task with the highest number of 'points'.
@@ -317,9 +316,10 @@ static bool oom_next_task(struct task_struct *task, struct oom_control *oc,
 {
 	struct mem_cgroup *cur_memcg;
 	struct mem_cgroup *oc_memcg;
+	int cur_memcg_prio, oc_memcg_prio;
 
-	if (!static_branch_likely(&memcg_qos_stat_key))
-		return (points == LONG_MIN || points < oc->chosen_points);
+	if (memcg_oom_prio_disabled())
+		return points == LONG_MIN || points < oc->chosen_points;
 
 	if (points == LONG_MIN)
 		return true;
@@ -327,16 +327,18 @@ static bool oom_next_task(struct task_struct *task, struct oom_control *oc,
 	if (!oc->chosen)
 		return false;
 
+	rcu_read_lock();
 	oc_memcg = mem_cgroup_from_task(oc->chosen);
 	cur_memcg = mem_cgroup_from_task(task);
+	oc_memcg_prio = READ_ONCE(oc_memcg->oom_prio);
+	cur_memcg_prio = READ_ONCE(cur_memcg->oom_prio);
+	rcu_read_unlock();
 
-	if (cur_memcg->memcg_priority == oc_memcg->memcg_priority) {
-		if (points < oc->chosen_points)
-			return true;
-		return false;
-	}
+	if (cur_memcg_prio == oc_memcg_prio)
+		return points < oc->chosen_points;
+
 	/* if oc is low-priority, so skip the task */
-	if (oc_memcg->memcg_priority)
+	if (oc_memcg_prio == MEMCG_LOW_OOM_PRIORITY)
 		return true;
 
 	return false;
@@ -345,7 +347,7 @@ static bool oom_next_task(struct task_struct *task, struct oom_control *oc,
 static inline bool oom_next_task(struct task_struct *task,
 				struct oom_control *oc, long points)
 {
-	return (points == LONG_MIN || points < oc->chosen_points);
+	return points == LONG_MIN || points < oc->chosen_points;
 }
 #endif
 
@@ -410,13 +412,13 @@ static void select_bad_process(struct oom_control *oc)
 	oc->chosen_points = LONG_MIN;
 
 	if (is_memcg_oom(oc)) {
-		if (!mem_cgroup_scan_tasks(oc->memcg, oom_evaluate_task, oc))
-			memcg_print_bad_task(oc);
+		mem_cgroup_scan_tasks(oc->memcg, oom_evaluate_task, oc);
+		memcg_print_bad_task(oc);
 	} else {
 		struct task_struct *p;
 
-#ifdef CONFIG_MEMCG_QOS
-		if (memcg_low_priority_scan_tasks(oom_evaluate_task, oc))
+#ifdef CONFIG_MEMCG_OOM_PRIORITY
+		if (memcg_oom_prio_scan_tasks(oom_evaluate_task, oc))
 			return;
 #endif
 		rcu_read_lock();
@@ -442,9 +444,8 @@ static int dump_task(struct task_struct *p, void *arg)
 	task = find_lock_task_mm(p);
 	if (!task) {
 		/*
-		 * This is a kthread or all of p's threads have already
-		 * detached their mm's.  There's no need to report
-		 * them; they can't be oom killed anyway.
+		 * All of p's threads have already detached their mm's. There's
+		 * no need to report them; they can't be oom killed anyway.
 		 */
 		return 0;
 	}
@@ -476,8 +477,8 @@ static void dump_tasks(struct oom_control *oc)
 	pr_info("[  pid  ]   uid  tgid total_vm      rss pgtables_bytes swapents oom_score_adj name\n");
 
 	if (is_memcg_oom(oc)) {
-		if (!mem_cgroup_scan_tasks(oc->memcg, dump_task, oc))
-			memcg_print_bad_task(oc);
+		mem_cgroup_scan_tasks(oc->memcg, dump_task, oc);
+		memcg_print_bad_task(oc);
 	} else {
 		struct task_struct *p;
 
@@ -512,8 +513,8 @@ static void dump_header(struct oom_control *oc, struct task_struct *p)
 	if (is_memcg_oom(oc))
 		mem_cgroup_print_oom_meminfo(oc->memcg);
 	else {
-		show_mem(SHOW_MEM_FILTER_NODES, oc->nodemask);
-		if (is_dump_unreclaim_slabs())
+		__show_mem(SHOW_MEM_FILTER_NODES, oc->nodemask, gfp_zone(oc->gfp_mask));
+		if (should_dump_unreclaim_slab())
 			dump_unreclaimable_slab();
 	}
 	if (sysctl_oom_dump_tasks)
@@ -529,8 +530,6 @@ static atomic_t oom_victims = ATOMIC_INIT(0);
 static DECLARE_WAIT_QUEUE_HEAD(oom_victims_wait);
 
 static bool oom_killer_disabled __read_mostly;
-
-#define K(x) ((x) << (PAGE_SHIFT-10))
 
 /*
  * task->mm can be NULL if the task is the exited group leader.  So to
@@ -560,10 +559,11 @@ static DECLARE_WAIT_QUEUE_HEAD(oom_reaper_wait);
 static struct task_struct *oom_reaper_list;
 static DEFINE_SPINLOCK(oom_reaper_lock);
 
-bool __oom_reap_task_mm(struct mm_struct *mm)
+static bool __oom_reap_task_mm(struct mm_struct *mm)
 {
 	struct vm_area_struct *vma;
 	bool ret = true;
+	VMA_ITERATOR(vmi, mm, 0);
 
 	/*
 	 * Tell all users of get_user/copy_from_user etc... that the content
@@ -573,8 +573,8 @@ bool __oom_reap_task_mm(struct mm_struct *mm)
 	 */
 	set_bit(MMF_UNSTABLE, &mm->flags);
 
-	for (vma = mm->mmap ; vma; vma = vma->vm_next) {
-		if (!can_madv_lru_vma(vma))
+	for_each_vma(vmi, vma) {
+		if (vma->vm_flags & (VM_HUGETLB|VM_PFNMAP))
 			continue;
 
 		/*
@@ -592,17 +592,17 @@ bool __oom_reap_task_mm(struct mm_struct *mm)
 			struct mmu_gather tlb;
 
 			mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0,
-						vma, mm, vma->vm_start,
+						mm, vma->vm_start,
 						vma->vm_end);
-			tlb_gather_mmu(&tlb, mm, range.start, range.end);
+			tlb_gather_mmu(&tlb, mm);
 			if (mmu_notifier_invalidate_range_start_nonblock(&range)) {
-				tlb_finish_mmu(&tlb, range.start, range.end);
+				tlb_finish_mmu(&tlb);
 				ret = false;
 				continue;
 			}
 			unmap_page_range(&tlb, vma, range.start, range.end, NULL);
 			mmu_notifier_invalidate_range_end(&range);
-			tlb_finish_mmu(&tlb, range.start, range.end);
+			tlb_finish_mmu(&tlb);
 		}
 	}
 
@@ -689,6 +689,8 @@ done:
 
 static int oom_reaper(void *unused)
 {
+	set_freezable();
+
 	while (true) {
 		struct task_struct *tsk = NULL;
 
@@ -709,9 +711,8 @@ static int oom_reaper(void *unused)
 
 static void wake_oom_reaper(struct timer_list *timer)
 {
-	struct task_struct_resvd *tsk_resvd = container_of(timer,
-			struct task_struct_resvd, oom_reaper_timer);
-	struct task_struct *tsk = tsk_resvd->task;
+	struct task_struct *tsk = container_of(timer, struct task_struct,
+			oom_reaper_timer);
 	struct mm_struct *mm = tsk->signal->oom_mm;
 	unsigned long flags;
 
@@ -745,14 +746,57 @@ static void queue_oom_reaper(struct task_struct *tsk)
 		return;
 
 	get_task_struct(tsk);
-	timer_setup(&tsk->_resvd->oom_reaper_timer, wake_oom_reaper, 0);
-	tsk->_resvd->oom_reaper_timer.expires = jiffies + OOM_REAPER_DELAY;
-	add_timer(&tsk->_resvd->oom_reaper_timer);
+	timer_setup(&tsk->oom_reaper_timer, wake_oom_reaper, 0);
+	tsk->oom_reaper_timer.expires = jiffies + OOM_REAPER_DELAY;
+	add_timer(&tsk->oom_reaper_timer);
 }
+
+#ifdef CONFIG_SYSCTL
+static struct ctl_table vm_oom_kill_table[] = {
+	{
+		.procname	= "panic_on_oom",
+		.data		= &sysctl_panic_on_oom,
+		.maxlen		= sizeof(sysctl_panic_on_oom),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_TWO,
+	},
+	{
+		.procname	= "oom_kill_allocating_task",
+		.data		= &sysctl_oom_kill_allocating_task,
+		.maxlen		= sizeof(sysctl_oom_kill_allocating_task),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+	{
+		.procname	= "oom_dump_tasks",
+		.data		= &sysctl_oom_dump_tasks,
+		.maxlen		= sizeof(sysctl_oom_dump_tasks),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+#ifdef CONFIG_ASCEND_OOM
+	{
+		.procname	= "enable_oom_killer",
+		.data		= &sysctl_enable_oom_killer,
+		.maxlen		= sizeof(sysctl_enable_oom_killer),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+#endif
+	{}
+};
+#endif
 
 static int __init oom_init(void)
 {
 	oom_reaper_th = kthread_run(oom_reaper, NULL, "oom_reaper");
+#ifdef CONFIG_SYSCTL
+	register_sysctl_init("vm", vm_oom_kill_table);
+#endif
 	return 0;
 }
 subsys_initcall(oom_init)
@@ -782,10 +826,8 @@ static void mark_oom_victim(struct task_struct *tsk)
 		return;
 
 	/* oom_mm is bound to the signal struct life time. */
-	if (!cmpxchg(&tsk->signal->oom_mm, NULL, mm)) {
+	if (!cmpxchg(&tsk->signal->oom_mm, NULL, mm))
 		mmgrab(tsk->signal->oom_mm);
-		set_bit(MMF_OOM_VICTIM, &mm->flags);
-	}
 
 	/*
 	 * Make sure that the task is woken up from uninterruptible sleep
@@ -862,11 +904,11 @@ static inline bool __task_will_free_mem(struct task_struct *task)
 	struct signal_struct *sig = task->signal;
 
 	/*
-	 * A coredumping process may sleep for an extended period in exit_mm(),
-	 * so the oom killer cannot assume that the process will promptly exit
-	 * and release memory.
+	 * A coredumping process may sleep for an extended period in
+	 * coredump_task_exit(), so the oom killer cannot assume that
+	 * the process will promptly exit and release memory.
 	 */
-	if (sig->flags & SIGNAL_GROUP_COREDUMP)
+	if (sig->core_state)
 		return false;
 
 	if (sig->flags & SIGNAL_GROUP_EXIT)
@@ -965,9 +1007,6 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 	 */
 	do_send_sig_info(SIGKILL, SEND_SIG_PRIV, victim, PIDTYPE_TGID);
 	mark_oom_victim(victim);
-	report_fault_event(smp_processor_id(), victim,
-			NORMAL_FAULT, FE_SIGNAL, "sigkill by oom");
-
 	pr_err("%s: Killed process %d (%s) total-vm:%lukB, anon-rss:%lukB, file-rss:%lukB, shmem-rss:%lukB, UID:%u pgtables:%lukB oom_score_adj:%hd\n",
 		message, task_pid_nr(victim), victim->comm, K(mm->total_vm),
 		K(get_mm_counter(mm, MM_ANONPAGES)),
@@ -1001,14 +1040,12 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 			continue;
 		}
 		/*
-		 * No kthead_use_mm() user needs to read from the userspace so
+		 * No kthread_use_mm() user needs to read from the userspace so
 		 * we are ok to reap it.
 		 */
 		if (unlikely(p->flags & PF_KTHREAD))
 			continue;
 		do_send_sig_info(SIGKILL, SEND_SIG_PRIV, p, PIDTYPE_TGID);
-		report_fault_event(smp_processor_id(), p, NORMAL_FAULT,
-				FE_SIGNAL, "sigkill by oom");
 	}
 	rcu_read_unlock();
 
@@ -1018,7 +1055,6 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 	mmdrop(mm);
 	put_task_struct(victim);
 }
-#undef K
 
 /*
  * Kill provided task unless it's secured by setting
@@ -1072,9 +1108,10 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	 * If necessary, kill all tasks in the selected memory cgroup.
 	 */
 	if (oom_group) {
+		memcg_memory_event(oom_group, MEMCG_OOM_GROUP_KILL);
 		mem_cgroup_print_oom_group(oom_group);
 		mem_cgroup_scan_tasks(oom_group, oom_kill_memcg_member,
-				      (void*)message);
+				      (void *)message);
 		mem_cgroup_put(oom_group);
 	}
 }
@@ -1099,7 +1136,7 @@ static void check_panic_on_oom(struct oom_control *oc)
 	if (is_sysrq_oom(oc))
 		return;
 	dump_header(oc, NULL);
-	oom_type_notifier_call(0, oc);
+	oom_type_notifier_call(OOM_TYPE_NOMEM, oc);
 	panic("Out of memory: %s panic_on_oom is enabled\n",
 		sysctl_panic_on_oom == 2 ? "compulsory" : "system-wide");
 }
@@ -1149,7 +1186,7 @@ int oom_type_notifier_call(unsigned int type, struct oom_control *oc)
 	if (printk_timed_ratelimit(&caller_jiffies, 10000)) {
 		pr_err("OOM_NOTIFIER: oom type %u\n", type);
 		dump_stack();
-		show_mem(SHOW_MEM_FILTER_NODES, NULL);
+		show_mem();
 		dump_tasks(oc);
 	}
 
@@ -1175,13 +1212,13 @@ bool out_of_memory(struct oom_control *oc)
 		return false;
 
 	if (!sysctl_enable_oom_killer) {
-		oom_type_notifier_call(0, oc);
+		oom_type_notifier_call(OOM_TYPE_NOMEM, oc);
 		return false;
 	}
 
 	if (!is_memcg_oom(oc)) {
 		blocking_notifier_call_chain(&oom_notify_list, 0, &freed);
-		if (freed > 0)
+		if (freed > 0 && !is_sysrq_oom(oc))
 			/* Got some memory back in the last second. */
 			return true;
 	}
@@ -1199,12 +1236,10 @@ bool out_of_memory(struct oom_control *oc)
 
 	/*
 	 * The OOM killer does not compensate for IO-less reclaim.
-	 * pagefault_out_of_memory lost its gfp context so we have to
-	 * make sure exclude 0 mask - all other users should have at least
-	 * ___GFP_DIRECT_RECLAIM to get here. But mem_cgroup_oom() has to
-	 * invoke the OOM killer even if it is a GFP_NOFS allocation.
+	 * But mem_cgroup_oom() has to invoke the OOM killer even
+	 * if it is a GFP_NOFS allocation.
 	 */
-	if (oc->gfp_mask && !(oc->gfp_mask & __GFP_FS) && !is_memcg_oom(oc))
+	if (!(oc->gfp_mask & __GFP_FS) && !is_memcg_oom(oc))
 		return true;
 
 	/*
@@ -1214,10 +1249,6 @@ bool out_of_memory(struct oom_control *oc)
 	oc->constraint = constrained_alloc(oc);
 	if (oc->constraint != CONSTRAINT_MEMORY_POLICY)
 		oc->nodemask = NULL;
-
-	report_fault_event(smp_processor_id(), current, NORMAL_FAULT,
-			is_memcg_oom(oc) ? FE_OOM_CGROUP : FE_OOM_GLOBAL, NULL);
-
 	check_panic_on_oom(oc);
 
 	if (!is_memcg_oom(oc) && sysctl_oom_kill_allocating_task &&
@@ -1268,4 +1299,68 @@ void pagefault_out_of_memory(void)
 
 	if (__ratelimit(&pfoom_rs))
 		pr_warn("Huh VM_FAULT_OOM leaked out to the #PF handler. Retrying PF\n");
+}
+
+SYSCALL_DEFINE2(process_mrelease, int, pidfd, unsigned int, flags)
+{
+#ifdef CONFIG_MMU
+	struct mm_struct *mm = NULL;
+	struct task_struct *task;
+	struct task_struct *p;
+	unsigned int f_flags;
+	bool reap = false;
+	long ret = 0;
+
+	if (flags)
+		return -EINVAL;
+
+	task = pidfd_get_task(pidfd, &f_flags);
+	if (IS_ERR(task))
+		return PTR_ERR(task);
+
+	/*
+	 * Make sure to choose a thread which still has a reference to mm
+	 * during the group exit
+	 */
+	p = find_lock_task_mm(task);
+	if (!p) {
+		ret = -ESRCH;
+		goto put_task;
+	}
+
+	mm = p->mm;
+	mmgrab(mm);
+
+	if (task_will_free_mem(p))
+		reap = true;
+	else {
+		/* Error only if the work has not been done already */
+		if (!test_bit(MMF_OOM_SKIP, &mm->flags))
+			ret = -EINVAL;
+	}
+	task_unlock(p);
+
+	if (!reap)
+		goto drop_mm;
+
+	if (mmap_read_lock_killable(mm)) {
+		ret = -EINTR;
+		goto drop_mm;
+	}
+	/*
+	 * Check MMF_OOM_SKIP again under mmap_read_lock protection to ensure
+	 * possible change in exit_mmap is seen
+	 */
+	if (!test_bit(MMF_OOM_SKIP, &mm->flags) && !__oom_reap_task_mm(mm))
+		ret = -EAGAIN;
+	mmap_read_unlock(mm);
+
+drop_mm:
+	mmdrop(mm);
+put_task:
+	put_task_struct(task);
+	return ret;
+#else
+	return -ENOSYS;
+#endif /* CONFIG_MMU */
 }

@@ -515,7 +515,6 @@ int hinic3_alloc_qps(void *hwdev, struct irq_info *qps_msix_arry,
 
 	rqs = kcalloc(num_qps, sizeof(*rqs), GFP_KERNEL);
 	if (!rqs) {
-		nic_err(nic_io->dev_hdl, "Failed to allocate rq\n");
 		err = -ENOMEM;
 		goto alloc_rqs_err;
 	}

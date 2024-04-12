@@ -281,6 +281,9 @@ static int hclge_set_torus_param(struct hclge_dev *hdev, void *data,
 	struct hnae3_torus_param *param = (struct hnae3_torus_param *)data;
 	int ret;
 
+	if (hdev->ae_dev->dev_version == HNAE3_DEVICE_VERSION_V4)
+		return -EOPNOTSUPP;
+
 	if (length != sizeof(struct hnae3_torus_param))
 		return -EINVAL;
 
@@ -317,6 +320,9 @@ static int hclge_get_torus_param(struct hclge_dev *hdev, void *data,
 	struct hclge_torus_cfg_cmd *req;
 	struct hclge_desc desc;
 	int ret;
+
+	if (hdev->ae_dev->dev_version == HNAE3_DEVICE_VERSION_V4)
+		return -EOPNOTSUPP;
 
 	if (length != sizeof(struct hnae3_torus_param))
 		return -EINVAL;
@@ -533,11 +539,10 @@ static int hclge_disable_nic_clock(struct hclge_dev *hdev, void *data,
 				   size_t length)
 {
 	struct hclge_desc desc;
-	u32 nic_clock_en = 0;
 	int ret;
 
 	hclge_cmd_setup_basic_desc(&desc, HCLGE_OPC_CONFIG_NIC_CLOCK, false);
-	desc.data[0] = cpu_to_le32(nic_clock_en);
+	desc.data[0] = 0;
 
 	ret = hclge_cmd_send(&hdev->hw, &desc, 1);
 	if (ret)
@@ -654,7 +659,8 @@ static void hclge_set_phy_state(struct hclge_dev *hdev, bool enable)
 
 	if (enable && (phydev->state == PHY_READY || phydev->state == PHY_HALTED))
 		phy_start(phydev);
-	else if (!enable && (phy_is_started(phydev) || phydev->state == PHY_DOWN))
+	else if (!enable && (phy_is_started(phydev) || phydev->state == PHY_DOWN ||
+			     phydev->state == PHY_ERROR))
 		phy_stop(phydev);
 }
 
@@ -1366,12 +1372,13 @@ EXPORT_SYMBOL(nic_unregister_event);
 static int hclge_nic_call_event(struct hclge_dev *hdev, void *data,
 				size_t length)
 {
-#define ERROR_EVENT_TYPE_NUM 3
+#define ERROR_EVENT_TYPE_NUM 4
 
 	u32 event_type[ERROR_EVENT_TYPE_NUM] = {
 		HNAE3_PPU_POISON_CUSTOM,
 		HNAE3_IMP_RESET_CUSTOM,
-		HNAE3_IMP_RD_POISON_CUSTOM
+		HNAE3_IMP_RD_POISON_CUSTOM,
+		HNAE3_ROCEE_AXI_RESP_CUSTOM,
 	};
 	u32 *index = (u32 *)data;
 

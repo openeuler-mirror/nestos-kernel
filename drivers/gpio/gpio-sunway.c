@@ -370,7 +370,7 @@ static int sunway_gpio_set_config(struct gpio_chip *gc, unsigned int offset,
 	u32 debounce;
 
 	if (pinconf_to_config_param(config) != PIN_CONFIG_INPUT_DEBOUNCE)
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 
 	debounce = pinconf_to_config_argument(config);
 	return sunway_gpio_set_debounce(gc, offset, debounce);
@@ -641,8 +641,8 @@ sunway_gpio_get_pdata(struct device *dev)
 }
 
 static const struct of_device_id sunway_of_match[] = {
-	{ .compatible = "snps,sw-gpio", .data = (void *)0 },
-	{ .compatible = "apm,xgene-gpio-v2", .data = (void *)GPIO_REG_OFFSET_V2 },
+	{ .compatible = "snps,sw-gpio", .data = (void *)0},
+	{ .compatible = "apm,xgene-gpio-v2", .data = (void *)GPIO_REG_OFFSET_V2},
 	{ /* Sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, sunway_of_match);

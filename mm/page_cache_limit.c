@@ -4,10 +4,10 @@
  */
 
 #include <linux/mm.h>
-#include <linux/page_cache_limit.h>
 #include <linux/swap.h>
 #include <linux/sysctl.h>
 #include <linux/workqueue.h>
+
 #include "internal.h"
 
 static int vm_cache_reclaim_s __read_mostly;
@@ -38,7 +38,7 @@ static bool page_cache_over_limit(void)
 	unsigned long lru_file;
 	unsigned long limit;
 
-	limit = vm_cache_limit_mbytes * ((1024 * 1024UL) / PAGE_SIZE);
+	limit = vm_cache_limit_mbytes << (20 - PAGE_SHIFT);
 	lru_file = global_node_page_state(NR_ACTIVE_FILE) +
 			global_node_page_state(NR_INACTIVE_FILE);
 	if (lru_file > limit)
@@ -58,8 +58,8 @@ static bool should_reclaim_page_cache(void)
 	return true;
 }
 
-static int cache_reclaim_enable_handler(struct ctl_table *table, int write,
-			void __user *buffer, size_t *length, loff_t *ppos)
+int cache_reclaim_enable_handler(struct ctl_table *table, int write,
+			void *buffer, size_t *length, loff_t *ppos)
 {
 	int ret;
 
@@ -74,8 +74,8 @@ static int cache_reclaim_enable_handler(struct ctl_table *table, int write,
 	return 0;
 }
 
-static int cache_reclaim_sysctl_handler(struct ctl_table *table, int write,
-		void __user *buffer, size_t *length, loff_t *ppos)
+int cache_reclaim_sysctl_handler(struct ctl_table *table, int write,
+		void *buffer, size_t *length, loff_t *ppos)
 {
 	int ret;
 
@@ -91,7 +91,7 @@ static int cache_reclaim_sysctl_handler(struct ctl_table *table, int write,
 	return ret;
 }
 
-static int cache_limit_mbytes_sysctl_handler(struct ctl_table *table, int write,
+int cache_limit_mbytes_sysctl_handler(struct ctl_table *table, int write,
 		void __user *buffer, size_t *length, loff_t *ppos)
 {
 	int ret;
@@ -115,60 +115,12 @@ static int cache_limit_mbytes_sysctl_handler(struct ctl_table *table, int write,
 			if (signal_pending(current))
 				return -EINTR;
 
-			page_cache_shrink_memory(node_reclaim_num(), false);
+			shrink_memory(node_reclaim_num(), false);
 		}
 	}
 
 	return 0;
 }
-
-static struct ctl_table ctl_table[] = {
-	{
-		.procname       = "cache_reclaim_s",
-		.data           = &vm_cache_reclaim_s,
-		.maxlen         = sizeof(vm_cache_reclaim_s),
-		.mode           = 0644,
-		.proc_handler   = cache_reclaim_sysctl_handler,
-		.extra1         = SYSCTL_ZERO,
-		.extra2         = &vm_cache_reclaim_s_max,
-	},
-	{
-		.procname       = "cache_reclaim_weight",
-		.data           = &vm_cache_reclaim_weight,
-		.maxlen         = sizeof(vm_cache_reclaim_weight),
-		.mode           = 0644,
-		.proc_handler   = proc_dointvec_minmax,
-		.extra1         = SYSCTL_ONE,
-		.extra2         = &vm_cache_reclaim_weight_max,
-	},
-	{
-		.procname	= "cache_reclaim_enable",
-		.data		= &vm_cache_reclaim_enable,
-		.maxlen		= sizeof(vm_cache_reclaim_enable),
-		.mode		= 0644,
-		.proc_handler	= cache_reclaim_enable_handler,
-		.extra1		= SYSCTL_ZERO,
-		.extra2		= SYSCTL_ONE,
-	},
-	{
-		.procname	= "cache_limit_mbytes",
-		.data		= &vm_cache_limit_mbytes,
-		.maxlen		= sizeof(vm_cache_limit_mbytes),
-		.mode		= 0644,
-		.proc_handler	= cache_limit_mbytes_sysctl_handler,
-	},
-	{}
-};
-
-static struct ctl_table limit_dir_table[] = {
-	{
-		.procname = "vm",
-		.maxlen = 0,
-		.mode = 0555,
-		.child = ctl_table,
-	},
-	{}
-};
 
 static void shrink_shepherd(struct work_struct *w)
 {
@@ -188,11 +140,7 @@ static void shrink_shepherd(struct work_struct *w)
 
 static void shrink_page_work(struct work_struct *w)
 {
-	if (should_reclaim_page_cache()) {
-		if (page_cache_over_limit())
-			page_cache_shrink_memory(node_reclaim_num(), false);
-	} else if (should_periodical_reclaim())
-		page_cache_shrink_memory(node_reclaim_num(), true);
+	shrink_memory(node_reclaim_num(), true);
 }
 
 static void shrink_shepherd_timer(void)
@@ -203,14 +151,48 @@ static void shrink_shepherd_timer(void)
 		INIT_WORK(&vmscan_works[i], shrink_page_work);
 }
 
+static struct ctl_table page_cache_limit_table[] = {
+	{
+		.procname	= "cache_reclaim_s",
+		.data		= &vm_cache_reclaim_s,
+		.maxlen		= sizeof(vm_cache_reclaim_s),
+		.mode		= 0644,
+		.proc_handler	= cache_reclaim_sysctl_handler,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= &vm_cache_reclaim_s_max,
+	},
+	{
+		.procname	= "cache_reclaim_weight",
+		.data		= &vm_cache_reclaim_weight,
+		.maxlen		= sizeof(vm_cache_reclaim_weight),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ONE,
+		.extra2		= &vm_cache_reclaim_weight_max,
+	},
+	{
+		.procname	= "cache_reclaim_enable",
+		.data		= &vm_cache_reclaim_enable,
+		.maxlen		= sizeof(vm_cache_reclaim_enable),
+		.mode		= 0644,
+		.proc_handler	= cache_reclaim_enable_handler,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+	{
+		.procname	= "cache_limit_mbytes",
+		.data		= &vm_cache_limit_mbytes,
+		.maxlen		= sizeof(vm_cache_limit_mbytes),
+		.mode		= 0644,
+		.proc_handler	= cache_limit_mbytes_sysctl_handler,
+	},
+};
+
 static int __init shrink_page_init(void)
 {
-	if (!register_sysctl_table(limit_dir_table)) {
-		pr_err("register page cache limit sysctl failed.");
-		return -ENOMEM;
-	}
-
 	shrink_shepherd_timer();
+
+	register_sysctl_init("vm", page_cache_limit_table);
 
 	return 0;
 }

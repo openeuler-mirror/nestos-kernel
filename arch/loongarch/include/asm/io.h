@@ -5,8 +5,6 @@
 #ifndef _ASM_IO_H
 #define _ASM_IO_H
 
-#define ARCH_HAS_IOREMAP_WC
-
 #include <linux/kernel.h>
 #include <linux/types.h>
 
@@ -41,7 +39,7 @@ static inline void __iomem *ioremap_prot(phys_addr_t offset, unsigned long size,
 #define ioremap(offset, size)		\
 	ioremap_prot((offset), (size), pgprot_val(PAGE_KERNEL_SUC))
 
-#define iounmap(addr)	((void)(addr))
+#define iounmap(addr) 			((void)(addr))
 
 #endif
 
@@ -55,12 +53,13 @@ static inline void __iomem *ioremap_prot(phys_addr_t offset, unsigned long size,
  * @size:      size of the resource to map
  */
 #define ioremap_wc(offset, size)	\
-	ioremap_prot((offset), (size), pgprot_val(PAGE_KERNEL_WUC))
+	ioremap_prot((offset), (size),	\
+		pgprot_val(wc_enabled ? PAGE_KERNEL_WUC : PAGE_KERNEL_SUC))
 
 #define ioremap_cache(offset, size)	\
 	ioremap_prot((offset), (size), pgprot_val(PAGE_KERNEL))
 
-#define mmiowb() asm volatile ("dbar 0" ::: "memory")
+#define mmiowb() wmb()
 
 /*
  * String version of I/O memory access operations.
@@ -73,5 +72,9 @@ extern void __memcpy_fromio(void *to, const volatile void __iomem *from, size_t 
 #define memcpy_toio(c, a, l)   __memcpy_toio((c), (a), (l))
 
 #include <asm-generic/io.h>
+
+#define ARCH_HAS_VALID_PHYS_ADDR_RANGE
+extern int valid_phys_addr_range(phys_addr_t addr, size_t size);
+extern int valid_mmap_phys_addr_range(unsigned long pfn, size_t size);
 
 #endif /* _ASM_IO_H */

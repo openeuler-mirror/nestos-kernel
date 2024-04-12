@@ -4,6 +4,10 @@
 
 #include <uapi/asm/signal.h>
 
+/* Digital Unix defines 64 signals.  Most things should be clean enough
+ * to redefine this at will, if care is taken to make libc match.
+ */
+
 #define _NSIG		64
 #define _NSIG_BPW	64
 #define _NSIG_WORDS	(_NSIG / _NSIG_BPW)

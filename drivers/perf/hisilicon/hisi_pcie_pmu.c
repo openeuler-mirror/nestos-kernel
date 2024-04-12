@@ -19,9 +19,6 @@
 #include <linux/pci.h>
 #include <linux/perf_event.h>
 
-/* Dynamic CPU hotplug state used by PCIe PMU */
-static enum cpuhp_state hisi_pcie_pmu_online;
-
 #define DRV_NAME "hisi_pcie_pmu"
 /* Define registers */
 #define HISI_PCIE_GLOBAL_CTRL		0x00
@@ -128,11 +125,8 @@ static ssize_t hisi_pcie_event_sysfs_show(struct device *dev, struct device_attr
 		  .var = (void *)_format }                                     \
 	})[0].attr.attr)
 
-#define HISI_PCIE_PMU_EVENT_ATTR(_name, _id)						\
-	(&((struct perf_pmu_events_attr[]) {						\
-		{ .attr = __ATTR(_name, 0444, hisi_pcie_event_sysfs_show, NULL),	\
-		.id = _id, }								\
-	})[0].attr.attr)
+#define HISI_PCIE_PMU_EVENT_ATTR(_name, _id)			\
+	PMU_EVENT_ATTR_ID(_name, hisi_pcie_event_sysfs_show, _id)
 
 static ssize_t cpumask_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -359,15 +353,16 @@ static int hisi_pcie_pmu_event_init(struct perf_event *event)
 	struct hisi_pcie_pmu *pcie_pmu = to_pcie_pmu(event->pmu);
 	struct hw_perf_event *hwc = &event->hw;
 
+	/* Check the type first before going on, otherwise it's not our event */
+	if (event->attr.type != event->pmu->type)
+		return -ENOENT;
+
 	event->cpu = pcie_pmu->on_cpu;
 
 	if (EXT_COUNTER_IS_USED(hisi_pcie_get_event(event)))
 		hwc->event_base = HISI_PCIE_EXT_CNT;
 	else
 		hwc->event_base = HISI_PCIE_CNT;
-
-	if (event->attr.type != event->pmu->type)
-		return -ENOENT;
 
 	/* Sampling is not supported. */
 	if (is_sampling_event(event) || event->attach_state & PERF_ATTACH_TASK)
@@ -671,8 +666,8 @@ static int hisi_pcie_pmu_online_cpu(unsigned int cpu, struct hlist_node *node)
 	struct hisi_pcie_pmu *pcie_pmu = hlist_entry_safe(node, struct hisi_pcie_pmu, node);
 
 	if (pcie_pmu->on_cpu == -1) {
-		pcie_pmu->on_cpu = cpu;
-		WARN_ON(irq_set_affinity(pcie_pmu->irq, cpumask_of(cpu)));
+		pcie_pmu->on_cpu = cpumask_local_spread(0, dev_to_node(&pcie_pmu->pdev->dev));
+		WARN_ON(irq_set_affinity(pcie_pmu->irq, cpumask_of(pcie_pmu->on_cpu)));
 	}
 
 	return 0;
@@ -682,14 +677,23 @@ static int hisi_pcie_pmu_offline_cpu(unsigned int cpu, struct hlist_node *node)
 {
 	struct hisi_pcie_pmu *pcie_pmu = hlist_entry_safe(node, struct hisi_pcie_pmu, node);
 	unsigned int target;
+	cpumask_t mask;
+	int numa_node;
 
 	/* Nothing to do if this CPU doesn't own the PMU */
 	if (pcie_pmu->on_cpu != cpu)
 		return 0;
 
 	pcie_pmu->on_cpu = -1;
-	/* Choose a new CPU from all online cpus. */
-	target = cpumask_any_but(cpu_online_mask, cpu);
+
+	/* Choose a local CPU from all online cpus. */
+	numa_node = dev_to_node(&pcie_pmu->pdev->dev);
+	if (cpumask_and(&mask, cpumask_of_node(numa_node), cpu_online_mask) &&
+	    cpumask_andnot(&mask, &mask, cpumask_of(cpu)))
+		target = cpumask_any(&mask);
+	else
+		target = cpumask_any_but(cpu_online_mask, cpu);
+
 	if (target >= nr_cpu_ids) {
 		pci_err(pcie_pmu->pdev, "There is no CPU to set\n");
 		return 0;
@@ -833,7 +837,7 @@ static int hisi_pcie_init_pmu(struct pci_dev *pdev, struct hisi_pcie_pmu *pcie_p
 	if (ret)
 		goto err_iounmap;
 
-	ret = cpuhp_state_add_instance(hisi_pcie_pmu_online, &pcie_pmu->node);
+	ret = cpuhp_state_add_instance(CPUHP_AP_PERF_ARM_HISI_PCIE_PMU_ONLINE, &pcie_pmu->node);
 	if (ret) {
 		pci_err(pdev, "Failed to register hotplug: %d\n", ret);
 		goto err_irq_unregister;
@@ -848,7 +852,8 @@ static int hisi_pcie_init_pmu(struct pci_dev *pdev, struct hisi_pcie_pmu *pcie_p
 	return ret;
 
 err_hotplug_unregister:
-	cpuhp_state_remove_instance_nocalls(hisi_pcie_pmu_online, &pcie_pmu->node);
+	cpuhp_state_remove_instance_nocalls(
+		CPUHP_AP_PERF_ARM_HISI_PCIE_PMU_ONLINE, &pcie_pmu->node);
 
 err_irq_unregister:
 	hisi_pcie_pmu_irq_unregister(pdev, pcie_pmu);
@@ -864,7 +869,8 @@ static void hisi_pcie_uninit_pmu(struct pci_dev *pdev)
 	struct hisi_pcie_pmu *pcie_pmu = pci_get_drvdata(pdev);
 
 	perf_pmu_unregister(&pcie_pmu->pmu);
-	cpuhp_state_remove_instance_nocalls(hisi_pcie_pmu_online, &pcie_pmu->node);
+	cpuhp_state_remove_instance_nocalls(
+		CPUHP_AP_PERF_ARM_HISI_PCIE_PMU_ONLINE, &pcie_pmu->node);
 	hisi_pcie_pmu_irq_unregister(pdev, pcie_pmu);
 	iounmap(pcie_pmu->base);
 }
@@ -935,19 +941,18 @@ static int __init hisi_pcie_module_init(void)
 {
 	int ret;
 
-	ret = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN,
-				      "perf/hisi/pcie:online",
+	ret = cpuhp_setup_state_multi(CPUHP_AP_PERF_ARM_HISI_PCIE_PMU_ONLINE,
+				      "AP_PERF_ARM_HISI_PCIE_PMU_ONLINE",
 				      hisi_pcie_pmu_online_cpu,
 				      hisi_pcie_pmu_offline_cpu);
-	if (ret < 0) {
+	if (ret) {
 		pr_err("Failed to setup PCIe PMU hotplug: %d\n", ret);
 		return ret;
 	}
-	hisi_pcie_pmu_online = ret;
 
 	ret = pci_register_driver(&hisi_pcie_pmu_driver);
 	if (ret)
-		cpuhp_remove_multi_state(hisi_pcie_pmu_online);
+		cpuhp_remove_multi_state(CPUHP_AP_PERF_ARM_HISI_PCIE_PMU_ONLINE);
 
 	return ret;
 }
@@ -956,7 +961,7 @@ module_init(hisi_pcie_module_init);
 static void __exit hisi_pcie_module_exit(void)
 {
 	pci_unregister_driver(&hisi_pcie_pmu_driver);
-	cpuhp_remove_multi_state(hisi_pcie_pmu_online);
+	cpuhp_remove_multi_state(CPUHP_AP_PERF_ARM_HISI_PCIE_PMU_ONLINE);
 }
 module_exit(hisi_pcie_module_exit);
 

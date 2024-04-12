@@ -11,7 +11,7 @@
  * The maximum ASID's the processor supports.
  */
 
-#ifdef CONFIG_SUBARCH_C3B
+#if defined(CONFIG_SUBARCH_C3B) || defined(CONFIG_SUBARCH_C4)
 #define ASID_BITS	10
 #endif
 
@@ -60,8 +60,7 @@ switch_mm_irqs_off(struct mm_struct *prev_mm, struct mm_struct *next_mm,
 	if (!asid_valid(next_mm, cpu))
 		__get_new_mm_context(next_mm, cpu);
 
-	/*
-	 * Update CSR:UPN and CSR:PTBR. Another thread may have allocated
+	/* Update CSR:UPN and CSR:PTBR. Another thread may have allocated
 	 * a new mm->context[asid] (via flush_tlb_mm) without the ASID serial
 	 * number wrapping.  We have no way to detect when this is needed.
 	 */

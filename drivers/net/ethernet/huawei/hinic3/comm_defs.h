@@ -64,13 +64,13 @@ enum func_reset_flag {
 	 (1 << RES_TYPE_FLUSH_BIT) | (1 << RES_TYPE_MQM) | \
 	 (1 << RES_TYPE_SMF) | (1 << RES_TYPE_PF_BW_CFG))
 
-#define HINIC3_NIC_RES      (1 << RES_TYPE_NIC)
-#define HINIC3_OVS_RES      (1 << RES_TYPE_OVS)
-#define HINIC3_VBS_RES      (1 << RES_TYPE_VBS)
-#define HINIC3_ROCE_RES     (1 << RES_TYPE_ROCE)
-#define HINIC3_FC_RES       (1 << RES_TYPE_FC)
-#define HINIC3_TOE_RES      (1 << RES_TYPE_TOE)
-#define HINIC3_IPSEC_RES    (1 << RES_TYPE_IPSEC)
+#define HINIC3_NIC_RES      BIT(RES_TYPE_NIC)
+#define HINIC3_OVS_RES      BIT(RES_TYPE_OVS)
+#define HINIC3_VBS_RES      BIT(RES_TYPE_VBS)
+#define HINIC3_ROCE_RES     BIT(RES_TYPE_ROCE)
+#define HINIC3_FC_RES       BIT(RES_TYPE_FC)
+#define HINIC3_TOE_RES      BIT(RES_TYPE_TOE)
+#define HINIC3_IPSEC_RES    BIT(RES_TYPE_IPSEC)
 
 /* MODE OVS、NIC、UNKNOWN */
 #define HINIC3_WORK_MODE_OVS 0
@@ -86,11 +86,6 @@ enum func_reset_flag {
 #define DEVICE_TYPE_VIRTIO_BLK_TRANSITION   6
 #define DEVICE_TYPE_VIRTIO_SCSI_TRANSITION  7
 #define DEVICE_TYPE_VIRTIO_HPC              8
-
-#define IS_STORAGE_DEVICE_TYPE(dev_type)                                                        \
-	((dev_type) == DEVICE_TYPE_VIRTIO_BLK || \
-	 (dev_type) == DEVICE_TYPE_VIRTIO_BLK_TRANSITION || \
-	 (dev_type) == DEVICE_TYPE_VIRTIO_SCSI_TRANSITION)
 
 /* Common header control information of the COMM message
  * interaction command word between the driver and PF

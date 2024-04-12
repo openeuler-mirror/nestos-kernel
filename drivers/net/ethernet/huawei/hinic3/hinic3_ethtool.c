@@ -44,9 +44,9 @@ static void hinic3_get_drvinfo(struct net_device *netdev,
 	u8 mgmt_ver[HINIC3_MGMT_VERSION_MAX_LEN] = {0};
 	int err;
 
-	strlcpy(info->driver, HINIC3_NIC_DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, HINIC3_NIC_DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, pci_name(pdev), sizeof(info->bus_info));
+	strscpy(info->driver, HINIC3_NIC_DRV_NAME, sizeof(info->driver));
+	strscpy(info->version, HINIC3_NIC_DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, pci_name(pdev), sizeof(info->bus_info));
 
 	err = hinic3_get_mgmt_version(nic_dev->hwdev, mgmt_ver,
 				      HINIC3_MGMT_VERSION_MAX_LEN,
@@ -444,32 +444,38 @@ static int is_coalesce_legal(struct net_device *netdev,
 	return 0;
 }
 
-#define CHECK_COALESCE_ALIGN(coal, item, unit)				\
-do {									\
-	if ((coal)->item % (unit))					\
-		nicif_warn(nic_dev, drv, netdev,			\
-			   "%s in %d units, change to %u\n",		\
-			   #item, (unit), ((coal)->item -	\
-					   (coal)->item % (unit))); \
-} while (0)
+static inline void check_coalesce_align(struct hinic3_nic_dev *nic_dev, struct net_device *netdev,
+					u32 item, u32 unit, char *str)
+{
+	if (item % unit)
+		nicif_warn(nic_dev, drv, netdev, "%s in %d units, change to %u\n",
+			   str, unit, item - item % unit);
+}
 
-#define CHECK_COALESCE_CHANGED(coal, item, unit, ori_val, obj_str)	\
-do {									\
-	if (((coal)->item / (unit)) != (ori_val))			\
-		nicif_info(nic_dev, drv, netdev,			\
-			   "Change %s from %d to %u %s\n",		\
-			   #item, (ori_val) * (unit),			\
-			   ((coal)->item - (coal)->item % (unit)),	\
-			    (obj_str));			\
-} while (0)
+#define CHECK_COALESCE_ALIGN(member, unit)				\
+	check_coalesce_align(nic_dev, netdev, member, unit, #member)
 
-#define CHECK_PKT_RATE_CHANGED(coal, item, ori_val, obj_str)		\
-do {									\
-	if ((coal)->item != (ori_val))					\
-		nicif_info(nic_dev, drv, netdev,			\
-			   "Change %s from %llu to %u %s\n",		\
-			   #item, (ori_val), (coal)->item, (obj_str));	\
-} while (0)
+static inline void check_coalesce_changed(struct hinic3_nic_dev *nic_dev, struct net_device *netdev,
+					  u32 item, u32 unit, u32 ori_val, char *obj_str, char *str)
+{
+	if ((item / unit) != ori_val)
+		nicif_info(nic_dev, drv, netdev, "Change %s from %d to %u %s\n",
+			   str, ori_val * unit, item - item % unit, obj_str);
+}
+
+#define CHECK_COALESCE_CHANGED(member, unit, ori_val, obj_str)	\
+	check_coalesce_changed(nic_dev, netdev, member, unit, ori_val, obj_str, #member)
+
+static inline void check_pkt_rate_changed(struct hinic3_nic_dev *nic_dev, struct net_device *netdev,
+					  u32 item, u32 ori_val, char *obj_str, char *str)
+{
+	if (item != ori_val)
+		nicif_info(nic_dev, drv, netdev, "Change %s from %d to %u %s\n",
+			   str, ori_val, item, obj_str);
+}
+
+#define CHECK_PKT_RATE_CHANGED(member, ori_val, obj_str)		\
+	check_pkt_rate_changed(nic_dev, netdev, member, ori_val, obj_str, #member)
 
 static int set_hw_coal_param(struct hinic3_nic_dev *nic_dev,
 			     struct hinic3_intr_coal_info *intr_coal, u16 queue)
@@ -505,16 +511,16 @@ static int set_coalesce(struct net_device *netdev,
 	if (err)
 		return err;
 
-	CHECK_COALESCE_ALIGN(coal, rx_coalesce_usecs, COALESCE_TIMER_CFG_UNIT);
-	CHECK_COALESCE_ALIGN(coal, rx_max_coalesced_frames,
+	CHECK_COALESCE_ALIGN(coal->rx_coalesce_usecs, COALESCE_TIMER_CFG_UNIT);
+	CHECK_COALESCE_ALIGN(coal->rx_max_coalesced_frames,
 			     COALESCE_PENDING_LIMIT_UNIT);
-	CHECK_COALESCE_ALIGN(coal, rx_coalesce_usecs_high,
+	CHECK_COALESCE_ALIGN(coal->rx_coalesce_usecs_high,
 			     COALESCE_TIMER_CFG_UNIT);
-	CHECK_COALESCE_ALIGN(coal, rx_max_coalesced_frames_high,
+	CHECK_COALESCE_ALIGN(coal->rx_max_coalesced_frames_high,
 			     COALESCE_PENDING_LIMIT_UNIT);
-	CHECK_COALESCE_ALIGN(coal, rx_coalesce_usecs_low,
+	CHECK_COALESCE_ALIGN(coal->rx_coalesce_usecs_low,
 			     COALESCE_TIMER_CFG_UNIT);
-	CHECK_COALESCE_ALIGN(coal, rx_max_coalesced_frames_low,
+	CHECK_COALESCE_ALIGN(coal->rx_max_coalesced_frames_low,
 			     COALESCE_PENDING_LIMIT_UNIT);
 
 	if (queue == COALESCE_ALL_QUEUE) {
@@ -524,25 +530,25 @@ static int set_coalesce(struct net_device *netdev,
 		ori_intr_coal = &nic_dev->intr_coalesce[queue];
 		snprintf(obj_str, sizeof(obj_str), "for queue %u", queue);
 	}
-	CHECK_COALESCE_CHANGED(coal, rx_coalesce_usecs, COALESCE_TIMER_CFG_UNIT,
+	CHECK_COALESCE_CHANGED(coal->rx_coalesce_usecs, COALESCE_TIMER_CFG_UNIT,
 			       ori_intr_coal->coalesce_timer_cfg, obj_str);
-	CHECK_COALESCE_CHANGED(coal, rx_max_coalesced_frames,
+	CHECK_COALESCE_CHANGED(coal->rx_max_coalesced_frames,
 			       COALESCE_PENDING_LIMIT_UNIT,
 			       ori_intr_coal->pending_limt, obj_str);
-	CHECK_PKT_RATE_CHANGED(coal, pkt_rate_high,
+	CHECK_PKT_RATE_CHANGED(coal->pkt_rate_high,
 			       ori_intr_coal->pkt_rate_high, obj_str);
-	CHECK_COALESCE_CHANGED(coal, rx_coalesce_usecs_high,
+	CHECK_COALESCE_CHANGED(coal->rx_coalesce_usecs_high,
 			       COALESCE_TIMER_CFG_UNIT,
 			       ori_intr_coal->rx_usecs_high, obj_str);
-	CHECK_COALESCE_CHANGED(coal, rx_max_coalesced_frames_high,
+	CHECK_COALESCE_CHANGED(coal->rx_max_coalesced_frames_high,
 			       COALESCE_PENDING_LIMIT_UNIT,
 			       ori_intr_coal->rx_pending_limt_high, obj_str);
-	CHECK_PKT_RATE_CHANGED(coal, pkt_rate_low,
+	CHECK_PKT_RATE_CHANGED(coal->pkt_rate_low,
 			       ori_intr_coal->pkt_rate_low, obj_str);
-	CHECK_COALESCE_CHANGED(coal, rx_coalesce_usecs_low,
+	CHECK_COALESCE_CHANGED(coal->rx_coalesce_usecs_low,
 			       COALESCE_TIMER_CFG_UNIT,
 			       ori_intr_coal->rx_usecs_low, obj_str);
-	CHECK_COALESCE_CHANGED(coal, rx_max_coalesced_frames_low,
+	CHECK_COALESCE_CHANGED(coal->rx_max_coalesced_frames_low,
 			       COALESCE_PENDING_LIMIT_UNIT,
 			       ori_intr_coal->rx_pending_limt_low, obj_str);
 
@@ -952,11 +958,8 @@ static int hinic3_run_lp_test(struct hinic3_nic_dev *nic_dev, u32 test_time)
 	u8 j;
 
 	skb_tmp = alloc_skb(LP_PKT_LEN, GFP_ATOMIC);
-	if (!skb_tmp) {
-		nicif_err(nic_dev, drv, netdev,
-			  "Alloc xmit skb template failed for loopback test\n");
+	if (!skb_tmp)
 		return -ENOMEM;
-	}
 
 	eth_hdr = __skb_put(skb_tmp, ETH_HLEN);
 	eth_hdr->h_proto = htons(ETH_P_ARP);
@@ -1054,8 +1057,6 @@ static int do_lp_test(struct hinic3_nic_dev *nic_dev, u32 *flags, u32 test_time,
 
 	lb_test_rx_buf = vmalloc(LP_PKT_CNT * LP_PKT_LEN);
 	if (!lb_test_rx_buf) {
-		nicif_err(nic_dev, drv, netdev,
-			  "Failed to alloc RX buffer for loopback test\n");
 		err = -ENOMEM;
 	} else {
 		nic_dev->lb_test_rx_buf = lb_test_rx_buf;

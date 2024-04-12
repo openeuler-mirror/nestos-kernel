@@ -7,10 +7,10 @@
 
 #include <linux/threads.h>
 
+#include <asm/addrspace.h>
 #include <asm/asm.h>
 #include <asm/asmmacro.h>
 #include <asm/asm-offsets.h>
-#include <asm/addrspace.h>
 #include <asm/loongarch.h>
 #include <asm/thread_info.h>
 
@@ -123,6 +123,14 @@
 	LONG_S	zero, sp, PT_R0
 	csrrd	t0, LOONGARCH_CSR_PRMD
 	LONG_S	t0, sp, PT_PRMD
+	csrrd	t0, LOONGARCH_CSR_CRMD
+	LONG_S	t0, sp, PT_CRMD
+	csrrd	t0, LOONGARCH_CSR_EUEN
+	LONG_S  t0, sp, PT_EUEN
+	csrrd	t0, LOONGARCH_CSR_ECFG
+	LONG_S	t0, sp, PT_ECFG
+	csrrd	t0, LOONGARCH_CSR_ESTAT
+	PTR_S	t0, sp, PT_ESTAT
 	cfi_st	ra, PT_R1, \docfi
 	cfi_st	a0, PT_R4, \docfi
 	cfi_st	a1, PT_R5, \docfi
@@ -141,6 +149,7 @@
 	cfi_st	fp, PT_R22, \docfi
 
 	/* Set thread_info if we're coming from user mode */
+	csrrd	t0, LOONGARCH_CSR_PRMD
 	andi	t0, t0, 0x3	/* extract pplv bit */
 	beqz	t0, 9f
 
@@ -149,6 +158,10 @@
 	cfi_st  u0, PT_R21, \docfi
 	csrrd	u0, PERCPU_BASE_KS
 9:
+#ifdef CONFIG_KGDB
+	li.w	t0, CSR_CRMD_WE
+	csrxchg	t0, t0, LOONGARCH_CSR_CRMD
+#endif
 	.endm
 
 	.macro	SAVE_ALL docfi=0

@@ -351,7 +351,7 @@ static int recv_vf_mbox_handler(struct hinic3_mbox *func_to_func,
 	int ret;
 
 	if (recv_mbox->mod >= HINIC3_MOD_MAX) {
-		sdk_warn(func_to_func->hwdev->dev_hdl, "Receive illegal mbox message, mod = %hhu\n",
+		sdk_warn(func_to_func->hwdev->dev_hdl, "Receive illegal mbox message, mod = %u\n",
 			 recv_mbox->mod);
 		return -EINVAL;
 	}
@@ -419,7 +419,7 @@ static int recv_ppf_mbox_handler(struct hinic3_mbox *func_to_func,
 	int ret;
 
 	if (recv_mbox->mod >= HINIC3_MOD_MAX) {
-		sdk_warn(func_to_func->hwdev->dev_hdl, "Receive illegal mbox message, mod = %hhu\n",
+		sdk_warn(func_to_func->hwdev->dev_hdl, "Receive illegal mbox message, mod = %u\n",
 			 recv_mbox->mod);
 		return -EINVAL;
 	}
@@ -434,7 +434,7 @@ static int recv_ppf_mbox_handler(struct hinic3_mbox *func_to_func,
 			 pf_id, vf_id, recv_mbox->cmd, recv_mbox->msg,
 			 recv_mbox->msg_len, buf_out, out_size);
 	} else {
-		sdk_warn(func_to_func->hwdev->dev_hdl, "PPF mbox cb is not registered, mod = %hhu\n",
+		sdk_warn(func_to_func->hwdev->dev_hdl, "PPF mbox cb is not registered, mod = %u\n",
 			 recv_mbox->mod);
 		ret = -EINVAL;
 	}
@@ -455,7 +455,7 @@ static int recv_pf_from_vf_mbox_handler(struct hinic3_mbox *func_to_func,
 	int ret;
 
 	if (recv_mbox->mod >= HINIC3_MOD_MAX) {
-		sdk_warn(func_to_func->hwdev->dev_hdl, "Receive illegal mbox message, mod = %hhu\n",
+		sdk_warn(func_to_func->hwdev->dev_hdl, "Receive illegal mbox message, mod = %u\n",
 			 recv_mbox->mod);
 		return -EINVAL;
 	}
@@ -650,7 +650,6 @@ static void recv_mbox_msg_handler(struct hinic3_mbox *func_to_func,
 
 	mbox_work = kzalloc(sizeof(*mbox_work), GFP_KERNEL);
 	if (!mbox_work) {
-		sdk_err(hwdev->dev_hdl, "Allocate mbox work memory failed.\n");
 		free_recv_mbox(recv_msg);
 		return;
 	}
@@ -1633,7 +1632,7 @@ int hinic3_init_func_mbox_msg_channel(void *hwdev, u16 num_func)
 		err = alloc_mbox_msg_channel(&func_to_func->func_msg[func_id]);
 		if (err != 0) {
 			sdk_err(func_to_func->hwdev->dev_hdl,
-				"Failed to alloc func %hu message channel\n",
+				"Failed to alloc func %u message channel\n",
 				func_id);
 			goto alloc_msg_ch_err;
 		}

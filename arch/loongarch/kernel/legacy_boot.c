@@ -77,26 +77,6 @@ acpi_parse_lapic(union acpi_subtable_headers *header, const unsigned long end)
 	return 0;
 }
 
-static int acpi_parse_madt_lapic(void)
-{
-	int ret;
-	struct acpi_subtable_proc madt_proc[1];
-
-	memset(madt_proc, 0, sizeof(madt_proc));
-	madt_proc[0].id = ACPI_MADT_TYPE_LOCAL_APIC;
-	madt_proc[0].handler = acpi_parse_lapic;
-	ret = acpi_table_parse_entries_array(ACPI_SIG_MADT,
-				sizeof(struct acpi_table_madt),
-				madt_proc, ARRAY_SIZE(madt_proc),
-				MAX_CORE_PIC);
-	if (ret < 0) {
-		pr_err(PREFIX "Error parsing LAPIC entries\n");
-		return ret;
-	}
-
-	return 0;
-}
-
 static int bad_pch_pic(unsigned long address)
 {
 	if (nr_io_pics >= MAX_IO_PICS) {
@@ -135,13 +115,15 @@ void register_default_pic(int id, u32 address, u32 irq_base)
 	pch_group[nr_io_pics].node = msi_group[nr_io_pics].node = id;
 
 	addr = pchpic_default[idx].address;
-	entries = (((unsigned long)ls7a_readq(address) >> 48) & 0xff) + 1;
+	/* Read INT_ID.int_num */
+	entries = (((unsigned long)ls7a_readq(addr) >> 48) & 0xff) + 1;
 	pchmsi_default[idx].msg_address = MSI_MSG_ADDRESS;
 	pchmsi_default[idx].start = entries;
 	pchmsi_default[idx].count = MSI_MSG_DEFAULT_COUNT;
 
 	for_each_possible_cpu(j) {
 		int node = cpu_logical_map(j) / cores;
+
 		node_map |= (1 << node);
 	}
 	eiointc_default[idx].cascade = 3 + idx;
@@ -156,6 +138,7 @@ void register_default_pic(int id, u32 address, u32 irq_base)
 
 			for_each_possible_cpu(j) {
 				int node = cpu_logical_map(j) / cores;
+
 				if (((node & 7) < 4) ? !i : i)
 					node_map |= (1 << node);
 			}
@@ -171,8 +154,7 @@ void register_default_pic(int id, u32 address, u32 irq_base)
 }
 
 static int
-acpi_parse_legacy_pch_pic(struct acpi_subtable_header *header,
-		const unsigned long end)
+acpi_parse_legacy_pch_pic(union acpi_subtable_headers *header, const unsigned long end)
 {
 	struct acpi_madt_io_apic *pch_pic = NULL;
 
@@ -181,7 +163,7 @@ acpi_parse_legacy_pch_pic(struct acpi_subtable_header *header,
 	if (BAD_MADT_ENTRY(pch_pic, end))
 		return -EINVAL;
 
-	acpi_table_print_madt_entry(header);
+	acpi_table_print_madt_entry(&header->common);
 
 	register_default_pic(pch_pic->id, pch_pic->address,
 			pch_pic->global_irq_base);
@@ -189,55 +171,15 @@ acpi_parse_legacy_pch_pic(struct acpi_subtable_header *header,
 	return 0;
 }
 
-/*
- * Parse PCH_PIC related entries in MADT
- * returns 0 on success, < 0 on error
- */
-static int acpi_parse_madt_pch_pic_entries(void)
+__init int legacy_madt_table_init(void)
 {
-	int count;
-
-	/*
-	 * ACPI interpreter is required to complete interrupt setup,
-	 * so if it is off, don't enumerate the io-apics with ACPI.
-	 * If MPS is present, it will handle them,
-	 * otherwise the system will stay in PIC mode
-	 */
-	if (acpi_disabled || acpi_noirq)
-		return -ENODEV;
-
-	count = acpi_table_parse_madt(ACPI_MADT_TYPE_IO_APIC,
-			(void *)acpi_parse_legacy_pch_pic, MAX_IO_PICS);
-	if (!count) {
-		printk(KERN_ERR PREFIX "No PCH_PIC entries present\n");
-		return -ENODEV;
-	} else if (count < 0) {
-		printk(KERN_ERR PREFIX "Error parsing PCH_PIC entry\n");
-		return count;
-	}
-
-	return 0;
-}
-
-int legacy_madt_table_init(void)
-{
-	int error;
-
 	/* Parse MADT LAPIC entries */
-	error = acpi_parse_madt_lapic();
-	if (!error) {
-		acpi_liointc = &liointc_default;
-		acpi_pchlpc = &pchlpc_default;
-		acpi_parse_madt_pch_pic_entries();
-	}
-	if (error == -EINVAL) {
-		pr_err(PREFIX
-			"Invalid BIOS MADT, disabling ACPI\n");
-		disable_acpi();
-		return -1;
-	}
+	acpi_table_parse_madt(ACPI_MADT_TYPE_LOCAL_APIC, acpi_parse_lapic, MAX_CORE_PIC);
+	acpi_table_parse_madt(ACPI_MADT_TYPE_IO_APIC, acpi_parse_legacy_pch_pic, MAX_IO_PICS);
 
-	loongson_sysconf.nr_cpus = num_processors;
+	acpi_liointc = &liointc_default;
+	acpi_pchlpc = &pchlpc_default;
+
 	return 0;
 }
 
@@ -251,17 +193,13 @@ int setup_legacy_IRQ(void)
 
 	ret = cpuintc_acpi_init(NULL, 0);
 	if (ret) {
-		printk("CPU domain init eror!\n");
+		pr_err("CPU domain init error!\n");
 		return -1;
 	}
-	cpu_domain = irq_find_matching_fwnode(cpuintc_handle, DOMAIN_BUS_ANY);
-	if (!cpu_domain) {
-		printk("CPU domain error!\n");
-		return -1;
-	}
+	cpu_domain = get_cpudomain();
 	ret = liointc_acpi_init(cpu_domain, acpi_liointc);
 	if (ret) {
-		printk("Liointc domain init eror!\n");
+		pr_err("Liointc domain init error!\n");
 		return -1;
 	}
 	liointc_domain = irq_find_matching_fwnode(liointc_handle, DOMAIN_BUS_ANY);
@@ -270,9 +208,10 @@ int setup_legacy_IRQ(void)
 		for (i = 0; i < nr_io_pics; i++) {
 			ret = eiointc_acpi_init(cpu_domain, acpi_eiointc[i]);
 			if (ret) {
-				printk("Eiointc domain init eror!\n");
+				pr_err("Eiointc domain init error!\n");
 				return -1;
 			}
+
 			pch_pic_parse_madt((union acpi_subtable_headers *)acpi_pchpic[i], 0);
 			pch_msi_parse_madt((union acpi_subtable_headers *)acpi_pchmsi[i], 0);
 		}
@@ -281,18 +220,14 @@ int setup_legacy_IRQ(void)
 		pr_info("Using HTVECINTC interrupt mode\n");
 		ret = htvec_acpi_init(liointc_domain, acpi_htintc);
 		if (ret) {
-			printk("HTVECintc domain init eror!\n");
+			pr_err("HTVECintc domain init error!\n");
 			return -1;
 		}
 		pch_pic_parse_madt((union acpi_subtable_headers *)acpi_pchpic[0], 0);
 		pch_msi_parse_madt((union acpi_subtable_headers *)acpi_pchmsi[0], 0);
 	}
 
-	pic_domain = irq_find_matching_fwnode(pch_pic_handle[0], DOMAIN_BUS_ANY);
-	if (!pic_domain) {
-		printk("Pic domain error!\n");
-		return -1;
-	}
+	pic_domain = get_pchpic_irq_domain();
 	if (pic_domain && !cpu_has_hypervisor)
 		pch_lpc_acpi_init(pic_domain, acpi_pchlpc);
 
@@ -303,33 +238,25 @@ int setup_legacy_IRQ(void)
  * Manage initrd
  */
 #ifdef CONFIG_BLK_DEV_INITRD
-static int rd_start_early(char *p)
+static __init int rd_start_early(char *p)
 {
-	phys_initrd_start = __pa(memparse(p, &p));
+	phys_initrd_start = __pa(memparse(p, NULL));
 
 	return 0;
 }
 early_param("rd_start", rd_start_early);
 
-static int rd_size_early(char *p)
+static __init int rd_size_early(char *p)
 {
-	phys_initrd_size = memparse(p, &p);
+	phys_initrd_size = memparse(p, NULL);
 
 	return 0;
 }
 early_param("rd_size", rd_size_early);
+
 #endif
 
-void __init loongarch_reserve_initrd_mem(void)
-{
-	/* The small fdt method should be skipped directly to avoid two reserved operations. */
-	if (!fw_arg2)
-		return;
-
-	reserve_initrd_mem();
-}
-
-void fw_init_cmdline(unsigned long argc, unsigned long cmdp)
+__init void fw_init_cmdline(unsigned long argc, unsigned long cmdp)
 {
 	int i;
 	char **_fw_argv;
@@ -342,27 +269,25 @@ void fw_init_cmdline(unsigned long argc, unsigned long cmdp)
 		if (i < (argc - 1))
 			strlcat(arcs_cmdline, " ", COMMAND_LINE_SIZE);
 	}
-	strlcat(boot_command_line, arcs_cmdline, COMMAND_LINE_SIZE);
+	strscpy(boot_command_line, arcs_cmdline, COMMAND_LINE_SIZE);
 }
-EXPORT_SYMBOL_GPL(fw_init_cmdline);
 
 static u8 ext_listhdr_checksum(u8 *buffer, u32 length)
 {
 	u8 sum = 0;
 	u8 *end = buffer + length;
 
-	while (buffer < end) {
+	while (buffer < end)
 		sum = (u8)(sum + *(buffer++));
-	}
 
-	return (sum);
+	return sum;
 }
 
 static int parse_mem(struct _extention_list_hdr *head)
 {
 	g_mmap = (struct loongsonlist_mem_map *)head;
 	if (ext_listhdr_checksum((u8 *)g_mmap, head->length)) {
-		printk("mem checksum error\n");
+		pr_err("mem checksum error\n");
 		return -EPERM;
 	}
 	return 0;
@@ -372,10 +297,11 @@ static int parse_mem(struct _extention_list_hdr *head)
 static int parse_vbios(struct _extention_list_hdr *head)
 {
 	struct loongsonlist_vbios *pvbios;
+
 	pvbios = (struct loongsonlist_vbios *)head;
 
 	if (ext_listhdr_checksum((u8 *)pvbios, head->length)) {
-		printk("vbios_addr checksum error\n");
+		pr_err("vbios_addr checksum error\n");
 		return -EPERM;
 	}
 	return 0;
@@ -388,7 +314,7 @@ static int parse_screeninfo(struct _extention_list_hdr *head)
 
 	pscreeninfo = (struct loongsonlist_screeninfo *)head;
 	if (ext_listhdr_checksum((u8 *)pscreeninfo, head->length)) {
-		printk("screeninfo_addr checksum error\n");
+		pr_err("screeninfo_addr checksum error\n");
 		return -EPERM;
 	}
 
@@ -403,23 +329,23 @@ static int list_find(struct boot_params *bp)
 
 	fhead = bp->extlist;
 	if (!fhead) {
-		printk("the bp ext struct empty!\n");
+		pr_err("the bp ext struct empty!\n");
 		return -1;
 	}
 	do {
 		if (memcmp(&(fhead->signature), LOONGSON_MEM_SIGNATURE, 3) == 0) {
 			if (parse_mem(fhead) != 0) {
-				printk("parse mem failed\n");
+				pr_err("parse mem failed\n");
 				return -EPERM;
 			}
 		} else if (memcmp(&(fhead->signature), LOONGSON_VBIOS_SIGNATURE, 5) == 0) {
 			if (parse_vbios(fhead) != 0) {
-				printk("parse vbios failed\n");
+				pr_err("parse vbios failed\n");
 				return -EPERM;
 			}
 		} else if (memcmp(&(fhead->signature), LOONGSON_SCREENINFO_SIGNATURE, 5) == 0) {
 			if (parse_screeninfo(fhead) != 0) {
-				printk("parse screeninfo failed\n");
+				pr_err("parse screeninfo failed\n");
 				return -EPERM;
 			}
 		}
@@ -434,21 +360,13 @@ unsigned int bpi_init(void)
 	return list_find(efi_bp);
 }
 
-static void register_addrs_set(u64 *registers, const u64 addr, int num)
-{
-	u64 i;
-
-	for (i = 0; i < num; i++) {
-		*registers = (i << 44) | addr;
-		registers++;
-	}
-}
-
 static int get_bpi_version(u64 *signature)
 {
 	u8 data[9];
 	int version = BPI_VERSION_NONE;
+
 	data[8] = 0;
+
 	memcpy(data, signature, sizeof(*signature));
 	if (kstrtoint(&data[3], 10, &version))
 		return BPI_VERSION_NONE;
@@ -457,27 +375,26 @@ static int get_bpi_version(u64 *signature)
 
 static void __init parse_bpi_flags(void)
 {
-	if (efi_bp->flags & BPI_FLAGS_UEFI_SUPPORTED) {
+	if (efi_bp->flags & BPI_FLAGS_UEFI_SUPPORTED)
 		set_bit(EFI_BOOT, &efi.flags);
-	} else {
+	else
 		clear_bit(EFI_BOOT, &efi.flags);
-	}
 }
 
-unsigned long legacy_boot_init(unsigned long argc, unsigned long cmdptr, unsigned long bpi)
+__init unsigned long legacy_boot_init(unsigned long argc, unsigned long cmdptr, unsigned long bpi)
 {
 	int ret;
 
-	if (!bpi || (argc < 2))
+	if (!bpi || argc < 2)
 		return -1;
 	efi_bp = (struct boot_params *)bpi;
 	bpi_version = get_bpi_version(&efi_bp->signature);
 	pr_info("BPI%d with boot flags %llx.\n", bpi_version, efi_bp->flags);
 	if (bpi_version == BPI_VERSION_NONE) {
 		if (cpu_has_hypervisor)
-			pr_err("Fatal error, bpi ver BONE!\n");
+			pr_err(FW_BUG "Fatal error, bpi ver NONE!\n");
 		else
-			panic("Fatal error, bpi ver BONE!\n");
+			panic(FW_BUG "Fatal error, bpi ver NONE!\n");
 	} else if (bpi_version == BPI_VERSION_V2)
 		parse_bpi_flags();
 
@@ -519,7 +436,8 @@ static int __init add_legacy_isa_io(struct fwnode_handle *fwnode, unsigned long 
 	}
 
 	vaddr = (unsigned long)(PCI_IOBASE + range->io_start);
-	ret = ioremap_page_range(vaddr, vaddr + range->size, range->hw_start, pgprot_device(PAGE_KERNEL));
+	ret = ioremap_page_range(vaddr, vaddr + range->size, range->hw_start,
+					pgprot_device(PAGE_KERNEL));
 	return ret;
 }
 

@@ -90,8 +90,10 @@ enum gcry_mpi_format {
 };
 
 MPI mpi_read_raw_data(const void *xbuffer, size_t nbytes);
+#ifdef CONFIG_PGP_LIBRARY
 int mpi_key_length(const void *xbuffer, unsigned int ret_nread,
 		   unsigned int *nbits_arg, unsigned int *nbytes_arg);
+#endif
 MPI mpi_read_from_buffer(const void *buffer, unsigned *ret_nread);
 int mpi_fromstr(MPI val, const char *str);
 MPI mpi_scanval(const char *string);
@@ -202,7 +204,7 @@ struct mpi_ec_ctx {
 	unsigned int nbits;            /* Number of bits.  */
 
 	/* Domain parameters.  Note that they may not all be set and if set
-	 * the MPIs may be flaged as constant.
+	 * the MPIs may be flagged as constant.
 	 */
 	MPI p;         /* Prime specifying the field GF(p).  */
 	MPI a;         /* First coefficient of the Weierstrass equation.  */
@@ -269,7 +271,7 @@ int mpi_ec_curve_point(MPI_POINT point, struct mpi_ec_ctx *ctx);
 /**
  * mpi_get_size() - returns max size required to store the number
  *
- * @a:	A multi precision integer for which we want to allocate a bufer
+ * @a:	A multi precision integer for which we want to allocate a buffer
  *
  * Return: size required to store the number
  */

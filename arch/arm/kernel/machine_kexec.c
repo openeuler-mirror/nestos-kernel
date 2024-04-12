@@ -10,7 +10,6 @@
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/memblock.h>
-#include <linux/interrupt.h>
 #include <linux/of_fdt.h>
 #include <asm/mmu_context.h>
 #include <asm/cacheflush.h>
@@ -74,9 +73,11 @@ void machine_kexec_cleanup(struct kimage *image)
 {
 }
 
-void machine_crash_nonpanic_core(void *unused)
+static void machine_crash_nonpanic_core(void *unused)
 {
 	struct pt_regs regs;
+
+	local_fiq_disable();
 
 	crash_setup_regs(&regs, get_irq_regs());
 	printk(KERN_DEBUG "CPU %u will stop doing anything useful since another CPU has crashed\n",
@@ -93,16 +94,28 @@ void machine_crash_nonpanic_core(void *unused)
 	}
 }
 
+static DEFINE_PER_CPU(call_single_data_t, cpu_stop_csd) =
+	CSD_INIT(machine_crash_nonpanic_core, NULL);
+
 void crash_smp_send_stop(void)
 {
 	static int cpus_stopped;
 	unsigned long msecs;
+	call_single_data_t *csd;
+	int cpu, this_cpu = raw_smp_processor_id();
 
 	if (cpus_stopped)
 		return;
 
 	atomic_set(&waiting_for_crash_ipi, num_online_cpus() - 1);
-	smp_call_function(machine_crash_nonpanic_core, NULL, false);
+	for_each_online_cpu(cpu) {
+		if (cpu == this_cpu)
+			continue;
+
+		csd = &per_cpu(cpu_stop_csd, cpu);
+		smp_call_function_single_async(cpu, csd);
+	}
+
 	msecs = 1000; /* Wait at most a second for the other cpus to stop */
 	while ((atomic_read(&waiting_for_crash_ipi) > 0) && msecs) {
 		mdelay(1);
@@ -121,27 +134,10 @@ static void machine_kexec_mask_interrupts(void)
 
 	for_each_irq_desc(i, desc) {
 		struct irq_chip *chip;
-		int ret;
 
 		chip = irq_desc_get_chip(desc);
 		if (!chip)
 			continue;
-
-		/*
-		 * First try to remove the active state. If this
-		 * fails, try to EOI the interrupt.
-		 */
-		if (desc->irq_data.hwirq > 15 && desc->irq_data.hwirq < 32) {
-			bool active = false;
-			ret = irq_get_irqchip_state(i, IRQCHIP_STATE_ACTIVE, &active);
-			if (ret) {
-				pr_debug("Get irq active state failed.\n");
-			} else {
-				if (active)
-					chip->irq_eoi(&desc->irq_data);
-			}
-		}
-
 
 		if (chip->irq_eoi && irqd_irq_inprogress(&desc->irq_data))
 			chip->irq_eoi(&desc->irq_data);
@@ -164,11 +160,6 @@ void machine_crash_shutdown(struct pt_regs *regs)
 
 	pr_info("Loading crashdump kernel...\n");
 }
-
-/*
- * Function pointer to optional machine-specific reinitialization
- */
-void (*kexec_reinit)(void);
 
 void machine_kexec(struct kimage *image)
 {
@@ -204,9 +195,6 @@ void machine_kexec(struct kimage *image)
 	reboot_entry_phys = virt_to_idmap(reboot_entry);
 
 	pr_info("Bye!\n");
-
-	if (kexec_reinit)
-		kexec_reinit();
 
 	soft_restart(reboot_entry_phys);
 }

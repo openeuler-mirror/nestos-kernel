@@ -18,13 +18,6 @@ extern unsigned long entSuspend;
 #define arch_efi_call_virt_setup()
 #define arch_efi_call_virt_teardown()
 
-#define arch_efi_call_virt(p, f, args...)				\
-({									\
-	efi_##f##_t * __f;						\
-	__f = p->f;							\
-	__f(args);							\
-})
-
 #define ARCH_EFI_IRQ_FLAGS_MASK		0x00000001
 
 /* arch specific definitions used by the stub code */

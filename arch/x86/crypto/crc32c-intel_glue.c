@@ -228,9 +228,8 @@ static int __init crc32c_intel_mod_init(void)
 		return -ENODEV;
 
 	if ((c->x86_vendor == X86_VENDOR_ZHAOXIN || c->x86_vendor == X86_VENDOR_CENTAUR) &&
-		(c->x86 <= 7 && c->x86_model <= 59)) {
-			return -ENODEV;
-	}
+		(c->x86 <= 7 && c->x86_model <= 59))
+		return -ENODEV;
 
 #ifdef CONFIG_X86_64
 	if (boot_cpu_has(X86_FEATURE_PCLMULQDQ)) {

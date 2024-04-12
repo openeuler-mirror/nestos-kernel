@@ -31,8 +31,7 @@ extern char *strcpy(char *dest, const char *src);
 #define __HAVE_ARCH_STRNCPY
 extern char *strncpy(char *dest, const char *src, size_t n);
 
-/*
- * The following routine is like memset except that it writes 16-bit
+/* The following routine is like memset except that it writes 16-bit
  * aligned values.  The DEST and COUNT parameters must be even for
  * correct operation.
  */

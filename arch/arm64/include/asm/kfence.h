@@ -8,15 +8,9 @@
 #ifndef __ASM_KFENCE_H
 #define __ASM_KFENCE_H
 
-#include <linux/kfence.h>
-#include <asm/cacheflush.h>
+#include <asm/set_memory.h>
 
-static inline bool arch_kfence_init_pool(void)
-{
-	memset(__kfence_pool, 0, KFENCE_POOL_SIZE);
-
-	return true;
-}
+static inline bool arch_kfence_init_pool(void) { return true; }
 
 static inline bool kfence_protect_page(unsigned long addr, bool protect)
 {
@@ -24,5 +18,18 @@ static inline bool kfence_protect_page(unsigned long addr, bool protect)
 
 	return true;
 }
+
+#ifdef CONFIG_KFENCE
+extern bool kfence_early_init;
+static inline bool arm64_kfence_can_set_direct_map(void)
+{
+	if (IS_ENABLED(CONFIG_KFENCE_MUST_EARLY_INIT))
+		return false;
+
+	return !kfence_early_init;
+}
+#else /* CONFIG_KFENCE */
+static inline bool arm64_kfence_can_set_direct_map(void) { return false; }
+#endif /* CONFIG_KFENCE */
 
 #endif /* __ASM_KFENCE_H */

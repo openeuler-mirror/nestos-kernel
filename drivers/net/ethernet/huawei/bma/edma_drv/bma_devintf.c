@@ -419,8 +419,7 @@ EXPORT_SYMBOL(bma_intf_int_to_bmc);
 
 int bma_intf_is_link_ok(void)
 {
-	if ((&g_bma_dev->edma_host != NULL) &&
-		(g_bma_dev->edma_host.statistics.remote_status == REGISTERED))
+	if (g_bma_dev->edma_host.statistics.remote_status == REGISTERED)
 		return 1;
 	return 0;
 }

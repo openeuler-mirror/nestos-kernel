@@ -2,7 +2,6 @@
 #ifndef _LINUX_USER_NAMESPACE_H
 #define _LINUX_USER_NAMESPACE_H
 
-#include <linux/kabi.h>
 #include <linux/kref.h>
 #include <linux/nsproxy.h>
 #include <linux/ns_common.h>
@@ -11,6 +10,7 @@
 #include <linux/rwsem.h>
 #include <linux/sysctl.h>
 #include <linux/err.h>
+#include <linux/kabi.h>
 
 #define UID_GID_MAP_MAX_BASE_EXTENTS 5
 #define UID_GID_MAP_MAX_EXTENTS 340
@@ -51,34 +51,28 @@ enum ucount_type {
 	UCOUNT_INOTIFY_INSTANCES,
 	UCOUNT_INOTIFY_WATCHES,
 #endif
-	/* These 15 members are reserved (with extra margin) for the future
-	 * enlargement of enum ucount_type, as how RH8.1 did it. This number
-	 * should be enough, as 6 of them are very likely to be used in the near
-	 * future.
-	 */
+#ifdef CONFIG_FANOTIFY
+	UCOUNT_FANOTIFY_GROUPS,
+	UCOUNT_FANOTIFY_MARKS,
+#endif
 	UCOUNT_KABI_RESERVE1,
 	UCOUNT_KABI_RESERVE2,
 	UCOUNT_KABI_RESERVE3,
-	UCOUNT_KABI_RESERVE4,
-	UCOUNT_KABI_RESERVE5,
-	UCOUNT_KABI_RESERVE6,
-	UCOUNT_KABI_RESERVE7,
-	UCOUNT_KABI_RESERVE8,
-	UCOUNT_KABI_RESERVE9,
-	UCOUNT_KABI_RESERVE10,
-	UCOUNT_KABI_RESERVE11,
-	UCOUNT_KABI_RESERVE12,
-	UCOUNT_KABI_RESERVE13,
-	UCOUNT_KABI_RESERVE14,
-	UCOUNT_KABI_RESERVE15,
 	UCOUNT_COUNTS,
+};
+
+enum rlimit_type {
+	UCOUNT_RLIMIT_NPROC,
+	UCOUNT_RLIMIT_MSGQUEUE,
+	UCOUNT_RLIMIT_SIGPENDING,
+	UCOUNT_RLIMIT_MEMLOCK,
+	UCOUNT_RLIMIT_COUNTS,
 };
 
 struct user_namespace {
 	struct uid_gid_map	uid_map;
 	struct uid_gid_map	gid_map;
 	struct uid_gid_map	projid_map;
-	atomic_t		count;
 	struct user_namespace	*parent;
 	int			level;
 	kuid_t			owner;
@@ -111,40 +105,60 @@ struct user_namespace {
 #endif
 	struct ucounts		*ucounts;
 	long ucount_max[UCOUNT_COUNTS];
-
+	long rlimit_max[UCOUNT_RLIMIT_COUNTS];
 	KABI_RESERVE(1)
 	KABI_RESERVE(2)
 	KABI_RESERVE(3)
-	KABI_RESERVE(4)
-	KABI_RESERVE(5)
-	KABI_RESERVE(6)
-	KABI_RESERVE(7)
-	KABI_RESERVE(8)
-	KABI_RESERVE(9)
-	KABI_RESERVE(10)
 } __randomize_layout;
 
 struct ucounts {
 	struct hlist_node node;
 	struct user_namespace *ns;
 	kuid_t uid;
-	int count;
+	atomic_t count;
 	atomic_long_t ucount[UCOUNT_COUNTS];
+	atomic_long_t rlimit[UCOUNT_RLIMIT_COUNTS];
 };
 
 extern struct user_namespace init_user_ns;
+extern struct ucounts init_ucounts;
 
 bool setup_userns_sysctls(struct user_namespace *ns);
 void retire_userns_sysctls(struct user_namespace *ns);
 struct ucounts *inc_ucount(struct user_namespace *ns, kuid_t uid, enum ucount_type type);
 void dec_ucount(struct ucounts *ucounts, enum ucount_type type);
+struct ucounts *alloc_ucounts(struct user_namespace *ns, kuid_t uid);
+struct ucounts * __must_check get_ucounts(struct ucounts *ucounts);
+void put_ucounts(struct ucounts *ucounts);
+
+static inline long get_rlimit_value(struct ucounts *ucounts, enum rlimit_type type)
+{
+	return atomic_long_read(&ucounts->rlimit[type]);
+}
+
+long inc_rlimit_ucounts(struct ucounts *ucounts, enum rlimit_type type, long v);
+bool dec_rlimit_ucounts(struct ucounts *ucounts, enum rlimit_type type, long v);
+long inc_rlimit_get_ucounts(struct ucounts *ucounts, enum rlimit_type type);
+void dec_rlimit_put_ucounts(struct ucounts *ucounts, enum rlimit_type type);
+bool is_rlimit_overlimit(struct ucounts *ucounts, enum rlimit_type type, unsigned long max);
+
+static inline long get_userns_rlimit_max(struct user_namespace *ns, enum rlimit_type type)
+{
+	return READ_ONCE(ns->rlimit_max[type]);
+}
+
+static inline void set_userns_rlimit_max(struct user_namespace *ns,
+		enum rlimit_type type, unsigned long max)
+{
+	ns->rlimit_max[type] = max <= LONG_MAX ? max : LONG_MAX;
+}
 
 #ifdef CONFIG_USER_NS
 
 static inline struct user_namespace *get_user_ns(struct user_namespace *ns)
 {
 	if (ns)
-		atomic_inc(&ns->count);
+		refcount_inc(&ns->ns.count);
 	return ns;
 }
 
@@ -154,7 +168,7 @@ extern void __put_user_ns(struct user_namespace *ns);
 
 static inline void put_user_ns(struct user_namespace *ns)
 {
-	if (ns && atomic_dec_and_test(&ns->count))
+	if (ns && refcount_dec_and_test(&ns->ns.count))
 		__put_user_ns(ns);
 }
 

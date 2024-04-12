@@ -313,10 +313,8 @@ static int hinic3_setup_num_qps(struct hinic3_nic_dev *nic_dev)
 		return -EINVAL;
 	}
 	nic_dev->qps_irq_info = kzalloc(irq_size, GFP_KERNEL);
-	if (!nic_dev->qps_irq_info) {
-		nicif_err(nic_dev, drv, netdev, "Failed to alloc qps_irq_info\n");
+	if (!nic_dev->qps_irq_info)
 		return -ENOMEM;
-	}
 
 	hinic3_config_num_qps(nic_dev, &nic_dev->q_params);
 
@@ -1008,7 +1006,7 @@ static void hinic3_tx_timeout(struct net_device *netdev)
 		sw_pi = hinic3_get_sq_local_pi(sq);
 		hw_ci = hinic3_get_sq_hw_ci(sq);
 		nicif_info(nic_dev, drv, netdev,
-			   "txq%u: sw_pi: %hu, hw_ci: %u, sw_ci: %u, napi->state: 0x%lx.\n",
+			   "txq%u: sw_pi: %u, hw_ci: %u, sw_ci: %u, napi->state: 0x%lx.\n",
 			   q_id, sw_pi, hw_ci, hinic3_get_sq_local_ci(sq),
 			   nic_dev->q_params.irq_cfg[q_id].napi.state);
 
@@ -1072,7 +1070,7 @@ static int hinic3_set_mac_addr(struct net_device *netdev, void *addr)
 	if (err)
 		return err;
 
-	ether_addr_copy(netdev->dev_addr, saddr->sa_data);
+	eth_hw_addr_set(netdev, saddr->sa_data);
 
 	nicif_info(nic_dev, drv, netdev, "Set new mac address %pM\n",
 		   saddr->sa_data);

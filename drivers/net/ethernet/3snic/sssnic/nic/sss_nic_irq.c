@@ -46,7 +46,11 @@ static int sss_nic_napi_poll(struct napi_struct *napi, int budget)
 
 static void sss_nic_add_napi(struct sss_nic_irq_cfg *nic_irq, int budget)
 {
+#ifdef NEED_NETIF_NAPI_ADD_NO_WEIGHT
+	netif_napi_add_weight(nic_irq->netdev, &nic_irq->napi, sss_nic_napi_poll, budget);
+#else
 	netif_napi_add(nic_irq->netdev, &nic_irq->napi, sss_nic_napi_poll, budget);
+#endif
 	napi_enable(&nic_irq->napi);
 }
 
@@ -211,7 +215,7 @@ static void sss_nic_adjust_coal_work(struct work_struct *work)
 			   SSSNIC_MODERATONE_DELAY);
 	period = (unsigned long)(jiffies - nic_dev->last_jiffies);
 
-	if ((nic_dev->use_adaptive_rx_coalesce == 0) || (period == 0))
+	if (nic_dev->use_adaptive_rx_coalesce == 0 || period == 0)
 		return;
 
 	for (qid = 0; qid < nic_dev->qp_res.qp_num; qid++) {

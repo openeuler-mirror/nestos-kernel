@@ -173,7 +173,7 @@ void ioread32_rep(const void __iomem *port, void *dst, unsigned long count)
 {
 	if (unlikely((unsigned long)dst & 0x3)) {
 		while (count--) {
-			struct S { int x __attribute__((packed)); };
+			struct S { int x __packed; };
 			((struct S *)dst)->x = ioread32(port);
 			dst += 4;
 		}
@@ -265,7 +265,7 @@ void iowrite32_rep(void __iomem *port, const void *src, unsigned long count)
 {
 	if (unlikely((unsigned long)src & 0x3)) {
 		while (count--) {
-			struct S { int x __attribute__((packed)); };
+			struct S { int x __packed; };
 			iowrite32(((struct S *)src)->x, port);
 			src += 4;
 		}
@@ -460,7 +460,14 @@ EXPORT_SYMBOL(_memset_c_io);
 
 void __iomem *ioport_map(unsigned long port, unsigned int size)
 {
-	return sw64_platform->ioportmap(port);
+	unsigned long io_offset;
+
+	if (port < 0x100000) {
+		io_offset = is_in_host() ? LPC_LEGACY_IO : PCI_VT_LEGACY_IO;
+		port = port | io_offset;
+	}
+
+	return __va(port);
 }
 EXPORT_SYMBOL(ioport_map);
 

@@ -161,7 +161,7 @@ struct hinic3_cmdq {
 struct hinic3_cmdqs {
 	struct hinic3_hwdev		*hwdev;
 
-	struct pci_pool			*cmd_buf_pool;
+	struct dma_pool			*cmd_buf_pool;
 	/* doorbell area */
 	u8 __iomem			*cmdqs_db_base;
 

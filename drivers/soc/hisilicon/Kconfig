@@ -1,12 +1,11 @@
-# SPDX-License-Identifier: GPL-2.0
-#
-# Hisilicon SoC drivers
-#
-menu "Hisilicon SoC driver support"
+# SPDX-License-Identifier: GPL-2.0-only
+
+menu "Hisilicon SoC drivers"
+	depends on ARCH_HISI || COMPILE_TEST
 
 config HISI_HBMDEV
 	tristate "add extra support for hbm memory device"
-	depends on ACPI_HOTPLUG_MEMORY
+	depends on ACPI_HOTPLUG_MEMORY && ARCH_HISI
 	select ACPI_CONTAINER
 	help
 	  This driver add two extra supports for memory devices. The driver
@@ -29,5 +28,30 @@ config HISI_HBMCACHE
 
 	  To compile the driver as a module, choose M here:
 	  the module will be called hisi_hbmcache.
+
+config HISI_HBMDEV_ACLS
+	bool "Add support for HISI ACLS repair"
+	depends on HISI_HBMDEV
+	help
+	  Add ACLS support for hbm device, which can be used to query and
+	  repair hardware error in HBM devices. This feature need to work with
+	  hardware firmwares.
+
+	  If not sure say no.
+
+config KUNPENG_HCCS
+	tristate "HCCS driver on Kunpeng SoC"
+	depends on ACPI
+	depends on MAILBOX
+	depends on ARM64 || COMPILE_TEST
+	help
+	  The Huawei Cache Coherence System (HCCS) is a multi-chip
+	  interconnection bus protocol.
+	  The performance of application may be affected if some HCCS
+	  ports are not in full lane status, have a large number of CRC
+	  errors and so on.
+
+	  Say M here if you want to include support for querying the
+	  health status and port information of HCCS on Kunpeng SoC.
 
 endmenu

@@ -78,10 +78,8 @@ futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *uaddr, u32 oldval, u32 newv
 	"	move	$t0, %z5				\n"
 	"2:	sc.w	$t0, %2					\n"
 	"	beqz	$t0, 1b					\n"
-	"	b	5f					\n"
 	"3:							\n"
 	__WEAK_LLSC_MB
-	"5:							\n"
 	_ASM_EXTABLE_UACCESS_ERR(1b, 3b, %0)
 	_ASM_EXTABLE_UACCESS_ERR(2b, 3b, %0)
 	: "+r" (ret), "=&r" (val), "=ZC" (*uaddr)

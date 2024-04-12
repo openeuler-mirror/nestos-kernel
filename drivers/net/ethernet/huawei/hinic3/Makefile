@@ -12,7 +12,7 @@ hinic3-objs := hw/hinic3_hwdev.o \
 			hw/hinic3_common.o \
 			hw/hinic3_hwif.o \
 			hw/hinic3_wq.o \
-            hw/hinic3_cmdq.o \
+			hw/hinic3_cmdq.o \
 			hw/hinic3_eqs.o \
 			hw/hinic3_mbox.o \
 			hw/hinic3_mgmt.o \
@@ -20,7 +20,7 @@ hinic3-objs := hw/hinic3_hwdev.o \
 			hw/hinic3_hw_api.o \
 			hw/hinic3_sml_lt.o \
 			hw/hinic3_hw_mt.o \
-            hw/hinic3_nictool.o \
+			hw/hinic3_nictool.o \
 			hw/hinic3_devlink.o \
 			hw/ossl_knl_linux.o \
 			hinic3_main.o \

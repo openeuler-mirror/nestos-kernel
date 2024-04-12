@@ -3,8 +3,8 @@
  * Copyright (c) 2018 Hisilicon Limited.
  */
 
-#include <linux/pci.h>
 #include <rdma/ib_umem.h>
+#include <rdma/uverbs_ioctl.h>
 #include "hns_roce_device.h"
 #include "hns_roce_cmd.h"
 #include "hns_roce_hem.h"
@@ -182,7 +182,8 @@ static int alloc_srq_idx(struct hns_roce_dev *hr_dev, struct hns_roce_srq *srq,
 				  hr_dev->caps.idx_ba_pg_sz + PAGE_SHIFT,
 				  udata, addr);
 	if (ret) {
-		ibdev_err(ibdev, "Failed to alloc SRQ idx mtr, ret = %d.\n", ret);
+		ibdev_err(ibdev,
+			  "failed to alloc SRQ idx mtr, ret = %d.\n", ret);
 		return ret;
 	}
 
@@ -288,19 +289,17 @@ static u32 proc_srq_sge(struct hns_roce_dev *dev, struct hns_roce_srq *hr_srq,
 static int set_srq_basic_param(struct hns_roce_srq *srq,
 			       struct ib_srq_init_attr *init_attr,
 			       struct ib_udata *udata)
-
 {
 	struct hns_roce_dev *hr_dev = to_hr_dev(srq->ibsrq.device);
 	struct ib_srq_attr *attr = &init_attr->attr;
 	u32 max_sge;
 
 	max_sge = proc_srq_sge(hr_dev, srq, !!udata);
-
-	if (init_attr->attr.max_wr > hr_dev->caps.max_srq_wrs ||
-	    init_attr->attr.max_sge > max_sge) {
+	if (attr->max_wr > hr_dev->caps.max_srq_wrs ||
+	    attr->max_sge > max_sge) {
 		ibdev_err(&hr_dev->ib_dev,
 			  "invalid SRQ attr, depth = %u, sge = %u.\n",
-			   attr->max_wr, attr->max_sge);
+			  attr->max_wr, attr->max_sge);
 		return -EINVAL;
 	}
 
@@ -319,9 +318,10 @@ static void set_srq_ext_param(struct hns_roce_srq *srq,
 			      struct ib_srq_init_attr *init_attr)
 {
 	srq->cqn = ib_srq_has_cq(init_attr->srq_type) ?
-		to_hr_cq(init_attr->ext.cq)->cqn : 0;
+		   to_hr_cq(init_attr->ext.cq)->cqn : 0;
+
 	srq->xrcdn = (init_attr->srq_type == IB_SRQT_XRC) ?
-		to_hr_xrcd(init_attr->ext.xrc.xrcd)->xrcdn : 0;
+		     to_hr_xrcd(init_attr->ext.xrc.xrcd)->xrcdn : 0;
 }
 
 static int set_srq_param(struct hns_roce_srq *srq,
@@ -387,6 +387,79 @@ static void free_srq_buf(struct hns_roce_dev *hr_dev, struct hns_roce_srq *srq)
 	free_srq_idx(hr_dev, srq);
 }
 
+static int get_srq_ucmd(struct hns_roce_srq *srq, struct ib_udata *udata,
+			struct hns_roce_ib_create_srq *ucmd)
+{
+	struct ib_device *ibdev = srq->ibsrq.device;
+	int ret;
+
+	ret = ib_copy_from_udata(ucmd, udata, min(udata->inlen, sizeof(*ucmd)));
+	if (ret) {
+		ibdev_err(ibdev, "failed to copy SRQ udata, ret = %d.\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void free_srq_db(struct hns_roce_dev *hr_dev, struct hns_roce_srq *srq,
+			struct ib_udata *udata)
+{
+	struct hns_roce_ucontext *uctx;
+
+	if (!(srq->cap_flags & HNS_ROCE_SRQ_CAP_RECORD_DB))
+		return;
+
+	srq->cap_flags &= ~HNS_ROCE_SRQ_CAP_RECORD_DB;
+	if (udata) {
+		uctx = rdma_udata_to_drv_context(udata,
+						 struct hns_roce_ucontext,
+						 ibucontext);
+		hns_roce_db_unmap_user(uctx, &srq->rdb);
+	} else {
+		hns_roce_free_db(hr_dev, &srq->rdb);
+	}
+}
+
+static int alloc_srq_db(struct hns_roce_dev *hr_dev, struct hns_roce_srq *srq,
+			struct ib_udata *udata,
+			struct hns_roce_ib_create_srq_resp *resp)
+{
+	struct hns_roce_ib_create_srq ucmd = {};
+	struct hns_roce_ucontext *uctx;
+	int ret;
+
+	if (udata) {
+		ret = get_srq_ucmd(srq, udata, &ucmd);
+		if (ret)
+			return ret;
+
+		if ((hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_SRQ_RECORD_DB) &&
+		    (ucmd.req_cap_flags & HNS_ROCE_SRQ_CAP_RECORD_DB)) {
+			uctx = rdma_udata_to_drv_context(udata,
+					struct hns_roce_ucontext, ibucontext);
+			ret = hns_roce_db_map_user(uctx, ucmd.db_addr,
+						   &srq->rdb);
+			if (ret)
+				return ret;
+
+			srq->cap_flags |= HNS_ROCE_RSP_SRQ_CAP_RECORD_DB;
+		}
+	} else {
+		if (hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_SRQ_RECORD_DB) {
+			ret = hns_roce_alloc_db(hr_dev, &srq->rdb, 1);
+			if (ret)
+				return ret;
+
+			*srq->rdb.db_record = 0;
+			srq->cap_flags |= HNS_ROCE_RSP_SRQ_CAP_RECORD_DB;
+		}
+		srq->db_reg = hr_dev->reg_base + SRQ_DB_REG;
+	}
+
+	return 0;
+}
+
 int hns_roce_create_srq(struct ib_srq *ib_srq,
 			struct ib_srq_init_attr *init_attr,
 			struct ib_udata *udata)
@@ -407,15 +480,20 @@ int hns_roce_create_srq(struct ib_srq *ib_srq,
 	if (ret)
 		goto err_out;
 
-	ret = alloc_srqn(hr_dev, srq);
+	ret = alloc_srq_db(hr_dev, srq, udata, &resp);
 	if (ret)
 		goto err_srq_buf;
+
+	ret = alloc_srqn(hr_dev, srq);
+	if (ret)
+		goto err_srq_db;
 
 	ret = alloc_srqc(hr_dev, srq);
 	if (ret)
 		goto err_srqn;
 
 	if (udata) {
+		resp.cap_flags = srq->cap_flags;
 		resp.srqn = srq->srqn;
 		if (ib_copy_to_udata(udata, &resp,
 				     min(udata->outlen, sizeof(resp)))) {
@@ -424,7 +502,6 @@ int hns_roce_create_srq(struct ib_srq *ib_srq,
 		}
 	}
 
-	srq->db_reg = hr_dev->reg_base + SRQ_DB_REG;
 	srq->event = hns_roce_ib_srq_event;
 	refcount_set(&srq->refcount, 1);
 	init_completion(&srq->free);
@@ -435,10 +512,13 @@ err_srqc:
 	free_srqc(hr_dev, srq);
 err_srqn:
 	free_srqn(hr_dev, srq);
+err_srq_db:
+	free_srq_db(hr_dev, srq, udata);
 err_srq_buf:
 	free_srq_buf(hr_dev, srq);
 err_out:
 	atomic64_inc(&hr_dev->dfx_cnt[HNS_ROCE_DFX_SRQ_CREATE_ERR_CNT]);
+
 	return ret;
 }
 
@@ -449,6 +529,7 @@ int hns_roce_destroy_srq(struct ib_srq *ibsrq, struct ib_udata *udata)
 
 	free_srqc(hr_dev, srq);
 	free_srqn(hr_dev, srq);
+	free_srq_db(hr_dev, srq, udata);
 	free_srq_buf(hr_dev, srq);
 	return 0;
 }

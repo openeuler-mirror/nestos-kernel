@@ -9,6 +9,7 @@
 # Copyright (C) 1994 by Linus Torvalds
 #
 
+
 archscripts: scripts_basic
 	$(Q)$(MAKE) $(build)=arch/sw_64/tools relocs
 
@@ -26,24 +27,21 @@ endif
 
 CHECKFLAGS	+= -D__sw__
 cflags-y	:= -pipe -ffixed-8 -mno-fp-regs #-msmall-data
+ifeq ($(CONFIG_SUBARCH_C4),y)
+	cflags-y += -fsw-rev
+endif
 cflags-y	+= $(call cc-option, -fno-jump-tables)
 
 cflags-y				+= $(cpuflags-y)
 
 KBUILD_CFLAGS += $(cflags-y)
-KBUILD_DEFCONFIG = defconfig
+KBUILD_DEFCONFIG = xuelang_defconfig
 
 head-y := arch/sw_64/kernel/head.o
 
-core-y				+= arch/sw_64/kernel/ arch/sw_64/mm/
-core-y				+= arch/sw_64/platform/
-core-y				+= arch/sw_64/chip/
-core-$(CONFIG_MATHEMU)		+= arch/sw_64/math-emu/
-drivers-$(CONFIG_OPROFILE)	+= arch/sw_64/oprofile/
+core-y				+= arch/sw_64/
+drivers-$(CONFIG_PCI)           += arch/sw_64/pci/
 libs-y				+= arch/sw_64/lib/
-core-$(CONFIG_KVM)		+= arch/sw_64/kvm/
-core-$(CONFIG_SW64_BUILTIN_DTB)	+= arch/sw_64/boot/dts/
-core-$(CONFIG_NET)		+= arch/sw_64/net/
 
 # export what is needed by arch/sw_64/boot/Makefile
 LIBS_Y := $(patsubst %/, %/lib.a, $(libs-y))

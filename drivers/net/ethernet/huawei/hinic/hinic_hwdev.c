@@ -3355,9 +3355,9 @@ static void fault_report_show(struct hinic_hwdev *hwdev,
 
 	memset(type_str, 0, FAULT_SHOW_STR_LEN + 1);
 	if (event->type < FAULT_TYPE_MAX)
-		strncpy(type_str, fault_type[event->type], FAULT_SHOW_STR_LEN);
+		strscpy(type_str, fault_type[event->type], FAULT_SHOW_STR_LEN);
 	else
-		strncpy(type_str, "Unknown", FAULT_SHOW_STR_LEN);
+		strscpy(type_str, "Unknown", FAULT_SHOW_STR_LEN);
 
 	sdk_err(hwdev->dev_hdl, "Fault type: %d [%s]\n", event->type, type_str);
 	sdk_err(hwdev->dev_hdl, "Fault val[0]: 0x%08x, val[1]: 0x%08x, val[2]: 0x%08x, val[3]: 0x%08x\n",
@@ -3371,10 +3371,10 @@ static void fault_report_show(struct hinic_hwdev *hwdev,
 		memset(level_str, 0, FAULT_SHOW_STR_LEN + 1);
 		level = event->event.chip.err_level;
 		if (level < FAULT_LEVEL_MAX)
-			strncpy(level_str, fault_level[level],
+			strscpy(level_str, fault_level[level],
 				FAULT_SHOW_STR_LEN);
 		else
-			strncpy(level_str, "Unknown", FAULT_SHOW_STR_LEN);
+			strscpy(level_str, "Unknown", FAULT_SHOW_STR_LEN);
 
 		if (level == FAULT_LEVEL_SERIOUS_FLR) {
 			sdk_err(hwdev->dev_hdl, "err_level: %d [%s], flr func_id: %d\n",
@@ -3810,10 +3810,8 @@ static void hinic_pcie_dfx_event_handler(struct hinic_hwdev *hwdev,
 	}
 
 	dfx_info = kzalloc(sizeof(*dfx_info), GFP_KERNEL);
-	if (!dfx_info) {
-		sdk_err(hwdev->dev_hdl, "Malloc dfx_info memory failed\n");
+	if (!dfx_info)
 		return;
-	}
 
 	((struct hinic_pcie_dfx_ntc *)buf_out)->status = 0;
 	*out_size = sizeof(*notice_info);

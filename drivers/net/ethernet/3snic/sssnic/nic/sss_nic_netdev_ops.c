@@ -222,7 +222,7 @@ static void sss_nic_ndo_tx_timeout(struct net_device *netdev)
 		sw_pi = sss_nic_get_sq_local_pi(sq);
 		hw_ci = sss_nic_get_sq_hw_ci(sq);
 		nicif_info(nic_dev, drv, netdev,
-			   "Sq%u: sw_pi: %hu, hw_ci: %u, sw_ci: %u, napi state: 0x%lx.\n",
+			   "Sq%u: sw_pi: %u, hw_ci: %u, sw_ci: %u, napi state: 0x%lx.\n",
 			qid, sw_pi, hw_ci, sss_nic_get_sq_local_ci(sq),
 			nic_dev->qp_res.irq_cfg[qid].napi.state);
 
@@ -286,7 +286,7 @@ static int sss_nic_ndo_set_mac_address(struct net_device *netdev, void *mac_addr
 	if (ret)
 		return ret;
 
-	ether_addr_copy(netdev->dev_addr, set_addr->sa_data);
+	ether_addr_copy((u8 *)(netdev->dev_addr), set_addr->sa_data);
 
 	nicif_info(nic_dev, drv, netdev,
 		   "Success to set new mac addr: %pM\n", set_addr->sa_data);
@@ -470,7 +470,7 @@ static int sss_nic_ndo_set_vf_trust(struct net_device *netdev, int vf_id, bool n
 	bool old_trust;
 	struct sss_nic_dev *nic_dev = netdev_priv(netdev);
 
-	if ((vf_id >= pci_num_vf(nic_dev->pdev)) || (vf_id > nic_dev->nic_io->max_vf_num)) {
+	if (vf_id >= pci_num_vf(nic_dev->pdev) || vf_id > nic_dev->nic_io->max_vf_num) {
 		nicif_err(nic_dev, drv, netdev, "Invalid vf id, VF: %d pci_num_vf: %d max_vfs: %d\n",
 			  vf_id, pci_num_vf(nic_dev->pdev), nic_dev->nic_io->max_vf_num);
 		return -EINVAL;
@@ -603,7 +603,7 @@ static int sss_nic_ndo_set_vf_tx_rate(struct net_device *netdev, int vf_id,
 	}
 
 	ret = sss_nic_set_vf_tx_rate_limit(nic_dev->nic_io, (u16)SSSNIC_OS_VF_ID_TO_HW(vf_id),
-					   (u32)max_tx_rate, (u32)min_tx_rate);
+					   (u32)min_tx_rate, (u32)max_tx_rate);
 	if (ret != 0) {
 		nicif_err(nic_dev, drv, netdev,
 			  "Fail to set VF %d max rate %d min rate %d%s\n",

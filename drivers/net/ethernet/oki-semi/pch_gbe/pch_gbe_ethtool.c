@@ -8,6 +8,8 @@
 #include "pch_gbe.h"
 #include "pch_gbe_phy.h"
 
+static const char pch_driver_version[] = "1.01";
+
 /*
  * pch_gbe_stats - Stats item information
  */
@@ -167,9 +169,9 @@ static void pch_gbe_get_drvinfo(struct net_device *netdev,
 {
 	struct pch_gbe_adapter *adapter = netdev_priv(netdev);
 
-	strlcpy(drvinfo->driver, KBUILD_MODNAME, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, pch_driver_version, sizeof(drvinfo->version));
-	strlcpy(drvinfo->bus_info, pci_name(adapter->pdev),
+	strscpy(drvinfo->driver, KBUILD_MODNAME, sizeof(drvinfo->driver));
+	strscpy(drvinfo->version, pch_driver_version, sizeof(drvinfo->version));
+	strscpy(drvinfo->bus_info, pci_name(adapter->pdev),
 		sizeof(drvinfo->bus_info));
 }
 

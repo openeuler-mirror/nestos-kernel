@@ -8,7 +8,7 @@
 #include <dt-bindings/clock/histb-clock.h>
 #include <linux/clk-provider.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include "clk.h"
 #include "crg.h"
@@ -251,7 +251,7 @@ unregister_fixed_rate:
 	return ERR_PTR(ret);
 }
 
-static void hi3798cv200_clk_unregister(const struct platform_device *pdev)
+static void hi3798cv200_clk_unregister(struct platform_device *pdev)
 {
 	struct hisi_crg_dev *crg = platform_get_drvdata(pdev);
 
@@ -316,7 +316,7 @@ unregister_gate:
 	return ERR_PTR(ret);
 }
 
-static void hi3798cv200_sysctrl_clk_unregister(const struct platform_device *pdev)
+static void hi3798cv200_sysctrl_clk_unregister(struct platform_device *pdev)
 {
 	struct hisi_crg_dev *crg = platform_get_drvdata(pdev);
 
@@ -367,18 +367,17 @@ static int hi3798cv200_crg_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int hi3798cv200_crg_remove(struct platform_device *pdev)
+static void hi3798cv200_crg_remove(struct platform_device *pdev)
 {
 	struct hisi_crg_dev *crg = platform_get_drvdata(pdev);
 
 	hisi_reset_exit(crg->rstc);
 	crg->funcs->unregister_clks(pdev);
-	return 0;
 }
 
 static struct platform_driver hi3798cv200_crg_driver = {
 	.probe          = hi3798cv200_crg_probe,
-	.remove		= hi3798cv200_crg_remove,
+	.remove_new	= hi3798cv200_crg_remove,
 	.driver         = {
 		.name   = "hi3798cv200-crg",
 		.of_match_table = hi3798cv200_crg_match_table,

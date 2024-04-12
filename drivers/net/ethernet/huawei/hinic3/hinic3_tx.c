@@ -914,10 +914,8 @@ int hinic3_alloc_txqs(struct net_device *netdev)
 	}
 
 	nic_dev->txqs = kzalloc(txq_size, GFP_KERNEL);
-	if (!nic_dev->txqs) {
-		nic_err(&pdev->dev, "Failed to allocate txqs\n");
+	if (!nic_dev->txqs)
 		return -ENOMEM;
-	}
 
 	for (q_id = 0; q_id < num_txqs; q_id++) {
 		txq = &nic_dev->txqs[q_id];

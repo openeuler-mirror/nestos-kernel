@@ -19,9 +19,6 @@
 
 #include "hisi_uncore_pmu.h"
 
-/* Dynamic CPU hotplug state used by CPA PMU */
-static enum cpuhp_state hisi_cpa_pmu_online;
-
 /* CPA register definition */
 #define CPA_PERF_CTRL		0x1c00
 #define CPA_EVENT_CTRL		0x1c04
@@ -323,7 +320,8 @@ static int hisi_cpa_pmu_probe(struct platform_device *pdev)
 
 	/* Power Management should be disabled before using CPA PMU. */
 	hisi_cpa_pmu_disable_pm(cpa_pmu);
-	ret = cpuhp_state_add_instance(hisi_cpa_pmu_online, &cpa_pmu->node);
+	ret = cpuhp_state_add_instance(CPUHP_AP_PERF_ARM_HISI_CPA_ONLINE,
+				       &cpa_pmu->node);
 	if (ret) {
 		dev_err(&pdev->dev, "Error %d registering hotplug\n", ret);
 		hisi_cpa_pmu_enable_pm(cpa_pmu);
@@ -333,7 +331,8 @@ static int hisi_cpa_pmu_probe(struct platform_device *pdev)
 	ret = perf_pmu_register(&cpa_pmu->pmu, name, -1);
 	if (ret) {
 		dev_err(cpa_pmu->dev, "PMU register failed\n");
-		cpuhp_state_remove_instance_nocalls(hisi_cpa_pmu_online, &cpa_pmu->node);
+		cpuhp_state_remove_instance_nocalls(
+			CPUHP_AP_PERF_ARM_HISI_CPA_ONLINE, &cpa_pmu->node);
 		hisi_cpa_pmu_enable_pm(cpa_pmu);
 		return ret;
 	}
@@ -347,7 +346,8 @@ static int hisi_cpa_pmu_remove(struct platform_device *pdev)
 	struct hisi_pmu *cpa_pmu = platform_get_drvdata(pdev);
 
 	perf_pmu_unregister(&cpa_pmu->pmu);
-	cpuhp_state_remove_instance_nocalls(hisi_cpa_pmu_online, &cpa_pmu->node);
+	cpuhp_state_remove_instance_nocalls(CPUHP_AP_PERF_ARM_HISI_CPA_ONLINE,
+					    &cpa_pmu->node);
 	hisi_cpa_pmu_enable_pm(cpa_pmu);
 	return 0;
 }
@@ -366,19 +366,18 @@ static int __init hisi_cpa_pmu_module_init(void)
 {
 	int ret;
 
-	ret = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN,
-				      "pmu/hisi/cpa:online",
+	ret = cpuhp_setup_state_multi(CPUHP_AP_PERF_ARM_HISI_CPA_ONLINE,
+				      "AP_PERF_ARM_HISI_CPA_ONLINE",
 				      hisi_uncore_pmu_online_cpu,
 				      hisi_uncore_pmu_offline_cpu);
-	if (ret < 0) {
+	if (ret) {
 		pr_err("setup hotplug failed: %d\n", ret);
 		return ret;
 	}
-	hisi_cpa_pmu_online = ret;
 
 	ret = platform_driver_register(&hisi_cpa_pmu_driver);
 	if (ret)
-		cpuhp_remove_multi_state(hisi_cpa_pmu_online);
+		cpuhp_remove_multi_state(CPUHP_AP_PERF_ARM_HISI_CPA_ONLINE);
 
 	return ret;
 }
@@ -387,7 +386,7 @@ module_init(hisi_cpa_pmu_module_init);
 static void __exit hisi_cpa_pmu_module_exit(void)
 {
 	platform_driver_unregister(&hisi_cpa_pmu_driver);
-	cpuhp_remove_multi_state(hisi_cpa_pmu_online);
+	cpuhp_remove_multi_state(CPUHP_AP_PERF_ARM_HISI_CPA_ONLINE);
 }
 module_exit(hisi_cpa_pmu_module_exit);
 

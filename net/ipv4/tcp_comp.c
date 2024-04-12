@@ -78,7 +78,7 @@ static bool tcp_comp_enabled(__be32 saddr, __be32 daddr, int port)
 	return test_bit(port, sysctl_tcp_compression_ports);
 }
 
-bool tcp_syn_comp_enabled(const struct sock *sk)
+bool tcp_syn_comp_enabled(struct sock *sk)
 {
 	struct inet_sock *inet = inet_sk(sk);
 
@@ -86,7 +86,7 @@ bool tcp_syn_comp_enabled(const struct sock *sk)
 				ntohs(inet->inet_dport));
 }
 
-bool tcp_synack_comp_enabled(const struct sock *sk,
+bool tcp_synack_comp_enabled(struct sock *sk,
 			     const struct inet_request_sock *ireq)
 {
 	struct inet_sock *inet = inet_sk(sk);
@@ -111,7 +111,7 @@ static int tcp_comp_tx_context_init(struct tcp_comp_context *ctx)
 	int csize;
 
 	params = ZSTD_getParams(ZSTD_COMP_DEFAULT_LEVEL, PAGE_SIZE, 0);
-	csize = ZSTD_CStreamWorkspaceBound(params.cParams);
+	csize = zstd_cstream_workspace_bound(&params.cParams);
 	if (csize <= 0)
 		return -EINVAL;
 
@@ -119,8 +119,8 @@ static int tcp_comp_tx_context_init(struct tcp_comp_context *ctx)
 	if (!ctx->tx.cworkspace)
 		return -ENOMEM;
 
-	ctx->tx.cstream = ZSTD_initCStream(params, 0, ctx->tx.cworkspace,
-					   csize);
+	ctx->tx.cstream = zstd_init_cstream(&params, 0, ctx->tx.cworkspace,
+					    csize);
 	if (!ctx->tx.cstream)
 		goto err_cstream;
 
@@ -257,6 +257,8 @@ static int tcp_comp_compress_to_msg(struct sock *sk, int bytes)
 static int tcp_comp_push_msg(struct sock *sk, struct sk_msg *msg, int flags)
 {
 	struct tcp_comp_context *ctx = comp_get_ctx(sk);
+	struct msghdr mh;
+	struct bio_vec bvec;
 	struct scatterlist *sg;
 	int ret, offset;
 	struct page *p;
@@ -269,7 +271,14 @@ static int tcp_comp_push_msg(struct sock *sk, struct sk_msg *msg, int flags)
 		size = sg->length;
 		p = sg_page(sg);
 retry:
-		ret = do_tcp_sendpages(sk, p, offset, size, flags);
+		memset(&mh, 0, sizeof(struct msghdr));
+		memset(&bvec, 0, sizeof(struct bio_vec));
+
+		mh.msg_flags = flags | MSG_SPLICE_PAGES;
+		bvec_set_page(&bvec, p, size, offset);
+		iov_iter_bvec(&mh.msg_iter, ITER_SOURCE, &bvec, 1, size);
+
+		ret = tcp_sendmsg_locked(sk, &mh, size);
 		if (ret != size) {
 			if (ret > 0) {
 				sk_mem_uncharge(sk, ret);
@@ -530,7 +539,7 @@ static int tcp_comp_rx_context_init(struct tcp_comp_context *ctx)
 {
 	int dsize;
 
-	dsize = ZSTD_DStreamWorkspaceBound(TCP_COMP_MAX_INPUT);
+	dsize = zstd_dstream_workspace_bound(TCP_COMP_MAX_INPUT);
 	if (dsize <= 0)
 		return -EINVAL;
 
@@ -538,8 +547,8 @@ static int tcp_comp_rx_context_init(struct tcp_comp_context *ctx)
 	if (!ctx->rx.dworkspace)
 		return -ENOMEM;
 
-	ctx->rx.dstream = ZSTD_initDStream(TCP_COMP_MAX_INPUT,
-					   ctx->rx.dworkspace, dsize);
+	ctx->rx.dstream = zstd_init_dstream(TCP_COMP_MAX_INPUT,
+					    ctx->rx.dworkspace, dsize);
 	if (!ctx->rx.dstream)
 		goto err_dstream;
 
@@ -642,7 +651,7 @@ static int tcp_comp_decompress(struct sock *sk, struct sk_buff *skb, int flags)
 				return -ENOMEM;
 			}
 
-			__skb_frag_set_page(frag, pages);
+			frag->bv_page = pages;
 			len = PAGE_SIZE << TCP_COMP_ALLOC_ORDER;
 			if (outbuf.pos < len)
 				len = outbuf.pos;
@@ -673,7 +682,7 @@ static int tcp_comp_decompress(struct sock *sk, struct sk_buff *skb, int flags)
 }
 
 static int tcp_comp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
-			    int nonblock, int flags, int *addr_len)
+			    int flags, int *addr_len)
 {
 	struct tcp_comp_context *ctx = comp_get_ctx(sk);
 	struct strp_msg *rxm;
@@ -681,8 +690,6 @@ static int tcp_comp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 	ssize_t copied = 0;
 	int target, err = 0;
 	long timeo;
-
-	flags |= nonblock;
 
 	if (unlikely(flags & MSG_ERRQUEUE))
 		return sock_recv_errqueue(sk, msg, len, SOL_IP, IP_RECVERR);
@@ -730,7 +737,7 @@ recv_end:
 	return copied ? : err;
 }
 
-bool comp_stream_read(const struct sock *sk)
+bool comp_stream_read(struct sock *sk)
 {
 	struct tcp_comp_context *ctx = comp_get_ctx(sk);
 
@@ -899,7 +906,7 @@ int tcp_comp_init(void)
 	tcp_prot_override = tcp_prot;
 	tcp_prot_override.sendmsg = tcp_comp_sendmsg;
 	tcp_prot_override.recvmsg = tcp_comp_recvmsg;
-	tcp_prot_override.stream_memory_read = comp_stream_read;
+	tcp_prot_override.sock_is_readable = comp_stream_read;
 
 	return 0;
 }

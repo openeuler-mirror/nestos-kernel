@@ -18,51 +18,10 @@
 #define __SLOW_DOWN_IO	do { } while (0)
 #define SLOW_DOWN_IO	do { } while (0)
 
-/*
- * Change virtual addresses to physical addresses and vv.
- */
-static inline unsigned long virt_to_phys(void *address)
-{
-	return __pa(address);
-}
-
-static inline void *phys_to_virt(unsigned long address)
-{
-	return __va(address);
-}
-
 #define page_to_phys(page)	page_to_pa(page)
 
 /* Maximum PIO space address supported?  */
 #define IO_SPACE_LIMIT		0xffffffffffffffff
-
-/*
- * Change addresses as seen by the kernel (virtual) to addresses as
- * seen by a device (bus), and vice versa.
- *
- * Note that this only works for a limited range of kernel addresses,
- * and very well may not span all memory.  Consider this interface
- * deprecated in favour of the DMA-mapping API.
- */
-
-static inline unsigned long __deprecated virt_to_bus(void *address)
-{
-	return virt_to_phys(address);
-}
-#define isa_virt_to_bus virt_to_bus
-
-static inline void * __deprecated bus_to_virt(unsigned long address)
-{
-	void *virt;
-
-	/* This check is a sanity check but also ensures that bus address 0
-	 * maps to virtual address 0 which is useful to detect null pointers
-	 * (the NCR driver is much simpler if NULL pointers are preserved).
-	 */
-	virt = phys_to_virt(address);
-	return (long)address <= 0 ? NULL : virt;
-}
-#define isa_bus_to_virt bus_to_virt
 
 /*
  * Generic IO read/write.  These perform native-endian accesses.
@@ -174,6 +133,12 @@ extern u32		inl(unsigned long port);
 extern void		outb(u8 b, unsigned long port);
 extern void		outw(u16 b, unsigned long port);
 extern void		outl(u32 b, unsigned long port);
+#define inb inb
+#define inw inw
+#define inl inl
+#define outb outb
+#define outw outw
+#define outl outl
 
 static inline void __iomem *__ioremap(phys_addr_t addr, size_t size,
 				      pgprot_t prot)
@@ -187,6 +152,9 @@ static inline void __iomem *__ioremap(phys_addr_t addr, size_t size,
 #define ioremap_nocache(addr, size)	__ioremap((addr), (size), PAGE_KERNEL)
 #define ioremap_cache(addr, size)	__ioremap((addr), (size), PAGE_KERNEL)
 #define ioremap_uc			ioremap_nocache
+
+#define ioport_map ioport_map
+#define ioport_unmap ioport_unmap
 
 static inline void __iounmap(volatile void __iomem *addr)
 {
@@ -210,16 +178,20 @@ static inline void __iounmap(volatile void __iomem *addr)
 /*
  * String version of IO memory access ops:
  */
-extern void memcpy_fromio(void *, const volatile void __iomem *, long);
-extern void memcpy_toio(volatile void __iomem *, const void *, long);
-extern void _memset_c_io(volatile void __iomem *, unsigned long, long);
+#define memcpy_fromio memcpy_fromio
+extern void memcpy_fromio(void *buffer, const volatile void __iomem *addr, long len);
 
+#define memcpy_toio memcpy_toio
+extern void memcpy_toio(volatile void __iomem *addr, const void *buffer, long len);
+
+extern void _memset_c_io(volatile void __iomem *addr, unsigned long c, long len);
+
+#define memset_io memset_io
 static inline void memset_io(volatile void __iomem *addr, u8 c, long len)
 {
 	_memset_c_io(addr, 0x0101010101010101UL * c, len);
 }
 
-#define __HAVE_ARCH_MEMSETW_IO
 static inline void memsetw_io(volatile void __iomem *addr, u16 c, long len)
 {
 	_memset_c_io(addr, 0x0001000100010001UL * c, len);
@@ -234,6 +206,13 @@ extern void insl(unsigned long port, void *dst, unsigned long count);
 extern void outsb(unsigned long port, const void *src, unsigned long count);
 extern void outsw(unsigned long port, const void *src, unsigned long count);
 extern void outsl(unsigned long port, const void *src, unsigned long count);
+
+#define insb insb
+#define insw insw
+#define insl insl
+#define outsb outsb
+#define outsw outsw
+#define outsl outsl
 
 /*
  * These defines will override the defaults when doing RTC queries
@@ -252,6 +231,57 @@ extern void outsl(unsigned long port, const void *src, unsigned long count);
  * Convert a virtual cached pointer to an uncached pointer
  */
 #define xlate_dev_kmem_ptr(p)	p
+
+/*
+ * These get provided from <asm-generic/iomap.h> since sw64 does not
+ * select GENERIC_IOMAP.
+ */
+#define ioread8 ioread8
+#define ioread16 ioread16
+#define ioread32 ioread32
+#define ioread64 ioread64
+#define iowrite8 iowrite8
+#define iowrite16 iowrite16
+#define iowrite32 iowrite32
+#define iowrite64 iowrite64
+#define ioread64be ioread64be
+#define iowrite64be iowrite64be
+#define ioread8_rep ioread8_rep
+#define ioread16_rep ioread16_rep
+#define ioread32_rep ioread32_rep
+#define iowrite8_rep iowrite8_rep
+#define iowrite16_rep iowrite16_rep
+#define iowrite32_rep iowrite32_rep
+#define pci_iounmap pci_iounmap
+
+#include <asm-generic/io.h>
+
+/*
+ * Change addresses as seen by the kernel (virtual) to addresses as
+ * seen by a device (bus), and vice versa.
+ *
+ * Note that this only works for a limited range of kernel addresses,
+ * and very well may not span all memory.  Consider this interface
+ * deprecated in favour of the DMA-mapping API.
+ */
+static inline unsigned long __deprecated virt_to_bus(void *address)
+{
+	return virt_to_phys(address);
+}
+#define isa_virt_to_bus virt_to_bus
+
+static inline void * __deprecated bus_to_virt(unsigned long address)
+{
+	void *virt;
+
+	/* This check is a sanity check but also ensures that bus address 0
+	 * maps to virtual address 0 which is useful to detect null pointers
+	 * (the NCR driver is much simpler if NULL pointers are preserved).
+	 */
+	virt = phys_to_virt(address);
+	return (long)address <= 0 ? NULL : virt;
+}
+#define isa_bus_to_virt bus_to_virt
 
 #endif /* __KERNEL__ */
 

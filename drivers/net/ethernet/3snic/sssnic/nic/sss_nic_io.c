@@ -680,7 +680,7 @@ static void sss_nic_fill_rq_ctx_ctrlq_body(struct sss_nic_io_queue *rq,
 }
 
 static int sss_nic_send_sq_ctx_by_ctrlq(struct sss_nic_io *nic_io,
-				struct sss_ctrl_msg_buf *msg_buf, u16 qid)
+					struct sss_ctrl_msg_buf *msg_buf, u16 qid)
 {
 	u16 i;
 	u16 max_qp;
@@ -743,7 +743,7 @@ static int sss_nic_send_sq_ctx_to_hw(struct sss_nic_io *nic_io)
 }
 
 static int sss_nic_send_rq_ctx_by_ctrlq(struct sss_nic_io *nic_io,
-				struct sss_ctrl_msg_buf *msg_buf, u16 qid)
+					struct sss_ctrl_msg_buf *msg_buf, u16 qid)
 {
 	u16 i;
 	u16 max_qp;
@@ -834,7 +834,7 @@ static int sss_nic_reset_hw_offload_ctx(struct sss_nic_io *nic_io,
 	ret = sss_ctrlq_direct_reply(nic_io->hwdev, SSS_MOD_TYPE_L2NIC,
 				     SSSNIC_CTRLQ_OPCODE_CLEAN_QUEUE_CONTEXT,
 				     msg_buf, &out_param, 0, SSS_CHANNEL_NIC);
-	if ((ret != 0) || (out_param != 0)) {
+	if (ret != 0 || out_param != 0) {
 		nic_err(nic_io->dev_hdl,
 			"Fail to clean queue offload ctxt, ret: %d, out_param: 0x%llx\n",
 			ret, out_param);

@@ -36,7 +36,7 @@
 
 #define _FP_KEEPNANFRACP	1
 
-/* sw64 Architecture Handbook, 4.7.10.4 sais that
+/* Sw_64 Architecture Handbook, 4.7.10.4 sais that
  * we should prefer any type of NaN in Fb, then Fa.
  */
 #define _FP_CHOOSENAN(fs, wc, R, X, Y, OP)			\

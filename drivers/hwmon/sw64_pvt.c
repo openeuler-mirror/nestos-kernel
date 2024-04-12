@@ -138,9 +138,9 @@ static ssize_t show_label(struct device *dev,
 			input_names[to_sensor_dev_attr(devattr)->index]);
 }
 
-static SENSOR_DEVICE_ATTR(in0_input, S_IRUGO, pvt_read, NULL,
+static SENSOR_DEVICE_ATTR(in0_input, 0444, pvt_read, NULL,
 		PVT_VSYS);
-static SENSOR_DEVICE_ATTR(in0_label, S_IRUGO, show_label, NULL,
+static SENSOR_DEVICE_ATTR(in0_label, 0444, show_label, NULL,
 		PVT_VSYS);
 
 static struct attribute *pvt_attrs[] = {

@@ -57,7 +57,7 @@ void perf_callchain_user(struct perf_callchain_entry_ctx *entry,
 {
 	unsigned long fp;
 
-	if (perf_guest_cbs && perf_guest_cbs->is_in_guest()) {
+	if (perf_guest_state()) {
 		/* We don't support guest os callchain now */
 		return;
 	}
@@ -84,7 +84,7 @@ void perf_callchain_kernel(struct perf_callchain_entry_ctx *entry,
 	}
 }
 
-#define LOONGARCH_MAX_HWEVENTS 4
+#define LOONGARCH_MAX_HWEVENTS 32
 
 struct cpu_hw_events {
 	/* Array of events on this cpu. */
@@ -132,6 +132,7 @@ struct loongarch_pmu {
 	u64		valid_count;
 	u64		overflow;
 	const char	*name;
+	unsigned int	num_counters;
 	u64		(*read_counter)(unsigned int idx);
 	void		(*write_counter)(unsigned int idx, u64 val);
 	const struct loongarch_perf_event *(*map_raw_event)(u64 config);
@@ -140,7 +141,6 @@ struct loongarch_pmu {
 				[PERF_COUNT_HW_CACHE_MAX]
 				[PERF_COUNT_HW_CACHE_OP_MAX]
 				[PERF_COUNT_HW_CACHE_RESULT_MAX];
-	unsigned int	num_counters;
 };
 
 static struct loongarch_pmu loongarch_pmu;
@@ -250,12 +250,11 @@ static void loongarch_pmu_write_control(unsigned int idx, unsigned int val)
 	}
 }
 
-static int loongarch_pmu_alloc_counter(struct cpu_hw_events *cpuc,
-				    struct hw_perf_event *hwc)
+static int loongarch_pmu_alloc_counter(struct cpu_hw_events *cpuc, struct hw_perf_event *hwc)
 {
 	int i;
 
-	for (i = loongarch_pmu.num_counters - 1; i >= 0; i--) {
+	for (i = 0; i < loongarch_pmu.num_counters; i++) {
 		if (!test_and_set_bit(i, cpuc->used_mask))
 			return i;
 	}
@@ -265,29 +264,28 @@ static int loongarch_pmu_alloc_counter(struct cpu_hw_events *cpuc,
 
 static void loongarch_pmu_enable_event(struct hw_perf_event *evt, int idx)
 {
+	unsigned int cpu;
 	struct perf_event *event = container_of(evt, struct perf_event, hw);
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
-	unsigned int cpu;
 
 	WARN_ON(idx < 0 || idx >= loongarch_pmu.num_counters);
 
-	cpuc->saved_ctrl[idx] = M_PERFCTL_EVENT(evt->event_base & 0xff) |
-		(evt->config_base & M_PERFCTL_CONFIG_MASK) |
-		/* Make sure interrupt enabled. */
-		CSR_PERFCTRL_IE;
+	/* Make sure interrupt enabled. */
+	cpuc->saved_ctrl[idx] = M_PERFCTL_EVENT(evt->event_base) |
+		(evt->config_base & M_PERFCTL_CONFIG_MASK) | CSR_PERFCTRL_IE;
 
 	cpu = (event->cpu >= 0) ? event->cpu : smp_processor_id();
 
-	pr_debug("Enabling perf counter for CPU%d\n", cpu);
 	/*
 	 * We do not actually let the counter run. Leave it until start().
 	 */
+	pr_debug("Enabling perf counter for CPU%d\n", cpu);
 }
 
 static void loongarch_pmu_disable_event(int idx)
 {
-	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	unsigned long flags;
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 
 	WARN_ON(idx < 0 || idx >= loongarch_pmu.num_counters);
 
@@ -302,9 +300,9 @@ static int loongarch_pmu_event_set_period(struct perf_event *event,
 				    struct hw_perf_event *hwc,
 				    int idx)
 {
+	int ret = 0;
 	u64 left = local64_read(&hwc->period_left);
 	u64 period = hwc->sample_period;
-	int ret = 0;
 
 	if (unlikely((left + period) & (1ULL << 63))) {
 		/* left underflowed by more than period. */
@@ -386,10 +384,9 @@ static void loongarch_pmu_stop(struct perf_event *event, int flags)
 
 static int loongarch_pmu_add(struct perf_event *event, int flags)
 {
+	int idx, err = 0;
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	struct hw_perf_event *hwc = &event->hw;
-	int idx;
-	int err = 0;
 
 	perf_pmu_disable(event->pmu);
 
@@ -456,30 +453,23 @@ static void loongarch_pmu_disable(struct pmu *pmu)
 	pause_local_counters();
 }
 
-static atomic_t active_events = ATOMIC_INIT(0);
 static DEFINE_MUTEX(pmu_reserve_mutex);
+static atomic_t active_events = ATOMIC_INIT(0);
 
 static void reset_counters(void *arg);
 static int __hw_perf_event_init(struct perf_event *event);
 
 static void hw_perf_event_destroy(struct perf_event *event)
 {
-	if (atomic_dec_and_mutex_lock(&active_events,
-				&pmu_reserve_mutex)) {
-		/*
-		 * We must not call the destroy function with interrupts
-		 * disabled.
-		 */
-		on_each_cpu(reset_counters,
-			(void *)(long)loongarch_pmu.num_counters, 1);
+	if (atomic_dec_and_mutex_lock(&active_events, &pmu_reserve_mutex)) {
+		on_each_cpu(reset_counters, NULL, 1);
+		free_irq(get_percpu_irq(INT_PCOV), &loongarch_pmu);
 		mutex_unlock(&pmu_reserve_mutex);
 	}
 }
 
-/* This is needed by specific irq handlers in perf_event_*.c */
-static void handle_associated_event(struct cpu_hw_events *cpuc,
-				    int idx, struct perf_sample_data *data,
-				    struct pt_regs *regs)
+static void handle_associated_event(struct cpu_hw_events *cpuc, int idx,
+			struct perf_sample_data *data, struct pt_regs *regs)
 {
 	struct perf_event *event = cpuc->events[idx];
 	struct hw_perf_event *hwc = &event->hw;
@@ -495,9 +485,9 @@ static void handle_associated_event(struct cpu_hw_events *cpuc,
 
 static irqreturn_t pmu_handle_irq(int irq, void *dev)
 {
+	int n;
 	int handled = IRQ_NONE;
-	unsigned int counters = loongarch_pmu.num_counters;
-	u64 counter;
+	uint64_t counter;
 	struct pt_regs *regs;
 	struct perf_sample_data data;
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
@@ -515,23 +505,14 @@ static irqreturn_t pmu_handle_irq(int irq, void *dev)
 
 	perf_sample_data_init(&data, 0, 0);
 
-	switch (counters) {
-#define HANDLE_COUNTER(n)						\
-	case n + 1:							\
-		if (test_bit(n, cpuc->used_mask)) {			\
-			counter = loongarch_pmu.read_counter(n);	\
-			if (counter & loongarch_pmu.overflow) {		\
-				handle_associated_event(cpuc, n, &data, regs); \
-				handled = IRQ_HANDLED;			\
-			}						\
+	for (n = 0; n < loongarch_pmu.num_counters; n++) {
+		if (test_bit(n, cpuc->used_mask)) {
+			counter = loongarch_pmu.read_counter(n);
+			if (counter & loongarch_pmu.overflow) {
+				handle_associated_event(cpuc, n, &data, regs);
+				handled = IRQ_HANDLED;
+			}
 		}
-	HANDLE_COUNTER(3)
-		fallthrough;
-	HANDLE_COUNTER(2)
-		fallthrough;
-	HANDLE_COUNTER(1)
-		fallthrough;
-	HANDLE_COUNTER(0)
 	}
 
 	resume_local_counters();
@@ -545,16 +526,6 @@ static irqreturn_t pmu_handle_irq(int irq, void *dev)
 		irq_work_run();
 
 	return handled;
-}
-
-static int get_pmc_irq(void)
-{
-	struct irq_domain *d = irq_find_matching_fwnode(cpuintc_handle, DOMAIN_BUS_ANY);
-
-	if (d)
-		return irq_create_mapping(d, EXCCODE_PMC - EXCCODE_INT_START);
-
-	return -EINVAL;
 }
 
 static int loongarch_pmu_event_init(struct perf_event *event)
@@ -581,14 +552,14 @@ static int loongarch_pmu_event_init(struct perf_event *event)
 	if (event->cpu >= 0 && !cpu_online(event->cpu))
 		return -ENODEV;
 
-	irq = get_pmc_irq();
+	irq = get_percpu_irq(INT_PCOV);
 	flags = IRQF_PERCPU | IRQF_NOBALANCING | IRQF_NO_THREAD | IRQF_NO_SUSPEND | IRQF_SHARED;
 	if (!atomic_inc_not_zero(&active_events)) {
 		mutex_lock(&pmu_reserve_mutex);
 		if (atomic_read(&active_events) == 0) {
-			r = request_irq(irq, pmu_handle_irq,
-					flags, "Perf_PMU", &loongarch_pmu);
+			r = request_irq(irq, pmu_handle_irq, flags, "Perf_PMU", &loongarch_pmu);
 			if (r < 0) {
+				mutex_unlock(&pmu_reserve_mutex);
 				pr_warn("PMU IRQ request failed\n");
 				return -ENODEV;
 			}
@@ -613,7 +584,7 @@ static struct pmu pmu = {
 
 static unsigned int loongarch_pmu_perf_event_encode(const struct loongarch_perf_event *pev)
 {
-	return (pev->event_id & 0xff);
+	return M_PERFCTL_EVENT(pev->event_id);
 }
 
 static const struct loongarch_perf_event *loongarch_pmu_map_general_event(int idx)
@@ -658,8 +629,8 @@ static const struct loongarch_perf_event *loongarch_pmu_map_cache_event(u64 conf
 
 static int validate_group(struct perf_event *event)
 {
-	struct perf_event *sibling, *leader = event->group_leader;
 	struct cpu_hw_events fake_cpuc;
+	struct perf_event *sibling, *leader = event->group_leader;
 
 	memset(&fake_cpuc, 0, sizeof(fake_cpuc));
 
@@ -679,24 +650,12 @@ static int validate_group(struct perf_event *event)
 
 static void reset_counters(void *arg)
 {
-	int counters = (int)(long)arg;
+	int n;
+	int counters = loongarch_pmu.num_counters;
 
-	switch (counters) {
-	case 4:
-		loongarch_pmu_write_control(3, 0);
-		loongarch_pmu.write_counter(3, 0);
-		fallthrough;
-	case 3:
-		loongarch_pmu_write_control(2, 0);
-		loongarch_pmu.write_counter(2, 0);
-		fallthrough;
-	case 2:
-		loongarch_pmu_write_control(1, 0);
-		loongarch_pmu.write_counter(1, 0);
-		fallthrough;
-	case 1:
-		loongarch_pmu_write_control(0, 0);
-		loongarch_pmu.write_counter(0, 0);
+	for (n = 0; n < counters; n++) {
+		loongarch_pmu_write_control(n, 0);
+		loongarch_pmu.write_counter(n, 0);
 	}
 }
 
@@ -777,10 +736,10 @@ PERF_CACHE_MAP_ALL_UNSUPPORTED,
 
 static int __hw_perf_event_init(struct perf_event *event)
 {
-	struct perf_event_attr *attr = &event->attr;
-	struct hw_perf_event *hwc = &event->hw;
-	const struct loongarch_perf_event *pev;
 	int err;
+	struct hw_perf_event *hwc = &event->hw;
+	struct perf_event_attr *attr = &event->attr;
+	const struct loongarch_perf_event *pev;
 
 	/* Returning LoongArch event descriptor for generic perf event. */
 	if (PERF_TYPE_HARDWARE == event->attr.type) {
@@ -853,9 +812,9 @@ static int __hw_perf_event_init(struct perf_event *event)
 
 static void pause_local_counters(void)
 {
-	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
-	int ctr = loongarch_pmu.num_counters;
 	unsigned long flags;
+	int ctr = loongarch_pmu.num_counters;
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 
 	local_irq_save(flags);
 	do {
@@ -869,8 +828,8 @@ static void pause_local_counters(void)
 
 static void resume_local_counters(void)
 {
-	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 	int ctr = loongarch_pmu.num_counters;
+	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 
 	do {
 		ctr--;
@@ -880,20 +839,20 @@ static void resume_local_counters(void)
 
 static const struct loongarch_perf_event *loongarch_pmu_map_raw_event(u64 config)
 {
-	raw_event.event_id = config & 0xff;
+	raw_event.event_id = M_PERFCTL_EVENT(config);
 
 	return &raw_event;
 }
 
-static int __init
-init_hw_perf_events(void)
+static int __init init_hw_perf_events(void)
 {
-	int counters = 4;
+	int counters;
 
 	if (!cpu_has_pmp)
 		return -ENODEV;
 
 	pr_info("Performance counters: ");
+	counters = ((read_cpucfg(LOONGARCH_CPUCFG6) & CPUCFG6_PMNUM) >> 4) + 1;
 
 	loongarch_pmu.num_counters = counters;
 	loongarch_pmu.max_period = (1ULL << 63) - 1;
@@ -906,10 +865,10 @@ init_hw_perf_events(void)
 	loongarch_pmu.general_event_map = &loongson_event_map;
 	loongarch_pmu.cache_event_map = &loongson_cache_map;
 
-	on_each_cpu(reset_counters, (void *)(long)counters, 1);
+	on_each_cpu(reset_counters, NULL, 1);
 
-	pr_cont("%s PMU enabled, %d %d-bit counters available to each "
-		"CPU.\n", loongarch_pmu.name, counters, 64);
+	pr_cont("%s PMU enabled, %d %d-bit counters available to each CPU.\n",
+			loongarch_pmu.name, counters, 64);
 
 	perf_pmu_register(&pmu, "cpu", PERF_TYPE_RAW);
 

@@ -1,8 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef _ASM_LOONGARCH64_KVM_TYPES_H
-#define _ASM_LOONGARCH64_KVM_TYPES_H
+/*
+ * Copyright (C) 2020-2023 Loongson Technology Corporation Limited
+ */
 
-#define KVM_ARCH_NR_OBJS_PER_MEMORY_CACHE 4
+#ifndef _ASM_LOONGARCH_KVM_TYPES_H
+#define _ASM_LOONGARCH_KVM_TYPES_H
 
-#endif /* _ASM_LOONGARCH64_KVM_TYPES_H */
+#define KVM_ARCH_NR_OBJS_PER_MEMORY_CACHE	40
 
+#endif /* _ASM_LOONGARCH_KVM_TYPES_H */

@@ -39,8 +39,10 @@
 
 #define IPVLAN_QBACKLOG_LIMIT	1000
 
+#if IS_ENABLED(CONFIG_IPVLAN_L2E)
 extern int sysctl_ipvlan_loop_qlen;
 extern int sysctl_ipvlan_loop_delay;
+#endif
 
 typedef enum {
 	IPVL_IPV6 = 0,
@@ -50,11 +52,11 @@ typedef enum {
 } ipvl_hdr_type;
 
 struct ipvl_pcpu_stats {
-	u64			rx_pkts;
-	u64			rx_bytes;
-	u64			rx_mcast;
-	u64			tx_pkts;
-	u64			tx_bytes;
+	u64_stats_t		rx_pkts;
+	u64_stats_t		rx_bytes;
+	u64_stats_t		rx_mcast;
+	u64_stats_t		tx_pkts;
+	u64_stats_t		tx_bytes;
 	struct u64_stats_sync	syncp;
 	u32			rx_errs;
 	u32			tx_drps;
@@ -73,10 +75,12 @@ struct ipvl_dev {
 	netdev_features_t	sfeatures;
 	u32			msg_enable;
 	spinlock_t		addrs_lock;
+#if IS_ENABLED(CONFIG_IPVLAN_L2E)
 	int                     local_packets_cached;
 	unsigned long           local_timeout;
 	struct timer_list       local_free_timer;
 	struct sk_buff_head     local_xmit_queue;
+#endif
 };
 
 struct ipvl_addr {
@@ -105,6 +109,7 @@ struct ipvl_port {
 	struct sk_buff_head	backlog;
 	int			count;
 	struct ida		ida;
+	netdevice_tracker	dev_tracker;
 };
 
 struct ipvl_skb_cb {

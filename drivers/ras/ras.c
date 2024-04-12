@@ -21,8 +21,13 @@ void log_non_standard_event(const guid_t *sec_type, const guid_t *fru_id,
 	trace_non_standard_event(sec_type, fru_id, fru_text, sev, err, len);
 }
 
+#ifdef CONFIG_RAS_ARM_EVENT_INFO
 void log_arm_hw_error(struct cper_sec_proc_arm *err, const u8 sev)
+#else
+void log_arm_hw_error(struct cper_sec_proc_arm *err)
+#endif
 {
+#ifdef CONFIG_RAS_ARM_EVENT_INFO
 	u32 pei_len;
 	u32 ctx_len = 0;
 	s32 vsei_len;
@@ -66,6 +71,9 @@ void log_arm_hw_error(struct cper_sec_proc_arm *err, const u8 sev)
 
 	trace_arm_event(err, pei_err, pei_len, ctx_err, ctx_len,
 			ven_err_data, (u32)vsei_len, sev, cpu);
+#else
+	trace_arm_event(err);
+#endif
 }
 
 static int __init ras_init(void)

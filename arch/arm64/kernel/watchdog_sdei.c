@@ -21,35 +21,31 @@
 #define SDEI_NMI_WATCHDOG_HWIRQ		29
 
 static int sdei_watchdog_event_num;
-static bool disable_sdei_nmi_watchdog;
+bool disable_sdei_nmi_watchdog;
 static bool sdei_watchdog_registered;
 static DEFINE_PER_CPU(ktime_t, last_check_time);
 
-int watchdog_sdei_enable(unsigned int cpu)
+void sdei_watchdog_hardlockup_enable(unsigned int cpu)
 {
 	int ret;
 
 	if (!sdei_watchdog_registered)
-		return -EINVAL;
+		return;
 
-#ifdef CONFIG_HARDLOCKUP_CHECK_TIMESTAMP
-	refresh_hld_last_timestamp();
-#endif
-
-	__this_cpu_write(last_check_time, ktime_get_mono_fast_ns());
+	/* Skip the first hardlockup check incase BIOS didn't init the
+	 * secure timer correctly */
+	watchdog_hardlockup_touch_cpu(cpu);
 	sdei_api_set_secure_timer_period(watchdog_thresh);
+	__this_cpu_write(last_check_time, ktime_get_mono_fast_ns());
 
 	ret = sdei_api_event_enable(sdei_watchdog_event_num);
 	if (ret) {
 		pr_err("Enable NMI Watchdog failed on cpu%d\n",
 				smp_processor_id());
-		return ret;
 	}
-
-	return 0;
 }
 
-void watchdog_sdei_disable(unsigned int cpu)
+void sdei_watchdog_hardlockup_disable(unsigned int cpu)
 {
 	int ret;
 
@@ -78,11 +74,10 @@ static int sdei_watchdog_callback(u32 event,
 	if (delta < watchdog_thresh * (u64)NSEC_PER_SEC * 4 / 5) {
 		pr_err(FW_BUG "SDEI Watchdog event triggered too soon, "
 			"time to last check:%lld ns\n", delta);
-		WARN_ON(1);
 		return 0;
 	}
 
-	watchdog_hardlockup_check(regs);
+	watchdog_hardlockup_check(smp_processor_id(), regs);
 
 	return 0;
 }
@@ -111,9 +106,12 @@ void sdei_watchdog_clear_eoi(void)
 		sdei_api_clear_eoi(SDEI_NMI_WATCHDOG_HWIRQ);
 }
 
-int __init watchdog_sdei_probe(void)
+int __init sdei_watchdog_hardlockup_probe(void)
 {
 	int ret;
+
+	if (disable_sdei_nmi_watchdog)
+		return -EINVAL;
 
 	if (!is_hyp_mode_available()) {
 		pr_err("Disable SDEI NMI Watchdog in VM\n");
@@ -150,18 +148,4 @@ int __init watchdog_sdei_probe(void)
 	pr_info("SDEI Watchdog registered successfully\n");
 
 	return 0;
-}
-
-static struct watchdog_operations arch_watchdog_ops = {
-	.watchdog_nmi_stop = &watchdog_nmi_stop,
-	.watchdog_nmi_start = &watchdog_nmi_start,
-	.watchdog_nmi_probe = &watchdog_sdei_probe,
-	.watchdog_nmi_enable = &watchdog_sdei_enable,
-	.watchdog_nmi_disable = &watchdog_sdei_disable,
-};
-
-void watchdog_ops_init(void)
-{
-	if (!disable_sdei_nmi_watchdog)
-		nmi_watchdog_ops = arch_watchdog_ops;
 }

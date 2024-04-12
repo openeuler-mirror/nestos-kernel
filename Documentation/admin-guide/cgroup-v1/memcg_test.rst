@@ -62,7 +62,7 @@ Please note that implementation details can be changed.
 
 	At cancel(), simply usage -= PAGE_SIZE.
 
-Under below explanation, we assume CONFIG_MEM_RES_CTRL_SWAP=y.
+Under below explanation, we assume CONFIG_SWAP=y.
 
 4. Anonymous
 ============
@@ -97,7 +97,7 @@ Under below explanation, we assume CONFIG_MEM_RES_CTRL_SWAP=y.
 =============
 
 	Page Cache is charged at
-	- add_to_page_cache_locked().
+	- filemap_add_folio().
 
 	The logic is very clear. (About migration, see below)
 
@@ -210,13 +210,11 @@ Under below explanation, we assume CONFIG_MEM_RES_CTRL_SWAP=y.
 
 	This is an easy way to test page migration, too.
 
-9.5 mkdir/rmdir
----------------
+9.5 nested cgroups
+------------------
 
-	When using hierarchy, mkdir/rmdir test should be done.
-	Use tests like the following::
+	Use tests like the following for testing nested cgroups::
 
-		echo 1 >/opt/cgroup/01/memory/use_hierarchy
 		mkdir /opt/cgroup/01/child_a
 		mkdir /opt/cgroup/01/child_b
 

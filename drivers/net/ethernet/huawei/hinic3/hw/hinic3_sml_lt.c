@@ -69,13 +69,13 @@ static void sml_lt_store_data(u32 *dst, const u32 *src, u8 num)
 		*(dst + SM_LT_OFFSET_10) = *(src + SM_LT_OFFSET_10);
 		*(dst + SM_LT_OFFSET_9)  = *(src + SM_LT_OFFSET_9);
 		*(dst + SM_LT_OFFSET_8)  = *(src + SM_LT_OFFSET_8);
-		/*lint -fallthrough */
+		fallthrough;
 	case SM_LT_NUM_1:
 		*(dst + SM_LT_OFFSET_7) = *(src + SM_LT_OFFSET_7);
 		*(dst + SM_LT_OFFSET_6) = *(src + SM_LT_OFFSET_6);
 		*(dst + SM_LT_OFFSET_5) = *(src + SM_LT_OFFSET_5);
 		*(dst + SM_LT_OFFSET_4) = *(src + SM_LT_OFFSET_4);
-		/*lint -fallthrough */
+		fallthrough;
 	case SM_LT_NUM_0:
 		*(dst + SM_LT_OFFSET_3) = *(src + SM_LT_OFFSET_3);
 		*(dst + SM_LT_OFFSET_2) = *(src + SM_LT_OFFSET_2);

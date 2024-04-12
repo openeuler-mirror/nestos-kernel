@@ -1,1 +1,1 @@
-obj-$(CONFIG_LOONGSON_GENERIC_LAPTOP) += loongson_generic_laptop.o
+obj-$(CONFIG_LOONGSON_LAPTOP) += loongson-laptop.o

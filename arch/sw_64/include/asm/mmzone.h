@@ -10,7 +10,7 @@
 
 extern pg_data_t *node_data[];
 
-#ifdef CONFIG_NEED_MULTIPLE_NODES
+#ifdef CONFIG_NUMA
 #define NODE_DATA(nid)		(node_data[(nid)])
 #endif
 

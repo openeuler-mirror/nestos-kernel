@@ -7,6 +7,7 @@
 #define __NETNS_CAN_H__
 
 #include <linux/spinlock.h>
+#include <linux/timer.h>
 #include <linux/kabi.h>
 
 struct can_dev_rcv_lists;
@@ -38,6 +39,7 @@ struct netns_can {
 	struct hlist_head cgw_list;
 
 	KABI_RESERVE(1)
+	KABI_RESERVE(2)
 };
 
 #endif /* __NETNS_CAN_H__ */

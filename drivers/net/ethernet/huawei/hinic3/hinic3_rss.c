@@ -312,8 +312,6 @@ static int alloc_rss_resource(struct hinic3_nic_dev *nic_dev)
 
 	nic_dev->rss_indir = kzalloc(sizeof(u32) * NIC_RSS_INDIR_SIZE, GFP_KERNEL);
 	if (!nic_dev->rss_indir) {
-		nicif_err(nic_dev, drv, nic_dev->netdev,
-			  "Failed to alloc memory for rss_indir\n");
 		kfree(nic_dev->rss_hkey);
 		nic_dev->rss_hkey = NULL;
 		return -ENOMEM;

@@ -6,24 +6,35 @@
 #ifndef _ASM_SW64_XOR_H
 #define _ASM_SW64_XOR_H
 
-extern void xor_sw64_2(unsigned long, unsigned long *, unsigned long *);
-extern void xor_sw64_3(unsigned long, unsigned long *, unsigned long *,
-		     unsigned long *);
-extern void xor_sw64_4(unsigned long, unsigned long *, unsigned long *,
-		     unsigned long *, unsigned long *);
-extern void xor_sw64_5(unsigned long, unsigned long *, unsigned long *,
-		     unsigned long *, unsigned long *, unsigned long *);
+extern void xor_sw64_2(unsigned long bytes, unsigned long *__restrict p1,
+		const unsigned long *__restrict p2);
+extern void xor_sw64_3(unsigned long bytes, unsigned long *__restrict p1,
+		const unsigned long *__restrict p2,
+		const unsigned long *__restrict p3);
+extern void xor_sw64_4(unsigned long bytes, unsigned long *__restrict p1,
+		const unsigned long *__restrict p2,
+		const unsigned long *__restrict p3,
+		const unsigned long *__restrict p4);
+extern void xor_sw64_5(unsigned long bytes, unsigned long *__restrict p1,
+		const unsigned long *__restrict p2,
+		const unsigned long *__restrict p3,
+		const unsigned long *__restrict p4,
+		const unsigned long *__restrict p5);
 
-extern void xor_sw64_prefetch_2(unsigned long, unsigned long *,
-			      unsigned long *);
-extern void xor_sw64_prefetch_3(unsigned long, unsigned long *,
-			      unsigned long *, unsigned long *);
-extern void xor_sw64_prefetch_4(unsigned long, unsigned long *,
-			      unsigned long *, unsigned long *,
-			      unsigned long *);
-extern void xor_sw64_prefetch_5(unsigned long, unsigned long *,
-			      unsigned long *, unsigned long *,
-			      unsigned long *, unsigned long *);
+extern void xor_sw64_prefetch_2(unsigned long bytes, unsigned long *__restrict p1,
+		const unsigned long *__restrict p2);
+extern void xor_sw64_prefetch_3(unsigned long bytes, unsigned long *__restrict p1,
+		const unsigned long *__restrict p2,
+		const unsigned long *__restrict p3);
+extern void xor_sw64_prefetch_4(unsigned long bytes, unsigned long *__restrict p1,
+		const unsigned long *__restrict p2,
+		const unsigned long *__restrict p3,
+		const unsigned long *__restrict p4);
+extern void xor_sw64_prefetch_5(unsigned long bytes, unsigned long *__restrict p1,
+		const unsigned long *__restrict p2,
+		const unsigned long *__restrict p3,
+		const unsigned long *__restrict p4,
+		const unsigned long *__restrict p5);
 
 asm("								\n\
 	.text							\n\
@@ -838,8 +849,7 @@ static struct xor_block_template xor_block_sw64_prefetch = {
 		xor_speed(&xor_block_sw64_prefetch);	\
 	} while (0)
 
-/*
- * Force the use of sw64_prefetch as it is significantly
+/* Force the use of sw64_prefetch as it is significantly
  * faster in the cold cache case.
  */
 #define XOR_SELECT_TEMPLATE(FASTEST)   (&xor_block_sw64_prefetch)

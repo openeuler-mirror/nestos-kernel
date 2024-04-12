@@ -16,6 +16,11 @@
 #define CurrentEL_EL1		(1 << 2)
 #define CurrentEL_EL2		(2 << 2)
 
+#define INIT_PSTATE_EL1 \
+	(PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT | PSR_MODE_EL1h)
+#define INIT_PSTATE_EL2 \
+	(PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT | PSR_MODE_EL2h)
+
 /*
  * PMR values used to mask/unmask interrupts.
  *
@@ -189,7 +194,7 @@ struct pt_regs {
 	u32 unused2;
 #endif
 	u64 sdei_ttbr1;
-	/* Only valid when ARM64_HAS_IRQ_PRIO_MASKING is enabled. */
+	/* Only valid when ARM64_HAS_GIC_PRIO_MASKING is enabled. */
 	u64 pmr_save;
 	u64 stackframe[2];
 
@@ -242,7 +247,7 @@ static inline void forget_syscall(struct pt_regs *regs)
 	(!((regs)->pstate & PSR_I_BIT) && irqs_priority_unmasked(regs))
 
 #define fast_interrupts_enabled(regs) \
-	(!((regs)->pstate & PSR_F_BIT))
+	(!(regs)->pstate & PSR_F_BIT)
 
 static inline unsigned long user_stack_pointer(struct pt_regs *regs)
 {

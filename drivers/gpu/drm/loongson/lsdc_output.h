@@ -1,21 +1,21 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
- * Copyright (C) 2022 Loongson Corporation
- */
-
-/*
- * Authors:
- *      Sui Jingfeng <suijingfeng@loongson.cn>
+ * Copyright (C) 2023 Loongson Technology Corporation Limited
  */
 
 #ifndef __LSDC_OUTPUT_H__
 #define __LSDC_OUTPUT_H__
 
-#include <drm/drm_device.h>
-#include <drm/drm_connector.h>
+#include "lsdc_drv.h"
 
-int lsdc_create_output(struct lsdc_device *ldev, unsigned int i, unsigned int num_crtc);
+int ls7a1000_output_init(struct drm_device *ddev,
+			 struct lsdc_display_pipe *dispipe,
+			 struct i2c_adapter *ddc,
+			 unsigned int index);
 
-int lsdc_attach_output(struct lsdc_device *ldev, uint32_t num_crtc);
+int ls7a2000_output_init(struct drm_device *ldev,
+			 struct lsdc_display_pipe *dispipe,
+			 struct i2c_adapter *ddc,
+			 unsigned int index);
 
 #endif

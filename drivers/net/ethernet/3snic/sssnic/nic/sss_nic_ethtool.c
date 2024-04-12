@@ -41,9 +41,9 @@ static void sss_nic_get_drvinfo(struct net_device *netdev,
 	u8 mgmt_ver[SSSNIC_MGMT_VERSION_MAX_LEN] = {0};
 	int ret;
 
-	strlcpy(drvinfo->driver, SSSNIC_DRV_NAME, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, SSSNIC_DRV_VERSION, sizeof(drvinfo->version));
-	strlcpy(drvinfo->bus_info, pci_name(pdev), sizeof(drvinfo->bus_info));
+	strscpy(drvinfo->driver, SSSNIC_DRV_NAME, sizeof(drvinfo->driver));
+	strscpy(drvinfo->version, SSSNIC_DRV_VERSION, sizeof(drvinfo->version));
+	strscpy(drvinfo->bus_info, pci_name(pdev), sizeof(drvinfo->bus_info));
 
 	ret = sss_get_mgmt_version(nic_dev->hwdev, mgmt_ver,
 				   SSSNIC_MGMT_VERSION_MAX_LEN,
@@ -336,7 +336,7 @@ static int sss_nic_get_module_eeprom(struct net_device *netdev,
 	u32 len = ee->len;
 	int ret;
 
-	if (len == 0 || (offset > SSSNIC_STD_SFP_INFO_MAX_SIZE))
+	if (len == 0 || offset > SSSNIC_STD_SFP_INFO_MAX_SIZE)
 		return -EINVAL;
 
 	memset(data, 0, len);

@@ -8,6 +8,4 @@
 #define MAX_DMA_ADDRESS	PAGE_OFFSET
 #define MAX_DMA32_PFN	(1UL << (32 - PAGE_SHIFT))
 
-extern int isa_dma_bridge_buggy;
-
 #endif

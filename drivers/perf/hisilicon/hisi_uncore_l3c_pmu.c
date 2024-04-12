@@ -2,7 +2,7 @@
 /*
  * HiSilicon SoC L3C uncore Hardware event counters support
  *
- * Copyright (C) 2017 Hisilicon Limited
+ * Copyright (C) 2017 HiSilicon Limited
  * Author: Anurup M <anurup.m@huawei.com>
  *         Shaokun Zhang <zhangshaokun@hisilicon.com>
  *
@@ -460,7 +460,7 @@ static struct attribute *hisi_l3c_pmu_identifier_attrs[] = {
 	NULL
 };
 
-static struct attribute_group hisi_l3c_pmu_identifier_group = {
+static const struct attribute_group hisi_l3c_pmu_identifier_group = {
 	.attrs = hisi_l3c_pmu_identifier_attrs,
 };
 

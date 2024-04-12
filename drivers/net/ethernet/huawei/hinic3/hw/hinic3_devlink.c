@@ -133,10 +133,8 @@ static int hinic3_flash_firmware(struct hinic3_hwdev *hwdev, const u8 *data,
 	int remain_len, err;
 
 	update_msg = kzalloc(sizeof(*update_msg), GFP_KERNEL);
-	if (!update_msg) {
-		sdk_err(hwdev->dev_hdl, "Failed to alloc update message\n");
+	if (!update_msg)
 		return -ENOMEM;
-	}
 
 	for (i =  0; i < image->type_num; i++) {
 		section_offset = image->section_info[i].section_offset;
@@ -190,9 +188,6 @@ static int hinic3_flash_update_notify(struct devlink *devlink, const struct firm
 	struct hinic3_hwdev *hwdev = devlink_dev->hwdev;
 	int err;
 
-#ifdef HAVE_DEVLINK_FW_FILE_NAME_MEMBER
-	devlink_flash_update_begin_notify(devlink);
-#endif
 	devlink_flash_update_status_notify(devlink, "Flash firmware begin", NULL, 0, 0);
 	sdk_info(hwdev->dev_hdl, "Flash firmware begin\n");
 	err = hinic3_flash_firmware(hwdev, fw->data, image);
@@ -204,9 +199,6 @@ static int hinic3_flash_update_notify(struct devlink *devlink, const struct firm
 		sdk_info(hwdev->dev_hdl, "Flash firmware end\n");
 		devlink_flash_update_status_notify(devlink, "Flash firmware end", NULL, 0, 0);
 	}
-#ifdef HAVE_DEVLINK_FW_FILE_NAME_MEMBER
-	devlink_flash_update_end_notify(devlink);
-#endif
 
 	return err;
 }
@@ -222,32 +214,15 @@ static int hinic3_devlink_flash_update(struct devlink *devlink,
 {
 	struct hinic3_devlink *devlink_dev = devlink_priv(devlink);
 	struct hinic3_hwdev *hwdev = devlink_dev->hwdev;
-#ifdef HAVE_DEVLINK_FW_FILE_NAME_MEMBER
-	const struct firmware *fw = NULL;
-#else
 	const struct firmware *fw = params->fw;
-#endif
 	struct host_image *image = NULL;
 	int err;
 
 	image = kzalloc(sizeof(*image), GFP_KERNEL);
 	if (!image) {
-		sdk_err(hwdev->dev_hdl, "Failed to alloc host image\n");
 		err = -ENOMEM;
 		goto devlink_param_reset;
 	}
-
-#ifdef HAVE_DEVLINK_FW_FILE_NAME_MEMBER
-#ifdef HAVE_DEVLINK_FW_FILE_NAME_PARAM
-	err = request_firmware_direct(&fw, file_name, hwdev->dev_hdl);
-#else
-	err = request_firmware_direct(&fw, params->file_name, hwdev->dev_hdl);
-#endif
-	if (err) {
-		sdk_err(hwdev->dev_hdl, "Failed to request firmware\n");
-		goto devlink_request_fw_err;
-	}
-#endif
 
 	if (!check_image_valid(hwdev, fw->data, (u32)(fw->size), image) ||
 	    !check_image_integrity(hwdev, image) ||
@@ -261,11 +236,6 @@ static int hinic3_devlink_flash_update(struct devlink *devlink,
 	err = hinic3_flash_update_notify(devlink, fw, image, extack);
 
 devlink_update_out:
-#ifdef HAVE_DEVLINK_FW_FILE_NAME_MEMBER
-	release_firmware(fw);
-
-devlink_request_fw_err:
-#endif
 	kfree(image);
 
 devlink_param_reset:
@@ -380,7 +350,7 @@ int hinic3_init_devlink(struct hinic3_hwdev *hwdev)
 	struct pci_dev *pdev = NULL;
 	int err;
 
-	devlink = devlink_alloc(&hinic3_devlink_ops, sizeof(struct hinic3_devlink));
+	devlink = devlink_alloc(&hinic3_devlink_ops, sizeof(struct hinic3_devlink), hwdev->dev_hdl);
 	if (!devlink) {
 		sdk_err(hwdev->dev_hdl, "Failed to alloc devlink\n");
 		return -ENOMEM;
@@ -392,11 +362,7 @@ int hinic3_init_devlink(struct hinic3_hwdev *hwdev)
 	hwdev->devlink_dev->switch_cfg = FW_CFG_DEFAULT_INDEX;
 
 	pdev = hwdev->hwif->pdev;
-	err = devlink_register(devlink, &pdev->dev);
-	if (err) {
-		sdk_err(hwdev->dev_hdl, "Failed to register devlink\n");
-		goto register_devlink_err;
-	}
+	devlink_register(devlink);
 
 	err = devlink_params_register(devlink, hinic3_devlink_params,
 				      ARRAY_SIZE(hinic3_devlink_params));
@@ -405,14 +371,10 @@ int hinic3_init_devlink(struct hinic3_hwdev *hwdev)
 		goto register_devlink_params_err;
 	}
 
-	devlink_params_publish(devlink);
-
 	return 0;
 
 register_devlink_params_err:
 	devlink_unregister(devlink);
-
-register_devlink_err:
 	devlink_free(devlink);
 
 	return -EFAULT;
@@ -422,7 +384,6 @@ void hinic3_uninit_devlink(struct hinic3_hwdev *hwdev)
 {
 	struct devlink *devlink = priv_to_devlink(hwdev->devlink_dev);
 
-	devlink_params_unpublish(devlink);
 	devlink_params_unregister(devlink, hinic3_devlink_params,
 				  ARRAY_SIZE(hinic3_devlink_params));
 	devlink_unregister(devlink);

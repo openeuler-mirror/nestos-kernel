@@ -76,6 +76,7 @@ static const struct pt_regs_dwarfnum regdwarfnum_table[] = {
 const char *get_arch_regstr(unsigned int n)
 {
 	const struct pt_regs_dwarfnum *roff;
+
 	for (roff = regdwarfnum_table; roff->name != NULL; roff++)
 		if (roff->dwarfnum == n)
 			return roff->name;

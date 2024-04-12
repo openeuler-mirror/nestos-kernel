@@ -22,19 +22,15 @@
 #include "misc.h"
 #include "error.h"
 #include "../string.h"
+#include "efi.h"
 
 #include <generated/compile.h>
 #include <linux/module.h>
 #include <linux/uts.h>
 #include <linux/utsname.h>
 #include <linux/ctype.h>
-#include <linux/efi.h>
+#include <generated/utsversion.h>
 #include <generated/utsrelease.h>
-#include <asm/efi.h>
-
-/* Macros used by the included decompressor code below. */
-#define STATIC
-#include <linux/decompress/mm.h>
 
 #define _SETUP
 #include <asm/setup.h>	/* For COMMAND_LINE_SIZE */
@@ -79,6 +75,10 @@ static unsigned long get_boot_seed(void)
 /* Only supporting at most 4 unusable memmap regions with kaslr */
 #define MAX_MEMMAP_REGIONS	4
 
+#ifdef CONFIG_KASLR_SKIP_MEM_RANGE
+#define MAX_MEM_NOKASLR_REGIONS 4
+#endif
+
 static bool memmap_too_large;
 
 
@@ -98,6 +98,10 @@ enum mem_avoid_index {
 	MEM_AVOID_BOOTPARAMS,
 	MEM_AVOID_MEMMAP_BEGIN,
 	MEM_AVOID_MEMMAP_END = MEM_AVOID_MEMMAP_BEGIN + MAX_MEMMAP_REGIONS - 1,
+#ifdef CONFIG_KASLR_SKIP_MEM_RANGE
+	MEM_AVOID_MEM_NOKASLR_BEGIN,
+	MEM_AVOID_MEM_NOKASLR_END = MEM_AVOID_MEM_NOKASLR_BEGIN + MAX_MEM_NOKASLR_REGIONS - 1,
+#endif
 	MEM_AVOID_MAX,
 };
 
@@ -227,6 +231,39 @@ static void mem_avoid_memmap(enum parse_mode mode, char *str)
 		memmap_too_large = true;
 }
 
+#ifdef CONFIG_KASLR_SKIP_MEM_RANGE
+static void mem_avoid_mem_nokaslr(char *str)
+{
+	int i = 0;
+
+	while (str && (i < MAX_MEM_NOKASLR_REGIONS)) {
+		char *oldstr;
+		u64 start, end;
+		char *k = strchr(str, ',');
+
+		if (k)
+			*k++ = 0;
+
+		oldstr = str;
+		start = memparse(str, &str);
+		if (str == oldstr || *str != '-') {
+			warn("Nokaslr values error.\n");
+			break;
+		}
+
+		end = memparse(str + 1, &str);
+		if (start >= end) {
+			warn("Nokaslr values error, start should be less than end.\n");
+			break;
+		}
+
+		mem_avoid[MEM_AVOID_MEM_NOKASLR_BEGIN + i].start = start;
+		mem_avoid[MEM_AVOID_MEM_NOKASLR_BEGIN + i].size = end - start;
+		str = k;
+		i++;
+	}
+}
+#endif
 /* Store the number of 1GB huge pages which users specified: */
 static unsigned long max_gb_huge_pages;
 
@@ -302,6 +339,10 @@ static void handle_mem_options(void)
 		} else if (!strcmp(param, "efi_fake_mem")) {
 			mem_avoid_memmap(PARSE_EFI, val);
 		}
+#ifdef CONFIG_KASLR_SKIP_MEM_RANGE
+		else if (!strcmp(param, "nokaslr") && val)
+			mem_avoid_mem_nokaslr(val);
+#endif
 	}
 
 	free(tmp_cmdline);
@@ -639,9 +680,9 @@ static bool process_mem_region(struct mem_vector *region,
 
 		if (slot_area_index == MAX_SLOT_AREA) {
 			debug_putstr("Aborted e820/efi memmap scan (slot_areas full)!\n");
-			return 1;
+			return true;
 		}
-		return 0;
+		return false;
 	}
 
 #if defined(CONFIG_MEMORY_HOTREMOVE) && defined(CONFIG_ACPI)
@@ -668,14 +709,41 @@ static bool process_mem_region(struct mem_vector *region,
 
 		if (slot_area_index == MAX_SLOT_AREA) {
 			debug_putstr("Aborted e820/efi memmap scan when walking immovable regions(slot_areas full)!\n");
-			return 1;
+			return true;
 		}
 	}
 #endif
-	return 0;
+	return false;
 }
 
 #ifdef CONFIG_EFI
+
+/*
+ * Only EFI_CONVENTIONAL_MEMORY and EFI_UNACCEPTED_MEMORY (if supported) are
+ * guaranteed to be free.
+ *
+ * Pick free memory more conservatively than the EFI spec allows: according to
+ * the spec, EFI_BOOT_SERVICES_{CODE|DATA} are also free memory and thus
+ * available to place the kernel image into, but in practice there's firmware
+ * where using that memory leads to crashes. Buggy vendor EFI code registers
+ * for an event that triggers on SetVirtualAddressMap(). The handler assumes
+ * that EFI_BOOT_SERVICES_DATA memory has not been touched by loader yet, which
+ * is probably true for Windows.
+ *
+ * Preserve EFI_BOOT_SERVICES_* regions until after SetVirtualAddressMap().
+ */
+static inline bool memory_type_is_free(efi_memory_desc_t *md)
+{
+	if (md->type == EFI_CONVENTIONAL_MEMORY)
+		return true;
+
+	if (IS_ENABLED(CONFIG_UNACCEPTED_MEMORY) &&
+	    md->type == EFI_UNACCEPTED_MEMORY)
+		    return true;
+
+	return false;
+}
+
 /*
  * Returns true if we processed the EFI memmap, which we prefer over the E820
  * table if it is available.
@@ -720,18 +788,7 @@ process_efi_entries(unsigned long minimum, unsigned long image_size)
 	for (i = 0; i < nr_desc; i++) {
 		md = efi_early_memdesc_ptr(pmap, e->efi_memdesc_size, i);
 
-		/*
-		 * Here we are more conservative in picking free memory than
-		 * the EFI spec allows:
-		 *
-		 * According to the spec, EFI_BOOT_SERVICES_{CODE|DATA} are also
-		 * free memory and thus available to place the kernel image into,
-		 * but in practice there's firmware where using that memory leads
-		 * to crashes.
-		 *
-		 * Only EFI_CONVENTIONAL_MEMORY is guaranteed to be free.
-		 */
-		if (md->type != EFI_CONVENTIONAL_MEMORY)
+		if (!memory_type_is_free(md))
 			continue;
 
 		if (efi_soft_reserve_enabled() &&

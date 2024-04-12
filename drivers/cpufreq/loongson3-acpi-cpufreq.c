@@ -1,24 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * loongson3-acpi-cpufreq.c - Loongson ACPI Processor P-States Driver
  *
  *  Copyright (C) 2020  lvjianmin <lvjianmin@loongson.cn>
  *			Yijun <yijun@loongson.cn>
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or (at
- *  your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful, but
- *  WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -38,11 +23,11 @@
 #include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/uaccess.h>
+#include <linux/processor.h>
+#include <linux/cpufeature.h>
 #include <uapi/linux/sched/types.h>
 #include <acpi/processor.h>
 
-#include <asm/processor.h>
-#include <asm/cpufeature.h>
 #include <asm/loongson.h>
 #include "cpufreq_governor.h"
 
@@ -92,7 +77,6 @@ static struct cpufreq_driver loongson3_cpufreq_driver;
 static struct freq_attr *loongson3_cpufreq_attr[];
 DECLARE_PER_CPU(struct clock_event_device, stable_clockevent_device);
 static inline struct core_data *get_core_data(int cpu);
-extern struct clk *cpu_clk_get(int cpu);
 
 static int min_freq_level;
 static int max_freq_level;
@@ -126,7 +110,7 @@ static struct task_struct	*cpufreq_thread;
  * @in_boost:		the core is boosting to boost_freq
  * @cpu:		logical cpu of the core
  * @update_util		The update_util_data pointer of @cpu, is passed to the callback
- * 			function, which will be called by cpufreq_update_util()
+ *			function, which will be called by cpufreq_update_util()
  * @package		The package_data structure the core belonged to
  * @work_in_progress	@work is busy
  * @irq_work		to enqueue callback handling on irq workqueue
@@ -141,7 +125,7 @@ static struct task_struct	*cpufreq_thread;
  * @load		current load of the core
  * @last_freq_update_time	last freq update time
  * @freq_update_delay_ns	min interval of freq update, which is
- * 			transition_latency configured in ACPI table
+ *			transition_latency configured in ACPI table
  *
  * following elements are used to calculate load of the core
  * @prev_update_time
@@ -194,15 +178,14 @@ static bool boost_supported(void)
  *
  * target_freq must be a freq in freq table when
  * calling the function.
- * */
+ */
 static int boost_level(struct acpi_processor_performance *perf, unsigned int target_freq)
 {
 	int i;
 
 	for (i = 0; i < perf->state_count; i++) {
-		if (target_freq == (perf->states[i].core_frequency * 1000)) {
+		if (target_freq == (perf->states[i].core_frequency * 1000))
 			return (perf->states[i].control & LOONGSON_BOOST_FREQ_MASK) >> 8;
-		}
 	}
 	return 0;
 }
@@ -274,6 +257,7 @@ static int cpufreq_perf_find_level(struct acpi_processor_performance *perf,
 		unsigned int boost_level)
 {
 	int i;
+
 	for (i = 0; i < perf->state_count; i++) {
 		if (boost_level) {
 			if (perf->states[i].control & LOONGSON_BOOST_FREQ_MASK) {
@@ -294,6 +278,7 @@ static int cpufreq_perf_find_freq(struct acpi_processor_performance *perf,
 		unsigned int boost_level)
 {
 	int i;
+
 	for (i = 0; i < perf->state_count; i++) {
 		if (boost_level) {
 			if (perf->states[i].control & LOONGSON_BOOST_FREQ_MASK)
@@ -305,6 +290,7 @@ static int cpufreq_perf_find_freq(struct acpi_processor_performance *perf,
 					return perf->states[i].core_frequency;
 		}
 	}
+
 	return 0;
 }
 
@@ -314,6 +300,7 @@ static inline struct core_data *get_core_data(int cpu)
 	int package_id = cpu_data[cpu].package;
 	struct package_data *package = &all_package_data[package_id];
 	int core_id = cpu_logical_map(cpu) % package->nr_cores;
+
 	return &package->core[core_id];
 }
 
@@ -337,47 +324,40 @@ static bool package_boost(struct package_data *package)
 #if defined(CONFIG_CPU_HAS_LASX)
 		lasx_num = per_cpu(lasx_count, package->core[i].cpu);
 
-		if (lasx_num) {
+		if (lasx_num)
 			lasx_enable_count++;
-		}
 
-		if (lasx_num >= lasx_count_threshold) {
+		if (lasx_num >= lasx_count_threshold)
 			clear_lasx = true;
-		}
 
-		pr_debug("file %s, line %d, lasx enabled, i %d, cpu %d, lasx_num %lu\n",
-				__FILE__, __LINE__, i, package->core[i].cpu, lasx_num);
+		pr_debug("%s: lasx enabled, i %d, cpu %d, lasx_num %lu\n",
+				__func__, i, package->core[i].cpu, lasx_num);
 #endif
 		msa_num = per_cpu(msa_count, package->core[i].cpu);
 
-		if (msa_num) {
+		if (msa_num)
 			msa_enable_count++;
-		}
 
-		if (msa_num >= msa_count_threshold) {
+		if (msa_num >= msa_count_threshold)
 			clear_msa = true;
-		}
 
-		pr_debug("file %s, line %d, msa enabled, i %d, cpu %d, msa_num %lu\n",
-				__FILE__, __LINE__, i, package->core[i].cpu, msa_num);
+		pr_debug("%s: msa enabled, i %d, cpu %d, msa_num %lu\n",
+				__func__, i, package->core[i].cpu, msa_num);
 
-		if (package->core[i].prev_load >= load_threshold) {
+		if (package->core[i].prev_load >= load_threshold)
 			cur_full_load++;
-		}
 	}
 
 #if defined(CONFIG_CPU_HAS_LASX)
 	if (clear_lasx) {
-		for (i = 0; i < package->nr_cores; i++) {
+		for (i = 0; i < package->nr_cores; i++)
 			per_cpu(lasx_count, package->core[i].cpu) = 0;
-		}
 	}
 #endif
 
 	if (clear_msa) {
-		for (i = 0; i < package->nr_cores; i++) {
+		for (i = 0; i < package->nr_cores; i++)
 			per_cpu(msa_count, package->core[i].cpu) = 0;
-		}
 	}
 
 #if defined(CONFIG_CPU_HAS_LASX)
@@ -405,16 +385,17 @@ static bool package_boost(struct package_data *package)
  * check if the cpu can be boosted.
  *
  * call the function after load of cpu updated.
- * */
+ */
 static bool cpu_can_boost(int cpu)
 {
 	struct core_data *core = get_core_data(cpu);
 	struct package_data *package = core->package;
+
 	if (package->boost_cores >= package->max_boost_cores)
 		return false;
-	if (core->load > BOOST_THRESHOLD) {
+	if (core->load > BOOST_THRESHOLD)
 		return true;
-	}
+
 	return false;
 }
 
@@ -468,6 +449,7 @@ static int cpufreq_table_find_freq_ac(struct cpufreq_policy *policy,
 	unsigned int freq;
 	unsigned int best_freq = 0;
 	int idx, best = -1;
+
 	cpufreq_for_each_valid_entry_idx(pos, table, idx) {
 		freq = pos->frequency;
 
@@ -517,10 +499,9 @@ static int cpufreq_table_find_freq_dc(struct cpufreq_policy *policy,
 		if (freq > policy->max || freq < policy->min)
 			continue;
 
-		if (freq == target_freq) {
-
+		if (freq == target_freq)
 			return freq;
-		}
+
 		if (freq > target_freq) {
 			best = idx;
 			best_freq = freq;
@@ -528,14 +509,12 @@ static int cpufreq_table_find_freq_dc(struct cpufreq_policy *policy,
 		}
 
 		/* No freq found above target_freq, return freq below target_freq */
-		if (best == -1) {
+		if (best == -1)
 			return freq;
-		}
-		/* Choose the closest freq */
-		if (table[best].frequency - target_freq > target_freq - freq) {
 
+		/* Choose the closest freq */
+		if (table[best].frequency - target_freq > target_freq - freq)
 			return freq;
-		}
 		return best_freq;
 	}
 
@@ -557,17 +536,16 @@ static int cpufreq_table_find_freq(struct cpufreq_policy *policy,
 static void transition_end(struct cpufreq_policy *policy,
 		struct cpufreq_freqs *freqs, bool failed)
 {
-	if (unlikely(!policy->transition_ongoing)) {
+	if (unlikely(!policy->transition_ongoing))
 		return;
-	}
 	cpufreq_freq_transition_end(policy, freqs, failed);
 }
 static void transition_begin(struct cpufreq_policy *policy,
 		struct cpufreq_freqs *freqs)
 {
-	if (unlikely(policy->transition_ongoing)) {
+	if (unlikely(policy->transition_ongoing))
 		cpufreq_freq_transition_end(policy, freqs, true);
-	}
+
 	cpufreq_freq_transition_begin(policy, freqs);
 }
 
@@ -595,10 +573,10 @@ static unsigned int cores_freq_trans_notify(struct package_data *package,
 
 	for (i = 0; i < package->nr_cores; i++) {
 		struct core_data *core = &package->core[i];
+
 		policy = cpufreq_cpu_get_raw(core->cpu);
-		if (((1 << i) & skip_cpumask) || !policy) {
+		if (((1 << i) & skip_cpumask) || !policy)
 			continue;
-		}
 		freqs.old = policy->cur;
 		freqs.flags = 0;
 
@@ -606,22 +584,21 @@ static unsigned int cores_freq_trans_notify(struct package_data *package,
 		core_level = cpufreq_perf_find_level(core->perf, policy->cur, find_level);
 		if (!core_level) {
 			pr_debug("cpu%d policy->cur=%d find_level=%d freq=%d skip_cpumask=%x \n",
-					policy->cpu, policy->cur, find_level, find_freq, skip_cpumask);
+					policy->cpu, policy->cur,
+					find_level, find_freq, skip_cpumask);
 		}
 		freqs.new = cpufreq_perf_find_freq(core->perf, core_level, find_freq) * 1000;
-		if (!freqs.new) {
-			pr_debug("file %s, line %d, find freq error\n", __FILE__, __LINE__);
-		}
+		if (!freqs.new)
+			pr_debug("%s: find freq error\n", __func__);
 
-		pr_debug("file %s, line %d, cpu %d, old freq %d, new freq %d, find_level %d, find_freq %d\n",
-				__FILE__, __LINE__, policy->cpu, freqs.old, freqs.new, find_level, find_freq);
+		pr_debug("%s: cpu %d, old freq %d, new freq %d, find_level %d, find_freq %d\n",
+				__func__, policy->cpu, freqs.old, freqs.new, find_level, find_freq);
 		cores_level |= (core_level << (i << 2));
 
 		if (before_trans)
 			transition_begin(policy, &freqs);
-		else {
+		else
 			transition_end(policy, &freqs, trans_failed);
-		}
 	}
 	return cores_level;
 }
@@ -653,8 +630,8 @@ static int loongson3_set_freq(struct core_data *core, unsigned long freq, int bo
 	freqs.new = target_freq;
 	freq_level = cpufreq_perf_find_level(core->perf, target_freq, boost_level);
 	if (!freq_level) {
-		pr_debug("loongson3_set_freq cpu%d freq=%lu targetfreq=%d boost_level=%d find level error\n",
-				core->cpu, freq, target_freq, boost_level);
+		pr_debug("%s: cpu%d freq=%lu targetfreq=%d boost_level=%d find level error\n",
+				__func__, core->cpu, freq, target_freq, boost_level);
 	}
 
 	transition_begin(policy, &freqs);
@@ -683,7 +660,7 @@ int loongson3_set_mode(int mode, int freq_level)
 	return wait_for_ready_timeout(MAX_READY_TIMEOUT);
 }
 
-enum freq_adjust_action{
+enum freq_adjust_action {
 	FAA_NORMAL,
 	FAA_N2B,
 	FAA_B2N,
@@ -695,10 +672,9 @@ static int faa_normal(struct cpufreq_policy *policy, int load)
 	int ret;
 	unsigned int freq_next, min_f, max_f;
 	struct core_data *core = get_core_data(policy->cpu);
+
 	if (!core)
 		return -1;
-
-	pr_debug("file %s, line %d, func %s\n", __FILE__, __LINE__, __func__);
 
 	min_f = policy->min;
 	max_f = policy->max;
@@ -754,8 +730,6 @@ static void faa_boost(struct cpufreq_policy *policy, int load)
 	struct package_data *package = core->package;
 	unsigned long target_freq;
 
-	pr_debug("file %s, line %d, func %s\n", __FILE__, __LINE__, __func__);
-
 	/* boost cores form n to n + 1 */
 	if (core->load > BOOST_THRESHOLD) {
 		if (package->boost_cores < package->max_boost_cores
@@ -763,17 +737,19 @@ static void faa_boost(struct cpufreq_policy *policy, int load)
 			if (boost_gears == 1) {
 				target_freq = policy->max;
 			} else {
-				target_freq = cpufreq_table_find_freq(policy, policy->max, package->boost_cores + 1);
+				target_freq = cpufreq_table_find_freq(policy, policy->max,
+								package->boost_cores + 1);
 				if (!target_freq) {
-					pr_debug("file %s, line %d, find freq error ,boost_level %d, cur freq %d\n",
-							__FILE__, __LINE__, package->boost_cores, policy->max);
+					pr_debug("%s: find freq error ,boost_level %d, cur freq %d\n",
+							__func__, package->boost_cores, policy->max);
 				}
 			}
 			handle_boost_cores(core, package, target_freq, false, true, true);
 		}
 	} else {
 		/* 1. core not in boost, level up but not change  pll
-		 * 2. core in boost, boost cores from n to n - 1 */
+		 * 2. core in boost, boost cores from n to n - 1
+		 */
 		min_f = policy->min;
 		max_f = policy->max;
 		target_freq = min_f + load * (max_f - min_f) / 100;
@@ -810,19 +786,16 @@ static void faa_n2b(struct package_data *package, struct core_data *core)
 	int boost_cores = 0;
 	int boost_count = 0;
 	int freq_level;
-
-	pr_debug("file %s, line %d func %s\n", __FILE__, __LINE__, __func__);
+	int i;
 
 	get_boost_cores(package, &boost_cores, &boost_count);
 
-	if (boost_gears == 1) {
+	if (boost_gears == 1)
 		boost_count = 1;
-	}
 
 	freq_level = cores_freq_trans_notify(package, true, false,
 			0, boost_count, 0);
 	if (!loongson3_set_mode(BOOST_MODE, freq_level)) {
-		int i;
 		cores_freq_trans_notify(package, false, false,
 				0, boost_count, 0);
 		package->in_boost = true;
@@ -840,11 +813,8 @@ static void faa_b2n(struct package_data *package)
 	int i;
 	int boost_count = package->boost_cores;
 
-	if (boost_gears == 1) {
+	if (boost_gears == 1)
 		boost_count = 1;
-	}
-
-	pr_debug("file %s, line %d, func %s\n", __FILE__, __LINE__, __func__);
 
 	cores_freq_trans_notify(package, true, false,
 			boost_count, 0, 0);
@@ -891,19 +861,17 @@ unsigned int load_update(struct core_data *core)
 		load = core->prev_load;
 		core->prev_load = 0;
 	} else {
-		if (time_elapsed >= idle_time) {
+		if (time_elapsed >= idle_time)
 			load = 100 * (time_elapsed - idle_time) / time_elapsed;
-		} else {
+		else
 			load = (int)idle_time < 0 ? 100 : 0;
-		}
 		core->prev_load = load;
 	}
 
 	package->nr_full_load_cores = 0;
 	for (i = 0; i < package->nr_cores; i++) {
-		if (package->core[i].load > BOOST_THRESHOLD) {
+		if (package->core[i].load > BOOST_THRESHOLD)
 			package->nr_full_load_cores++;
-		}
 	}
 
 	return load;
@@ -912,6 +880,7 @@ unsigned int load_update(struct core_data *core)
 static bool cpufreq_should_update_freq(struct core_data *core, u64 time)
 {
 	s64 delta_ns;
+
 	delta_ns = time - core->last_freq_update_time;
 	return delta_ns >= core->freq_update_delay_ns;
 }
@@ -971,11 +940,12 @@ static void set_max_within_limits(struct cpufreq_policy *policy)
 	 *
 	 * Skip performance policy with boost enabled!!!
 	 *
-	 * */
+	 */
 	if (policy->max <= (core->normal_max_freq * 1000)) {
 		mutex_lock(&boost_mutex[core->package_id]);
 		if (!loongson3_set_freq(core, policy->max, 0))
-			pr_debug("Set cpu %d to performance mode under normal range.\n", policy->cpu);
+			pr_debug("Set cpu %d to performance mode under normal range.\n",
+					policy->cpu);
 		mutex_unlock(&boost_mutex[core->package_id]);
 	}
 }
@@ -1008,6 +978,7 @@ static void update_util_handler(struct update_util_data *data, u64 time,
 static void set_update_util_hook(unsigned int cpu)
 {
 	struct core_data *core = get_core_data(cpu);
+
 	if (core->update_util_set)
 		return;
 
@@ -1083,6 +1054,7 @@ static void cpufreq_work_handler(struct kthread_work *work)
 static void cpufreq_irq_work(struct irq_work *irq_work)
 {
 	struct core_data *core = container_of(irq_work, struct core_data, irq_work);
+
 	kthread_queue_work(&cpufreq_worker, &core->work);
 }
 
@@ -1107,9 +1079,8 @@ static int cpufreq_kthread_create(void)
 
 	kthread_init_worker(&cpufreq_worker);
 	cpufreq_thread = kthread_create(kthread_worker_fn, &cpufreq_worker, "lsfrq:%d", 0);
-	if (IS_ERR(cpufreq_thread)) {
+	if (IS_ERR(cpufreq_thread))
 		return PTR_ERR(cpufreq_thread);
-	}
 
 	ret = sched_setattr_nocheck(cpufreq_thread, &attr);
 	if (ret) {
@@ -1161,7 +1132,7 @@ static int init_acpi(struct acpi_processor_performance *perf)
 			perf->states[i].control |= ((i % (boost_gears + 1)) << 8);
 			break;
 		default:
-			pr_info("file %s, line %d, i %d freq table error\n", __FILE__, __LINE__, i);
+			pr_info("%s: i %d freq table error\n", __func__, i);
 		}
 	}
 
@@ -1213,9 +1184,8 @@ static int loongson3_cpufreq_cpu_init(struct cpufreq_policy *policy)
 		return result;
 	}
 
-	for (i = 0; i < MAX_PACKAGES; i++) {
+	for (i = 0; i < MAX_PACKAGES; i++)
 		mutex_init(&boost_mutex[i]);
-	}
 
 	/* capability check */
 	if (perf->state_count <= 1) {
@@ -1250,8 +1220,9 @@ static int loongson3_cpufreq_cpu_init(struct cpufreq_policy *policy)
 
 	for (i = 0; i < boost_gears + 1; i++) {
 		core->clock_scale[i] = compute_scale(&core->shift[i], boost_freqs[i], core->normal_max_freq);
-		pr_debug("file %s, line %d, boost_freqs[%d] %d, normal_max_freq %d, scale %d, shift %d\n",
-				__FILE__, __LINE__, i, boost_freqs[i], core->normal_max_freq, core->clock_scale[i], core->shift[i]);
+		pr_debug("%s: boost_freqs[%d] %d, normal_max_freq %d, scale %d, shift %d\n",
+				__func__, i, boost_freqs[i], core->normal_max_freq,
+				core->clock_scale[i], core->shift[i]);
 	}
 
 	/* table init */
@@ -1302,6 +1273,7 @@ err_unreg:
 static int loongson3_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 {
 	struct core_data *core = get_core_data(policy->cpu);
+
 	clear_update_util_hook(policy->cpu);
 	irq_work_sync(&core->irq_work);
 	kthread_cancel_work_sync(&core->work);
@@ -1345,12 +1317,10 @@ static void free_acpi_perf_data(void)
 static int __init loongson3_cpufreq_early_init(void)
 {
 	unsigned int i;
-	pr_debug("acpi_cpufreq_early_init\n");
 
 	acpi_perf_data = alloc_percpu(struct acpi_processor_performance);
-	if (!acpi_perf_data) {
+	if (!acpi_perf_data)
 		return -ENOMEM;
-	}
 	for_each_possible_cpu(i) {
 		if (!zalloc_cpumask_var_node(
 					&per_cpu_ptr(acpi_perf_data, i)->shared_cpu_map,
@@ -1377,7 +1347,7 @@ static bool support_boost(void)
 	val |= 1 << 10;
 	iocsr_write32(val, 0x420);
 	if (wait_for_ready_timeout(MAX_READY_TIMEOUT)) {
-		pr_info("file %s, line %d, not support boost\n", __FILE__, __LINE__);
+		pr_info("%s: not support boost\n", __func__);
 		return false;
 	}
 
@@ -1408,17 +1378,16 @@ static bool support_boost(void)
 	iocsr_write32(val, 0x420);
 
 	if (wait_for_ready_timeout(MAX_READY_TIMEOUT)) {
-		pr_info("file %s, line %d, single boost mode\n", __FILE__, __LINE__);
+		pr_info("%s: single boost mode\n", __func__);
 		boost_gears = 1;
 		boost_freqs[0] = calc_const_freq() / 1000000;
-		for (i = 1; i < boost_gears + 1; i++) {
+		for (i = 1; i < boost_gears + 1; i++)
 			boost_freqs[i] = max_boost_freq;
-		}
 
 		/* set 0x51c complete */
 		iocsr_write32(COMPLETE_STATUS, 0x51c);
 	} else {
-		pr_info("file %s, line %d, multi boost mode\n", __FILE__, __LINE__);
+		pr_info("%s: multi boost mode\n", __func__);
 		boost_gears = max_boost_cores;
 		val = iocsr_read32(0x51c);
 
@@ -1426,14 +1395,13 @@ static bool support_boost(void)
 		boost_freqs[1] = max_boost_freq;
 
 		if (boost_gears > 1) {
-			for (i = 2; i < boost_gears + 1; i++) {
+			for (i = 2; i < boost_gears + 1; i++)
 				boost_freqs[i] = max_boost_freq - (((val >> ((i-2) * 4)) & 0xf) * FREQ_STEP);
-			}
 		}
 	}
 
-	pr_info("file %s, line %d, min_freq_level %d, max_freq_level %d, max_boost_cores %d, boost_gears %d\n",
-			__FILE__, __LINE__, min_freq_level, max_freq_level, max_boost_cores, boost_gears);
+	pr_info("%s: min_freq_level %d, max_freq_level %d, max_boost_cores %d, boost_gears %d\n",
+			__func__, min_freq_level, max_freq_level, max_boost_cores, boost_gears);
 
 	return true;
 }
@@ -1477,9 +1445,8 @@ static int set_boost(struct cpufreq_policy *policy, int state)
 		return -EINVAL;
 
 	if (!state) {
-		if (policy->policy == CPUFREQ_POLICY_POWERSAVE) {
+		if (policy->policy == CPUFREQ_POLICY_POWERSAVE)
 			cpufreq_update(policy);
-		}
 	}
 	if (!policy->freq_table)
 		return -EINVAL;
@@ -1488,10 +1455,8 @@ static int set_boost(struct cpufreq_policy *policy, int state)
 	down_write(&policy->rwsem);
 	up_write(&policy->rwsem);
 
-	if (!state) {
+	if (!state)
 		set_max_within_limits(policy);
-	}
-
 
 	return 0;
 }
@@ -1514,16 +1479,16 @@ static int cpufreq_supported_detect(void)
 static int __init loongson3_cpufreq_init(void)
 {
 	int ret;
+
 	if (!cpu_has_csr || !cpu_has_scalefreq)
-			return -ENODEV;
+		return -ENODEV;
 
 	/* don't keep reloading if cpufreq_driver exists */
 	if (cpufreq_get_current_driver())
 		return -EEXIST;
 
-	pr_debug("loongson3_cpufreq_init\n");
 	if (cpufreq_supported_detect()) {
-		pr_info("loongson3_cpufreq_init failed!\n");
+		pr_info("%s failed!\n", __func__);
 		return -ENODEV;
 	}
 
@@ -1536,16 +1501,14 @@ static int __init loongson3_cpufreq_init(void)
 			CPUFREQ_TRANSITION_NOTIFIER);
 	ret = cpufreq_register_driver(&loongson3_cpufreq_driver);
 	cpufreq_kthread_create();
-	if (ret) {
+	if (ret)
 		free_acpi_perf_data();
-	}
+
 	return ret;
 }
 
 static void __exit loongson3_cpufreq_exit(void)
 {
-	pr_debug("loongson3_cpufreq_exit\n");
-
 	cpufreq_unregister_driver(&loongson3_cpufreq_driver);
 	free_acpi_perf_data();
 	cpufreq_kthread_stop();

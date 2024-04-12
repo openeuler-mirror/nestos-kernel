@@ -78,7 +78,7 @@ struct amp_ctrl *amp_ctrl_lookup(struct amp_mgr *mgr, u8 id)
 {
 	struct amp_ctrl *ctrl;
 
-	BT_DBG("mgr %p id %d", mgr, id);
+	BT_DBG("mgr %p id %u", mgr, id);
 
 	mutex_lock(&mgr->amp_ctrls_lock);
 	list_for_each_entry(ctrl, &mgr->amp_ctrls, list) {
@@ -109,7 +109,7 @@ struct hci_conn *phylink_add(struct hci_dev *hdev, struct amp_mgr *mgr,
 	struct hci_conn *hcon;
 	u8 role = out ? HCI_ROLE_MASTER : HCI_ROLE_SLAVE;
 
-	hcon = hci_conn_add(hdev, AMP_LINK, dst, role);
+	hcon = hci_conn_add(hdev, AMP_LINK, dst, role, __next_handle(mgr));
 	if (!hcon)
 		return NULL;
 
@@ -117,7 +117,6 @@ struct hci_conn *phylink_add(struct hci_dev *hdev, struct amp_mgr *mgr,
 
 	hcon->state = BT_CONNECT;
 	hcon->attempt++;
-	hcon->handle = __next_handle(mgr);
 	hcon->remote_id = remote_id;
 	hcon->amp_mgr = amp_mgr_get(mgr);
 
@@ -179,7 +178,7 @@ int phylink_gen_key(struct hci_conn *conn, u8 *data, u8 *len, u8 *type)
 
 	/* Legacy key */
 	if (conn->key_type < 3) {
-		bt_dev_err(hdev, "legacy key type %d", conn->key_type);
+		bt_dev_err(hdev, "legacy key type %u", conn->key_type);
 		return -EACCES;
 	}
 
@@ -257,7 +256,7 @@ void amp_read_loc_assoc_frag(struct hci_dev *hdev, u8 phy_handle)
 	struct hci_request req;
 	int err;
 
-	BT_DBG("%s handle %d", hdev->name, phy_handle);
+	BT_DBG("%s handle %u", hdev->name, phy_handle);
 
 	cp.phy_handle = phy_handle;
 	cp.max_len = cpu_to_le16(hdev->amp_assoc_size);

@@ -183,7 +183,7 @@ int hinic3_del_mac(void *hwdev, const u8 *mac_addr, u16 vlan_id, u16 func_id,
 }
 EXPORT_SYMBOL(hinic3_del_mac);
 
-int hinic3_update_mac(void *hwdev, u8 *old_mac, u8 *new_mac, u16 vlan_id,
+int hinic3_update_mac(void *hwdev, const u8 *old_mac, u8 *new_mac, u16 vlan_id,
 		      u16 func_id)
 {
 	struct hinic3_port_mac_update mac_info;
@@ -888,7 +888,7 @@ int hinic3_set_pf_rate(void *hwdev, u8 speed_level)
 		return -EINVAL;
 
 	if (speed_level >= PORT_SPEED_UNKNOWN) {
-		nic_err(nic_io->dev_hdl, "Invalid speed level: %hhu\n", speed_level);
+		nic_err(nic_io->dev_hdl, "Invalid speed level: %u\n", speed_level);
 		return -EINVAL;
 	}
 

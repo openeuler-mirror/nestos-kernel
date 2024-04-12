@@ -1000,4 +1000,3 @@ int sss_nic_set_rxfh_indir(struct net_device *netdev, const u32 *indir)
 }
 
 #endif /* defined(ETHTOOL_GRSSH) && defined(ETHTOOL_SRSSH) */
-

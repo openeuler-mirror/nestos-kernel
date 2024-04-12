@@ -2,7 +2,7 @@
 /*
  * HiSilicon SoC DDRC uncore Hardware event counters support
  *
- * Copyright (C) 2017 Hisilicon Limited
+ * Copyright (C) 2017 HiSilicon Limited
  * Author: Shaokun Zhang <zhangshaokun@hisilicon.com>
  *         Anurup M <anurup.m@huawei.com>
  *
@@ -401,7 +401,7 @@ static struct attribute *hisi_ddrc_pmu_identifier_attrs[] = {
 	NULL
 };
 
-static struct attribute_group hisi_ddrc_pmu_identifier_group = {
+static const struct attribute_group hisi_ddrc_pmu_identifier_group = {
 	.attrs = hisi_ddrc_pmu_identifier_attrs,
 };
 

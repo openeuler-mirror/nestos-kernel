@@ -493,4 +493,3 @@ void sss_nic_set_rx_mode_work(struct work_struct *work)
 	    test_bit(SSSNIC_PROMISC_ON, &nic_dev->rx_mode))
 		sss_nic_sync_rx_mode_to_hw(nic_dev, allmulti_enter, promisc_enter);
 }
-

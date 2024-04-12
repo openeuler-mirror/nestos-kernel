@@ -3,6 +3,8 @@
  * Copyright (C) 2014-2019, Huawei.
  *	Author: Li Bin <huawei.libin@huawei.com>
  *	Author: Cheng Jian <cj.chengjian@huawei.com>
+ * Copyright (C) 2023 Huawei.
+ *	Author: Zheng Yejian <zhengyejian1@huawei.com>
  *
  * livepatch.h - arm64-specific Kernel Live Patching Core
  *
@@ -23,42 +25,12 @@
 #ifndef _ASM_ARM64_LIVEPATCH_H
 #define _ASM_ARM64_LIVEPATCH_H
 
-#include <linux/module.h>
-#include <linux/livepatch.h>
+#ifdef CONFIG_LIVEPATCH_WO_FTRACE
 
-
-#ifdef CONFIG_LIVEPATCH
-
-struct klp_patch;
-struct klp_func;
-
-#define klp_smp_isb() isb()
-
-static inline int klp_check_compiler_support(void)
-{
-	return 0;
-}
-
-int arch_klp_patch_func(struct klp_func *func);
-void arch_klp_unpatch_func(struct klp_func *func);
-#ifdef CONFIG_LIVEPATCH_STOP_MACHINE_CONSISTENCY
-int klp_check_calltrace(struct klp_patch *patch, int enable);
-#endif
-#else
-#error Live patching support is disabled; check CONFIG_LIVEPATCH
-#endif
-
-#if defined(CONFIG_LIVEPATCH_STOP_MACHINE_CONSISTENCY)
-
-#ifdef CONFIG_ARM64_MODULE_PLTS
 #define LJMP_INSN_SIZE 4
-#else
-#define LJMP_INSN_SIZE 1
-#endif /* CONFIG_ARM64_MODULE_PLTS */
 
 struct arch_klp_data {
 	u32 old_insns[LJMP_INSN_SIZE];
-
 	/*
 	 * Saved opcode at the entry of the old func (which maybe replaced
 	 * with breakpoint).
@@ -68,11 +40,17 @@ struct arch_klp_data {
 
 #define KLP_MAX_REPLACE_SIZE sizeof_field(struct arch_klp_data, old_insns)
 
+struct klp_func;
+
+#define klp_smp_isb() isb()
+int arch_klp_patch_func(struct klp_func *func);
+void arch_klp_unpatch_func(struct klp_func *func);
+long arch_klp_save_old_code(struct arch_klp_data *arch_data, void *old_func);
+bool arch_check_jump_insn(unsigned long func_addr);
+int arch_klp_check_calltrace(bool (*check_func)(void *, int *, unsigned long), void *data);
 int arch_klp_add_breakpoint(struct arch_klp_data *arch_data, void *old_func);
 void arch_klp_remove_breakpoint(struct arch_klp_data *arch_data, void *old_func);
-long arch_klp_save_old_code(struct arch_klp_data *arch_data, void *old_func);
 int arch_klp_module_check_calltrace(void *data);
-
-#endif
+#endif /* CONFIG_LIVEPATCH_WO_FTRACE */
 
 #endif /* _ASM_ARM64_LIVEPATCH_H */

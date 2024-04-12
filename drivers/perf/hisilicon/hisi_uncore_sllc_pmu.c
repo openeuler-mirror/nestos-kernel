@@ -2,7 +2,7 @@
 /*
  * HiSilicon SLLC uncore Hardware event counters support
  *
- * Copyright (C) 2020 Hisilicon Limited
+ * Copyright (C) 2020 HiSilicon Limited
  * Author: Shaokun Zhang <zhangshaokun@hisilicon.com>
  *
  * This code is based on the uncore PMUs like arm-cci and arm-ccn.
@@ -366,7 +366,7 @@ static struct attribute *hisi_sllc_pmu_identifier_attrs[] = {
 	NULL
 };
 
-static struct attribute_group hisi_sllc_pmu_identifier_group = {
+static const struct attribute_group hisi_sllc_pmu_identifier_group = {
 	.attrs = hisi_sllc_pmu_identifier_attrs,
 };
 
@@ -450,8 +450,8 @@ static int hisi_sllc_pmu_probe(struct platform_device *pdev)
 	ret = perf_pmu_register(&sllc_pmu->pmu, name, -1);
 	if (ret) {
 		dev_err(sllc_pmu->dev, "PMU register failed, ret = %d\n", ret);
-		cpuhp_state_remove_instance(CPUHP_AP_PERF_ARM_HISI_SLLC_ONLINE,
-					    &sllc_pmu->node);
+		cpuhp_state_remove_instance_nocalls(CPUHP_AP_PERF_ARM_HISI_SLLC_ONLINE,
+						    &sllc_pmu->node);
 		return ret;
 	}
 

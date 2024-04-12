@@ -59,10 +59,8 @@ static int wq_alloc_pages(struct hinic3_wq *wq)
 
 	wq->wq_pages = kcalloc(wq->num_wq_pages, sizeof(*wq->wq_pages),
 			       GFP_KERNEL);
-	if (!wq->wq_pages) {
-		sdk_err(wq->dev_hdl, "Failed to alloc wq pages handle\n");
+	if (!wq->wq_pages)
 		return -ENOMEM;
-	}
 
 	for (page_idx = 0; page_idx < wq->num_wq_pages; page_idx++) {
 		err = hinic3_dma_zalloc_coherent_align(wq->dev_hdl,

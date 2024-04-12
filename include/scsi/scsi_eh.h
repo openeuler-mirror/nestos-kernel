@@ -3,6 +3,7 @@
 #define _SCSI_SCSI_EH_H
 
 #include <linux/scatterlist.h>
+#include <linux/kabi.h>
 
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_common.h>
@@ -17,7 +18,7 @@ extern void scsi_report_device_reset(struct Scsi_Host *, int, int);
 extern int scsi_block_when_processing_errors(struct scsi_device *);
 extern bool scsi_command_normalize_sense(const struct scsi_cmnd *cmd,
 					 struct scsi_sense_hdr *sshdr);
-extern int scsi_check_sense(struct scsi_cmnd *);
+extern enum scsi_disposition scsi_check_sense(struct scsi_cmnd *);
 
 static inline bool scsi_sense_is_deferred(const struct scsi_sense_hdr *sshdr)
 {
@@ -38,11 +39,12 @@ struct scsi_eh_save {
 	unsigned underflow;
 	unsigned char cmd_len;
 	unsigned char prot_op;
-	unsigned char *cmnd;
+	unsigned char cmnd[32];
 	struct scsi_data_buffer sdb;
-	/* new command support */
-	unsigned char eh_cmnd[BLK_MAX_CDB];
 	struct scatterlist sense_sgl;
+
+	KABI_RESERVE(1)
+	KABI_RESERVE(2)
 };
 
 extern void scsi_eh_prep_cmnd(struct scsi_cmnd *scmd,

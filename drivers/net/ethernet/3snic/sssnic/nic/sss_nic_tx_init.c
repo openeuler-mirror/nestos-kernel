@@ -208,4 +208,3 @@ void sss_nic_flush_all_sq(struct sss_nic_dev *nic_dev)
 			nicif_err(nic_dev, drv, nic_dev->netdev, "Fail to stop sq%u\n", qid);
 	}
 }
-

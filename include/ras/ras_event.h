@@ -175,7 +175,7 @@ TRACE_EVENT(mc_event,
 #define VSEIL "Vendor Specific Err Info data len"
 #define VSEID "Vendor Specific Err Info raw data"
 TRACE_EVENT(arm_event,
-
+#ifdef CONFIG_RAS_ARM_EVENT_INFO
 	TP_PROTO(const struct cper_sec_proc_arm *proc, const u8 *pei_err,
 			const u32 pei_len,
 			const u8 *ctx_err,
@@ -186,6 +186,11 @@ TRACE_EVENT(arm_event,
 			int cpu),
 
 	TP_ARGS(proc, pei_err, pei_len, ctx_err, ctx_len, oem, oem_len, sev, cpu),
+#else
+	TP_PROTO(const struct cper_sec_proc_arm *proc),
+
+	TP_ARGS(proc),
+#endif
 
 	TP_STRUCT__entry(
 		__field(u64, mpidr)
@@ -193,6 +198,7 @@ TRACE_EVENT(arm_event,
 		__field(u32, running_state)
 		__field(u32, psci_state)
 		__field(u8, affinity)
+#ifdef CONFIG_RAS_ARM_EVENT_INFO
 		__field(u32, pei_len)
 		__dynamic_array(u8, buf, pei_len)
 		__field(u32, ctx_len)
@@ -201,6 +207,7 @@ TRACE_EVENT(arm_event,
 		__dynamic_array(u8, buf2, oem_len)
 		__field(u8, sev)
 		__field(int, cpu)
+#endif
 	),
 
 	TP_fast_assign(
@@ -220,6 +227,7 @@ TRACE_EVENT(arm_event,
 			__entry->running_state = ~0;
 			__entry->psci_state = ~0;
 		}
+#ifdef CONFIG_RAS_ARM_EVENT_INFO
 		__entry->pei_len = pei_len;
 		memcpy(__get_dynamic_array(buf), pei_err, pei_len);
 		__entry->ctx_len = ctx_len;
@@ -228,8 +236,10 @@ TRACE_EVENT(arm_event,
 		memcpy(__get_dynamic_array(buf2), oem, oem_len);
 		__entry->sev = sev;
 		__entry->cpu = cpu;
+#endif
 	),
 
+#ifdef CONFIG_RAS_ARM_EVENT_INFO
 	TP_printk("cpu: %d; error: %d; affinity level: %d; MPIDR: %016llx; MIDR: %016llx; "
 		  "running state: %d; PSCI state: %d; "
 		  "%s: %d; %s: %s; %s: %d; %s: %s; %s: %d; %s: %s",
@@ -243,6 +253,12 @@ TRACE_EVENT(arm_event,
 		  __print_hex(__get_dynamic_array(buf1), __entry->ctx_len),
 		  VSEIL, __entry->oem_len, VSEID,
 		  __print_hex(__get_dynamic_array(buf2), __entry->oem_len))
+#else
+	TP_printk("affinity level: %d; MPIDR: %016llx; MIDR: %016llx; "
+		  "running state: %d; PSCI state: %d",
+		  __entry->affinity, __entry->mpidr, __entry->midr,
+		  __entry->running_state, __entry->psci_state)
+#endif
 );
 
 /*
@@ -396,10 +412,8 @@ TRACE_EVENT(aer_event,
 	EM ( MF_MSG_KERNEL_HIGH_ORDER, "high-order kernel page" )	\
 	EM ( MF_MSG_SLAB, "kernel slab page" )				\
 	EM ( MF_MSG_DIFFERENT_COMPOUND, "different compound page after locking" ) \
-	EM ( MF_MSG_POISONED_HUGE, "huge page already hardware poisoned" )	\
 	EM ( MF_MSG_HUGE, "huge page" )					\
 	EM ( MF_MSG_FREE_HUGE, "free huge page" )			\
-	EM ( MF_MSG_NON_PMD_HUGE, "non-pmd-sized huge page" )		\
 	EM ( MF_MSG_UNMAP_FAILED, "unmapping failed page" )		\
 	EM ( MF_MSG_DIRTY_SWAPCACHE, "dirty swapcache page" )		\
 	EM ( MF_MSG_CLEAN_SWAPCACHE, "clean swapcache page" )		\
@@ -411,9 +425,9 @@ TRACE_EVENT(aer_event,
 	EM ( MF_MSG_CLEAN_LRU, "clean LRU page" )			\
 	EM ( MF_MSG_TRUNCATED_LRU, "already truncated LRU page" )	\
 	EM ( MF_MSG_BUDDY, "free buddy page" )				\
-	EM ( MF_MSG_BUDDY_2ND, "free buddy page (2nd try)" )		\
 	EM ( MF_MSG_DAX, "dax page" )					\
 	EM ( MF_MSG_UNSPLIT_THP, "unsplit thp" )			\
+	EM ( MF_MSG_FREE_DPOOL, "free dynamic pool page" )		\
 	EMe ( MF_MSG_UNKNOWN, "unknown page" )
 
 /*

@@ -11,6 +11,7 @@
 #include <linux/module.h>
 
 #include "sss_kernel.h"
+#include "sss_pci.h"
 #include "sss_hw.h"
 #include "sss_hwdev.h"
 #include "sss_hwif_api.h"

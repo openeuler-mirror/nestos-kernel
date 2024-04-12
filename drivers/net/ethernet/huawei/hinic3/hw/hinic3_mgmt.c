@@ -672,15 +672,12 @@ static void init_mgmt_msg_work(struct hinic3_msg_pf_to_mgmt *pf_to_mgmt,
 	struct hinic3_hwdev *hwdev = pf_to_mgmt->hwdev;
 
 	mgmt_work = kzalloc(sizeof(*mgmt_work), GFP_KERNEL);
-	if (!mgmt_work) {
-		sdk_err(hwdev->dev_hdl, "Allocate mgmt work memory failed\n");
+	if (!mgmt_work)
 		return;
-	}
 
 	if (recv_msg->msg_len) {
 		mgmt_work->msg = kzalloc(recv_msg->msg_len, GFP_KERNEL);
 		if (!mgmt_work->msg) {
-			sdk_err(hwdev->dev_hdl, "Allocate mgmt msg memory failed\n");
 			kfree(mgmt_work);
 			return;
 		}

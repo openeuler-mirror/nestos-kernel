@@ -47,6 +47,22 @@ struct vhost_vring_addr {
 	__u64 log_guest_addr;
 };
 
+struct vhost_worker_state {
+	/*
+	 * For VHOST_NEW_WORKER the kernel will return the new vhost_worker id.
+	 * For VHOST_FREE_WORKER this must be set to the id of the vhost_worker
+	 * to free.
+	 */
+	unsigned int worker_id;
+};
+
+struct vhost_vring_worker {
+	/* vring index */
+	unsigned int index;
+	/* The id of the vhost_worker returned from VHOST_NEW_WORKER */
+	unsigned int worker_id;
+};
+
 /* no alignment requirement */
 struct vhost_iotlb_msg {
 	__u64 iova;
@@ -107,7 +123,7 @@ struct vhost_memory_region {
 struct vhost_memory {
 	__u32 nregions;
 	__u32 padding;
-	struct vhost_memory_region regions[0];
+	struct vhost_memory_region regions[];
 };
 
 /* VHOST_SCSI specific definitions */
@@ -135,7 +151,7 @@ struct vhost_scsi_target {
 struct vhost_vdpa_config {
 	__u32 off;
 	__u32 len;
-	__u8 buf[0];
+	__u8 buf[];
 };
 
 /* vhost vdpa IOVA range
@@ -145,6 +161,22 @@ struct vhost_vdpa_config {
 struct vhost_vdpa_iova_range {
 	__u64 first;
 	__u64 last;
+};
+
+/* vhost vdpa device migration statue */
+enum {
+	VHOST_VDPA_DEVICE_START,
+	VHOST_VDPA_DEVICE_STOP,
+	VHOST_VDPA_DEVICE_PRE_START,
+	VHOST_VDPA_DEVICE_PRE_STOP,
+	VHOST_VDPA_DEVICE_CANCEL,
+	VHOST_VDPA_DEVICE_POST_START,
+	VHOST_VDPA_DEVICE_START_ASYNC,
+	VHOST_VDPA_DEVICE_STOP_ASYNC,
+	VHOST_VDPA_DEVICE_PRE_START_ASYNC,
+	VHOST_VDPA_DEVICE_QUERY_OP_STATE,
+	VHOST_VDPA_DEVICE_MSIX_MASK,
+	VHOST_VDPA_DEVICE_MSIX_UNMASK,
 };
 
 /* Feature bits */
@@ -163,5 +195,14 @@ struct vhost_vdpa_iova_range {
 #define VHOST_BACKEND_F_IOTLB_ASID  0x3
 /* Device can be suspended */
 #define VHOST_BACKEND_F_SUSPEND  0x4
+/* Device can be resumed */
+#define VHOST_BACKEND_F_RESUME  0x5
+/* Device supports the driver enabling virtqueues both before and after
+ * DRIVER_OK
+ */
+#define VHOST_BACKEND_F_ENABLE_AFTER_DRIVER_OK  0x6
+
+/* Device can use bytemap to deal log */
+#define VHOST_BACKEND_F_BYTEMAPLOG  0x3f
 
 #endif

@@ -11,13 +11,15 @@
 #define SECTION_SIZE_BITS	28
 #define MAX_PHYSMEM_BITS	48
 
-#ifndef CONFIG_SPARSEMEM_VMEMMAP
-#define VMEMMAP_SIZE	0
-#else
+#ifdef CONFIG_SPARSEMEM_VMEMMAP
 #define VMEMMAP_SIZE	(sizeof(struct page) * (1UL << (cpu_pabits + 1 - PAGE_SHIFT)))
 #endif
 
 #endif /* CONFIG_SPARSEMEM */
+
+#ifndef VMEMMAP_SIZE
+#define VMEMMAP_SIZE	0	/* 1, For FLATMEM; 2, For SPARSEMEM without VMEMMAP. */
+#endif
 
 #ifdef CONFIG_MEMORY_HOTPLUG
 int memory_add_physaddr_to_nid(u64 addr);

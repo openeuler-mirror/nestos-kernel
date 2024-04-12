@@ -8,9 +8,12 @@
 #ifndef _CRYPTO_AEAD_H
 #define _CRYPTO_AEAD_H
 
+#include <linux/atomic.h>
+#include <linux/container_of.h>
 #include <linux/crypto.h>
-#include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/types.h>
+#include <linux/kabi.h>
 
 /**
  * DOC: Authenticated Encryption With Associated Data (AEAD) Cipher API
@@ -26,15 +29,12 @@
  *
  * For example: authenc(hmac(sha256), cbc(aes))
  *
- * The example code provided for the symmetric key cipher operation
- * applies here as well. Naturally all *skcipher* symbols must be exchanged
- * the *aead* pendants discussed in the following. In addition, for the AEAD
- * operation, the aead_request_set_ad function must be used to set the
- * pointer to the associated data memory location before performing the
- * encryption or decryption operation. In case of an encryption, the associated
- * data memory is filled during the encryption operation. For decryption, the
- * associated data memory must contain data that is used to verify the integrity
- * of the decrypted data. Another deviation from the asynchronous block cipher
+ * The example code provided for the symmetric key cipher operation applies
+ * here as well. Naturally all *skcipher* symbols must be exchanged the *aead*
+ * pendants discussed in the following. In addition, for the AEAD operation,
+ * the aead_request_set_ad function must be used to set the pointer to the
+ * associated data memory location before performing the encryption or
+ * decryption operation. Another deviation from the asynchronous block cipher
  * operation is that the caller should explicitly check for -EBADMSG of the
  * crypto_aead_decrypt. That error indicates an authentication error, i.e.
  * a breach in the integrity of the message. In essence, that -EBADMSG error
@@ -48,7 +48,10 @@
  *
  * The destination scatterlist has the same layout, except that the plaintext
  * (resp. ciphertext) will grow (resp. shrink) by the authentication tag size
- * during encryption (resp. decryption).
+ * during encryption (resp. decryption). The authentication tag is generated
+ * during the encryption operation and appended to the ciphertext. During
+ * decryption, the authentication tag is consumed along with the ciphertext and
+ * used to verify the integrity of the plaintext and the associated data.
  *
  * In-place encryption/decryption is enabled by using the same scatterlist
  * pointer for both the source and destination.
@@ -73,6 +76,7 @@
  */
 
 struct crypto_aead;
+struct scatterlist;
 
 /**
  *	struct aead_request - AEAD request
@@ -94,8 +98,26 @@ struct aead_request {
 
 	struct scatterlist *src;
 	struct scatterlist *dst;
+	KABI_RESERVE(1)
+	KABI_RESERVE(2)
 
 	void *__ctx[] CRYPTO_MINALIGN_ATTR;
+};
+
+/*
+ * struct crypto_istat_aead - statistics for AEAD algorithm
+ * @encrypt_cnt:	number of encrypt requests
+ * @encrypt_tlen:	total data size handled by encrypt requests
+ * @decrypt_cnt:	number of decrypt requests
+ * @decrypt_tlen:	total data size handled by decrypt requests
+ * @err_cnt:		number of error for AEAD requests
+ */
+struct crypto_istat_aead {
+	atomic64_t encrypt_cnt;
+	atomic64_t encrypt_tlen;
+	atomic64_t decrypt_cnt;
+	atomic64_t decrypt_tlen;
+	atomic64_t err_cnt;
 };
 
 /**
@@ -116,6 +138,7 @@ struct aead_request {
  * @setkey: see struct skcipher_alg
  * @encrypt: see struct skcipher_alg
  * @decrypt: see struct skcipher_alg
+ * @stat: statistics for AEAD algorithm
  * @ivsize: see struct skcipher_alg
  * @chunksize: see struct skcipher_alg
  * @init: Initialize the cryptographic transformation object. This function
@@ -142,9 +165,15 @@ struct aead_alg {
 	int (*init)(struct crypto_aead *tfm);
 	void (*exit)(struct crypto_aead *tfm);
 
+#ifdef CONFIG_CRYPTO_STATS
+	struct crypto_istat_aead stat;
+#endif
+
 	unsigned int ivsize;
 	unsigned int maxauthsize;
 	unsigned int chunksize;
+	KABI_RESERVE(1)
+	KABI_RESERVE(2)
 
 	struct crypto_alg base;
 };
@@ -153,6 +182,8 @@ struct crypto_aead {
 	unsigned int authsize;
 	unsigned int reqsize;
 
+	KABI_RESERVE(1)
+	KABI_RESERVE(2)
 	struct crypto_tfm base;
 };
 
@@ -191,6 +222,11 @@ static inline struct crypto_tfm *crypto_aead_tfm(struct crypto_aead *tfm)
 static inline void crypto_free_aead(struct crypto_aead *tfm)
 {
 	crypto_destroy_tfm(tfm, crypto_aead_tfm(tfm));
+}
+
+static inline const char *crypto_aead_driver_name(struct crypto_aead *tfm)
+{
+	return crypto_tfm_alg_driver_name(crypto_aead_tfm(tfm));
 }
 
 static inline struct aead_alg *crypto_aead_alg(struct crypto_aead *tfm)
@@ -485,7 +521,7 @@ static inline void aead_request_set_callback(struct aead_request *req,
  * The memory structure for cipher operation has the following structure:
  *
  * - AEAD encryption input:  assoc data || plaintext
- * - AEAD encryption output: assoc data || cipherntext || auth tag
+ * - AEAD encryption output: assoc data || ciphertext || auth tag
  * - AEAD decryption input:  assoc data || ciphertext || auth tag
  * - AEAD decryption output: assoc data || plaintext
  *

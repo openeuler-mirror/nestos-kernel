@@ -14,6 +14,7 @@
  */
 
 #include <linux/notifier.h>
+#include <linux/panic_notifier.h>
 #include "kbox_include.h"
 #include "kbox_dump.h"
 #include "kbox_hook.h"

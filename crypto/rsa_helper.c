@@ -9,7 +9,9 @@
 #include <linux/export.h>
 #include <linux/err.h>
 #include <linux/fips.h>
+#ifdef CONFIG_PGP_LIBRARY
 #include <linux/mpi.h>
+#endif
 #include <crypto/internal/rsa.h>
 #include "rsapubkey.asn1.h"
 #include "rsaprivkey.asn1.h"
@@ -149,6 +151,7 @@ int rsa_get_qinv(void *context, size_t hdrlen, unsigned char tag,
 	return 0;
 }
 
+#ifdef CONFIG_PGP_LIBRARY
 typedef int (*rsa_get_func)(void *, size_t, unsigned char,
 			    const void *, size_t);
 
@@ -174,6 +177,7 @@ static int rsa_parse_key_raw(struct rsa_key *rsa_key,
 
 	return (key_ptr == key + key_len) ? 0 : -EINVAL;
 }
+#endif
 
 /**
  * rsa_parse_pub_key() - decodes the BER encoded buffer and stores in the
@@ -193,6 +197,7 @@ int rsa_parse_pub_key(struct rsa_key *rsa_key, const void *key,
 }
 EXPORT_SYMBOL_GPL(rsa_parse_pub_key);
 
+#ifdef CONFIG_PGP_LIBRARY
 /**
  * rsa_parse_pub_key_raw() - parse the RAW key and store in the provided struct
  *                           rsa_key, pointers to the raw key as is, so that
@@ -213,7 +218,7 @@ int rsa_parse_pub_key_raw(struct rsa_key *rsa_key, const void *key,
 				 pub_func, ARRAY_SIZE(pub_func));
 }
 EXPORT_SYMBOL_GPL(rsa_parse_pub_key_raw);
-
+#endif
 /**
  * rsa_parse_priv_key() - decodes the BER encoded buffer and stores in the
  *                        provided struct rsa_key, pointers to the raw key
@@ -233,6 +238,7 @@ int rsa_parse_priv_key(struct rsa_key *rsa_key, const void *key,
 }
 EXPORT_SYMBOL_GPL(rsa_parse_priv_key);
 
+#ifdef CONFIG_PGP_LIBRARY
 /**
  * rsa_parse_priv_key_raw() - parse the RAW key and store in the provided struct
  *                            rsa_key, pointers to the raw key as is, so that
@@ -253,3 +259,5 @@ int rsa_parse_priv_key_raw(struct rsa_key *rsa_key, const void *key,
 				 priv_func, ARRAY_SIZE(priv_func));
 }
 EXPORT_SYMBOL_GPL(rsa_parse_priv_key_raw);
+#endif
+

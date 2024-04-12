@@ -393,11 +393,8 @@ hinic3_alloc_dynamic_block_resource(struct hinic3_nic_dev *nic_dev,
 	struct hinic3_tcam_dynamic_block *dynamic_block_ptr = NULL;
 
 	dynamic_block_ptr = kzalloc(sizeof(*dynamic_block_ptr), GFP_KERNEL);
-	if (!dynamic_block_ptr) {
-		nicif_err(nic_dev, drv, nic_dev->netdev, "fdir filter dynamic alloc block index %d memory failed\n",
-			  dynamic_block_id);
+	if (!dynamic_block_ptr)
 		return NULL;
-	}
 
 	dynamic_block_ptr->dynamic_block_id = dynamic_block_id;
 	list_add_tail(&dynamic_block_ptr->block_list,

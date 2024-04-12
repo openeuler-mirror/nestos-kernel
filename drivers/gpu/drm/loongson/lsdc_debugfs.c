@@ -1,65 +1,31 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright (C) 2022 Loongson Corporation
+ * Copyright (C) 2023 Loongson Technology Corporation Limited
  */
 
-/*
- * Authors:
- *      Sui Jingfeng <suijingfeng@loongson.cn>
- */
-
-#include <drm/drm_file.h>
-#include <drm/drm_device.h>
 #include <drm/drm_debugfs.h>
-#include <drm/drm_vma_manager.h>
-#include <drm/drm_gem_vram_helper.h>
 
+#include "lsdc_benchmark.h"
 #include "lsdc_drv.h"
-#include "lsdc_pll.h"
-#include "lsdc_regs.h"
-#include "lsdc_debugfs.h"
+#include "lsdc_gem.h"
+#include "lsdc_probe.h"
+#include "lsdc_ttm.h"
 
-#ifdef CONFIG_DEBUG_FS
+/* device level debugfs */
 
-static int lsdc_show_clock(struct seq_file *m, void *arg)
+static int lsdc_identify(struct seq_file *m, void *arg)
 {
 	struct drm_info_node *node = (struct drm_info_node *)m->private;
-	struct drm_device *ddev = node->minor->dev;
-	struct drm_crtc *crtc;
+	struct lsdc_device *ldev = (struct lsdc_device *)node->info_ent->data;
+	const struct loongson_gfx_desc *gfx = to_loongson_gfx(ldev->descp);
+	u8 impl, rev;
 
-	drm_for_each_crtc(crtc, ddev) {
-		struct lsdc_display_pipe *pipe;
-		struct lsdc_pll *pixpll;
-		const struct lsdc_pixpll_funcs *funcs;
-		struct lsdc_pll_core_values params;
-		unsigned int out_khz;
-		struct drm_display_mode *adj;
+	loongson_cpu_get_prid(&impl, &rev);
 
-		pipe = container_of(crtc, struct lsdc_display_pipe, crtc);
-		if (!pipe->available)
-			continue;
+	seq_printf(m, "Running on cpu 0x%x, cpu revision: 0x%x\n",
+		   impl, rev);
 
-		adj = &crtc->state->adjusted_mode;
-
-		pixpll = &pipe->pixpll;
-		funcs = pixpll->funcs;
-		out_khz = funcs->get_clock_rate(pixpll, &params);
-
-		seq_printf(m, "Display pipe %u: %dx%d\n",
-			   pipe->index, adj->hdisplay, adj->vdisplay);
-
-		seq_printf(m, "Frequency actually output: %u kHz\n", out_khz);
-		seq_printf(m, "Pixel clock required: %d kHz\n", adj->clock);
-		seq_printf(m, "diff: %d kHz\n", adj->clock);
-
-		seq_printf(m, "div_ref=%u, loopc=%u, div_out=%u\n",
-			   params.div_ref, params.loopc, params.div_out);
-
-		seq_printf(m, "hsync_start=%d, hsync_end=%d, htotal=%d\n",
-			   adj->hsync_start, adj->hsync_end, adj->htotal);
-		seq_printf(m, "vsync_start=%d, vsync_end=%d, vtotal=%d\n\n",
-			   adj->vsync_start, adj->vsync_end, adj->vtotal);
-	}
+	seq_printf(m, "Contained in: %s\n", gfx->model);
 
 	return 0;
 }
@@ -75,104 +41,70 @@ static int lsdc_show_mm(struct seq_file *m, void *arg)
 	return 0;
 }
 
-#define REGDEF(reg) { __stringify_1(LSDC_##reg##_REG), LSDC_##reg##_REG }
-static const struct {
-	const char *name;
-	u32 reg_offset;
-} lsdc_regs_array[] = {
-	REGDEF(INT),
-	REGDEF(CRTC0_CFG),
-	REGDEF(CRTC0_FB0_LO_ADDR),
-	REGDEF(CRTC0_FB0_HI_ADDR),
-	REGDEF(CRTC0_FB1_LO_ADDR),
-	REGDEF(CRTC0_FB1_HI_ADDR),
-	REGDEF(CRTC0_STRIDE),
-	REGDEF(CRTC0_FB_ORIGIN),
-	REGDEF(CRTC0_HDISPLAY),
-	REGDEF(CRTC0_HSYNC),
-	REGDEF(CRTC0_VDISPLAY),
-	REGDEF(CRTC0_VSYNC),
-	REGDEF(CRTC0_GAMMA_INDEX),
-	REGDEF(CRTC0_GAMMA_DATA),
-	REGDEF(CRTC1_CFG),
-	REGDEF(CRTC1_FB0_LO_ADDR),
-	REGDEF(CRTC1_FB0_HI_ADDR),
-	REGDEF(CRTC1_FB1_LO_ADDR),
-	REGDEF(CRTC1_FB1_HI_ADDR),
-	REGDEF(CRTC1_STRIDE),
-	REGDEF(CRTC1_FB_ORIGIN),
-	REGDEF(CRTC1_HDISPLAY),
-	REGDEF(CRTC1_HSYNC),
-	REGDEF(CRTC1_VDISPLAY),
-	REGDEF(CRTC1_VSYNC),
-	REGDEF(CRTC1_GAMMA_INDEX),
-	REGDEF(CRTC1_GAMMA_DATA),
-	REGDEF(CURSOR0_CFG),
-	REGDEF(CURSOR0_ADDR),
-	REGDEF(CURSOR0_POSITION),
-	REGDEF(CURSOR0_BG_COLOR),
-	REGDEF(CURSOR0_FG_COLOR),
-};
-
-static int lsdc_show_regs(struct seq_file *m, void *arg)
+static int lsdc_show_gfxpll_clock(struct seq_file *m, void *arg)
 {
 	struct drm_info_node *node = (struct drm_info_node *)m->private;
-	struct drm_device *ddev = node->minor->dev;
-	struct lsdc_device *ldev = to_lsdc(ddev);
-	int i;
+	struct lsdc_device *ldev = (struct lsdc_device *)node->info_ent->data;
+	struct drm_printer printer = drm_seq_file_printer(m);
+	struct loongson_gfxpll *gfxpll = ldev->gfxpll;
 
-	for (i = 0; i < ARRAY_SIZE(lsdc_regs_array); i++) {
-		u32 offset = lsdc_regs_array[i].reg_offset;
-		const char *name = lsdc_regs_array[i].name;
-
-		seq_printf(m, "%s (0x%04x): 0x%08x\n",
-			   name, offset,
-			   readl(ldev->reg_base + offset));
-	}
+	gfxpll->funcs->print(gfxpll, &printer, true);
 
 	return 0;
 }
 
-static const struct drm_info_list lsdc_debugfs_list[] = {
-	{ "clocks", lsdc_show_clock, 0 },
-	{ "mm",     lsdc_show_mm,   0, NULL },
-	{ "regs",   lsdc_show_regs, 0 },
+static int lsdc_show_benchmark(struct seq_file *m, void *arg)
+{
+	struct drm_info_node *node = (struct drm_info_node *)m->private;
+	struct lsdc_device *ldev = (struct lsdc_device *)node->info_ent->data;
+	struct drm_printer printer = drm_seq_file_printer(m);
+
+	lsdc_show_benchmark_copy(ldev, &printer);
+
+	return 0;
+}
+
+static int lsdc_pdev_enable_io_mem(struct seq_file *m, void *arg)
+{
+	struct drm_info_node *node = (struct drm_info_node *)m->private;
+	struct lsdc_device *ldev = (struct lsdc_device *)node->info_ent->data;
+	u16 cmd;
+
+	pci_read_config_word(ldev->dc, PCI_COMMAND, &cmd);
+
+	seq_printf(m, "PCI_COMMAND: 0x%x\n", cmd);
+
+	cmd |= PCI_COMMAND_MEMORY | PCI_COMMAND_IO;
+
+	pci_write_config_word(ldev->dc, PCI_COMMAND, cmd);
+
+	pci_read_config_word(ldev->dc, PCI_COMMAND, &cmd);
+
+	seq_printf(m, "PCI_COMMAND: 0x%x\n", cmd);
+
+	return 0;
+}
+
+static struct drm_info_list lsdc_debugfs_list[] = {
+	{ "benchmark",   lsdc_show_benchmark, 0, NULL },
+	{ "bos",         lsdc_show_buffer_object, 0, NULL },
+	{ "chips",       lsdc_identify, 0, NULL },
+	{ "clocks",      lsdc_show_gfxpll_clock, 0, NULL },
+	{ "dc_enable",   lsdc_pdev_enable_io_mem, 0, NULL },
+	{ "mm",          lsdc_show_mm, 0, NULL },
 };
 
 void lsdc_debugfs_init(struct drm_minor *minor)
 {
-	drm_debugfs_create_files(lsdc_debugfs_list,
-				 ARRAY_SIZE(lsdc_debugfs_list),
-				 minor->debugfs_root,
-				 minor);
+	struct drm_device *ddev = minor->dev;
+	struct lsdc_device *ldev = to_lsdc(ddev);
+	unsigned int n = ARRAY_SIZE(lsdc_debugfs_list);
+	unsigned int i;
+
+	for (i = 0; i < n; ++i)
+		lsdc_debugfs_list[i].data = ldev;
+
+	drm_debugfs_create_files(lsdc_debugfs_list, n, minor->debugfs_root, minor);
+
+	lsdc_ttm_debugfs_init(ldev);
 }
-
-/*
- * vram debugfs related.
- */
-static int lsdc_vram_mm_show(struct seq_file *m, void *data)
-{
-	struct drm_info_node *node = (struct drm_info_node *)m->private;
-	struct drm_vram_mm *vmm = node->minor->dev->vram_mm;
-	struct ttm_resource_manager *man = ttm_manager_type(&vmm->bdev, TTM_PL_VRAM);
-	struct drm_printer p = drm_seq_file_printer(m);
-
-	ttm_resource_manager_debug(man, &p);
-	return 0;
-}
-
-static const struct drm_info_list lsdc_vram_mm_debugfs_list[] = {
-	{ "clocks", lsdc_show_clock, 0 },
-	{ "vram-mm", lsdc_vram_mm_show, 0, NULL },
-	{ "regs",   lsdc_show_regs, 0 },
-};
-
-void lsdc_vram_mm_debugfs_init(struct drm_minor *minor)
-{
-	drm_debugfs_create_files(lsdc_vram_mm_debugfs_list,
-				 ARRAY_SIZE(lsdc_vram_mm_debugfs_list),
-				 minor->debugfs_root,
-				 minor);
-}
-
-#endif

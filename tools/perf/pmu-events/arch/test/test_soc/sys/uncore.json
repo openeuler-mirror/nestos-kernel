@@ -7,11 +7,10 @@
            "Compat": "v8"
    },
    {
-            "EventCode": "0x84",
-            "EventName": "sys_hisi_ddrc.flux_rd",
-            "BriefDescription": "DDRC read commands",
-            "PublicDescription": "DDRC read commands",
-            "Unit": "sys_hisi_ddrc",
-            "Compat": "hip09"
-    }
+           "BriefDescription": "ccn read-cycles event",
+           "ConfigCode": "0x2c",
+           "EventName": "sys_ccn_pmu.read_cycles",
+           "Unit": "sys_ccn_pmu",
+           "Compat": "0x01"
+   }
 ]

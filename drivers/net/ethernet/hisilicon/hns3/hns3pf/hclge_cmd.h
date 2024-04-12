@@ -377,6 +377,20 @@ struct hclge_config_fec_cmd {
 	u8 rsv[22];
 };
 
+#define HCLGE_FEC_STATS_CMD_NUM 4
+
+struct hclge_query_fec_stats_cmd {
+	/* fec rs mode total stats */
+	__le32 rs_fec_corr_blocks;
+	__le32 rs_fec_uncorr_blocks;
+	__le32 rs_fec_error_blocks;
+	/* fec base-r mode per lanes stats */
+	u8 base_r_lane_num;
+	u8 rsv[3];
+	__le32 base_r_fec_corr_blocks;
+	__le32 base_r_fec_uncorr_blocks;
+};
+
 #define HCLGE_MAC_UPLINK_PORT		0x100
 
 struct hclge_config_max_frm_size_cmd {
@@ -846,7 +860,10 @@ struct hclge_dev_specs_1_cmd {
 	u8 rsv0[2];
 	__le16 umv_size;
 	__le16 mc_mac_size;
-	u8 rsv1[12];
+	u8 rsv1[6];
+	u8 tnl_num;
+	u8 hilink_version;
+	u8 rsv2[4];
 };
 
 /* mac speed type defined in firmware command */
@@ -912,8 +929,4 @@ struct hclge_query_wol_supported_cmd {
 
 struct hclge_hw;
 int hclge_cmd_send(struct hclge_hw *hw, struct hclge_desc *desc, int num);
-enum hclge_comm_cmd_status hclge_cmd_mdio_write(struct hclge_hw *hw,
-						struct hclge_desc *desc);
-enum hclge_comm_cmd_status hclge_cmd_mdio_read(struct hclge_hw *hw,
-					       struct hclge_desc *desc);
 #endif

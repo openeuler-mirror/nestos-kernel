@@ -66,8 +66,8 @@ union cmdq_wqe_cs_dw1 {
 		u32 obit : 1;     // [31]
 	} drv_wr;
 
-	/* The uCode writes back the structure of the CS_DW1.
-	 * The driver reads and uses the structure. */
+	/* The uCode writes back the structure of the CS_DW1. */
+	/* The driver reads and uses the structure. */
 	struct {
 		u32 mod : 5;      // [4:0]
 		u32 ack_type : 3; // [7:5]

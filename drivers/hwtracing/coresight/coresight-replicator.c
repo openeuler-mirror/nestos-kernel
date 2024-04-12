@@ -114,8 +114,9 @@ static int dynamic_replicator_enable(struct replicator_drvdata *drvdata,
 	return rc;
 }
 
-static int replicator_enable(struct coresight_device *csdev, int inport,
-			     int outport)
+static int replicator_enable(struct coresight_device *csdev,
+			     struct coresight_connection *in,
+			     struct coresight_connection *out)
 {
 	int rc = 0;
 	struct replicator_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
@@ -123,15 +124,15 @@ static int replicator_enable(struct coresight_device *csdev, int inport,
 	bool first_enable = false;
 
 	spin_lock_irqsave(&drvdata->spinlock, flags);
-	if (atomic_read(&csdev->refcnt[outport]) == 0) {
+	if (atomic_read(&out->src_refcnt) == 0) {
 		if (drvdata->base)
-			rc = dynamic_replicator_enable(drvdata, inport,
-						       outport);
+			rc = dynamic_replicator_enable(drvdata, in->dest_port,
+						       out->src_port);
 		if (!rc)
 			first_enable = true;
 	}
 	if (!rc)
-		atomic_inc(&csdev->refcnt[outport]);
+		atomic_inc(&out->src_refcnt);
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
 
 	if (first_enable)
@@ -168,17 +169,19 @@ static void dynamic_replicator_disable(struct replicator_drvdata *drvdata,
 	CS_LOCK(drvdata->base);
 }
 
-static void replicator_disable(struct coresight_device *csdev, int inport,
-			       int outport)
+static void replicator_disable(struct coresight_device *csdev,
+			       struct coresight_connection *in,
+			       struct coresight_connection *out)
 {
 	struct replicator_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
 	unsigned long flags;
 	bool last_disable = false;
 
 	spin_lock_irqsave(&drvdata->spinlock, flags);
-	if (atomic_dec_return(&csdev->refcnt[outport]) == 0) {
+	if (atomic_dec_return(&out->src_refcnt) == 0) {
 		if (drvdata->base)
-			dynamic_replicator_disable(drvdata, inport, outport);
+			dynamic_replicator_disable(drvdata, in->dest_port,
+						   out->src_port);
 		last_disable = true;
 	}
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
@@ -373,7 +376,7 @@ static struct platform_driver static_replicator_driver = {
 	.remove         = static_replicator_remove,
 	.driver         = {
 		.name   = "coresight-static-replicator",
-		.owner	= THIS_MODULE,
+		/* THIS_MODULE is taken care of by platform_driver_register() */
 		.of_match_table = of_match_ptr(static_replicator_match),
 		.acpi_match_table = ACPI_PTR(static_replicator_acpi_ids),
 		.pm	= &replicator_dev_pm_ops,

@@ -12,6 +12,7 @@
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
 #include <linux/memblock.h>
+#include <linux/of_fdt.h>
 #include <linux/serial_core.h>
 #include <asm/io.h>
 #include <asm/numa.h>
@@ -29,9 +30,9 @@ int disabled_cpus;
 
 u64 acpi_saved_sp;
 
-#define MAX_CORE_PIC 256
-
 #define PREFIX			"ACPI: "
+
+struct acpi_madt_core_pic acpi_core_pic[MAX_CORE_PIC];
 
 void __init __iomem * __acpi_map_table(unsigned long phys, unsigned long size)
 {
@@ -56,47 +57,6 @@ void __iomem *acpi_os_ioremap(acpi_physical_address phys, acpi_size size)
 	else
 		return ioremap_cache(phys, size);
 }
-
-void __init acpi_boot_table_init(void)
-{
-	/*
-	 * If acpi_disabled, bail out
-	 */
-	if (acpi_disabled)
-		return;
-
-	/*
-	 * Initialize the ACPI boot-time table parser.
-	 */
-	if (acpi_table_init()) {
-		disable_acpi();
-		return;
-	}
-}
-
-static int __init acpi_parse_fadt(struct acpi_table_header *table)
-{
-	u64 gpe0_ena;
-
-	if (acpi_gbl_reduced_hardware)
-		return 0;
-
-	if (acpi_gbl_FADT.xgpe0_block.space_id != ACPI_ADR_SPACE_SYSTEM_MEMORY)
-		goto err;
-	gpe0_ena = acpi_gbl_FADT.xgpe0_block.address +
-		acpi_gbl_FADT.gpe0_block_length / 2;
-	if (!gpe0_ena)
-		goto err;
-
-	loongson_sysconf.gpe0_ena_reg = TO_UNCACHE(gpe0_ena);
-
-	return 0;
-err:
-	pr_err(PREFIX "Invalid BIOS FADT, disabling ACPI\n");
-	disable_acpi();
-	return -1;
-}
-
 
 #ifdef CONFIG_SMP
 int set_processor_mask(u32 id, u32 flags)
@@ -140,6 +100,7 @@ acpi_parse_processor(union acpi_subtable_headers *header, const unsigned long en
 
 	acpi_table_print_madt_entry(&header->common);
 #ifdef CONFIG_SMP
+	acpi_core_pic[processor->core_id] = *processor;
 	set_processor_mask(processor->core_id, processor->flags);
 #endif
 
@@ -164,7 +125,6 @@ acpi_parse_eio_master(union acpi_subtable_headers *header, const unsigned long e
 
 static void __init acpi_process_madt(void)
 {
-	int error;
 #ifdef CONFIG_SMP
 	int i;
 
@@ -174,14 +134,8 @@ static void __init acpi_process_madt(void)
 	}
 #endif
 
-	if (efi_bp && bpi_version <= BPI_VERSION_V1) {
-		error = legacy_madt_table_init();
-		if (error < 0) {
-			disable_acpi();
-			pr_err(PREFIX "Invalid BIOS MADT (legacy), ACPI disabled\n");
-		}
-		return;
-	}
+	if (efi_bp && bpi_version <= BPI_VERSION_V1)
+		legacy_madt_table_init();
 
 	acpi_table_parse_madt(ACPI_MADT_TYPE_CORE_PIC,
 			acpi_parse_processor, MAX_CORE_PIC);
@@ -189,27 +143,61 @@ static void __init acpi_process_madt(void)
 	acpi_table_parse_madt(ACPI_MADT_TYPE_EIO_PIC,
 			acpi_parse_eio_master, MAX_IO_PICS);
 
-	acpi_irq_model = ACPI_IRQ_MODEL_LPIC;
 	loongson_sysconf.nr_cpus = num_processors;
 }
 
-#ifdef CONFIG_ACPI_SLEEP
-int (*acpi_suspend_lowlevel)(void) = loongarch_acpi_suspend;
-#else
+int pptt_enabled;
+
+int __init parse_acpi_topology(void)
+{
+	int cpu, topology_id;
+
+	for_each_possible_cpu(cpu) {
+		topology_id = find_acpi_cpu_topology(cpu, 0);
+		if (topology_id < 0) {
+			pr_warn("Invalid BIOS PPTT\n");
+			return -ENOENT;
+		}
+
+		if (acpi_pptt_cpu_is_thread(cpu) <= 0)
+			cpu_data[cpu].core = topology_id;
+		else {
+			topology_id = find_acpi_cpu_topology(cpu, 1);
+			if (topology_id < 0)
+				return -ENOENT;
+
+			cpu_data[cpu].core = topology_id;
+		}
+	}
+
+	pptt_enabled = 1;
+
+	return 0;
+}
+
+#ifndef CONFIG_SUSPEND
 int (*acpi_suspend_lowlevel)(void);
+#else
+int (*acpi_suspend_lowlevel)(void) = loongarch_acpi_suspend;
 #endif
 
-int __init acpi_boot_init(void)
+void __init acpi_boot_table_init(void)
 {
 	/*
 	 * If acpi_disabled, bail out
 	 */
 	if (acpi_disabled)
-		return -1;
+		goto fdt_earlycon;
+
+	/*
+	 * Initialize the ACPI boot-time table parser.
+	 */
+	if (acpi_table_init()) {
+		disable_acpi();
+		goto fdt_earlycon;
+	}
 
 	loongson_sysconf.boot_cpu_id = read_csr_cpuid();
-
-	acpi_table_parse(ACPI_SIG_FADT, acpi_parse_fadt);
 
 	/*
 	 * Process the Multiple APIC Description Table (MADT), if present
@@ -219,7 +207,11 @@ int __init acpi_boot_init(void)
 	/* Do not enable ACPI SPCR console by default */
 	acpi_parse_spcr(earlycon_acpi_spcr_enable, false);
 
-	return 0;
+	return;
+
+fdt_earlycon:
+	if (earlycon_acpi_spcr_enable)
+		early_init_dt_scan_chosen_stdout();
 }
 
 #ifdef CONFIG_ACPI_NUMA
@@ -292,7 +284,6 @@ acpi_numa_processor_affinity_init(struct acpi_srat_cpu_affinity *pa)
 	pr_info("SRAT: PXM %u -> CPU 0x%02x -> Node %u\n", pxm, pa->apic_id, node);
 }
 
-void __init acpi_numa_arch_fixup(void) {}
 #endif
 
 void __init arch_reserve_mem_area(acpi_physical_address addr, size_t size)
@@ -300,7 +291,7 @@ void __init arch_reserve_mem_area(acpi_physical_address addr, size_t size)
 	memblock_reserve(addr, size);
 }
 
-#ifdef CONFIG_ACPI_HOTPLUG_CPU
+#ifdef CONFIG_ACPI_HOTPLUG_PRESENT_CPU
 
 #include <acpi/processor.h>
 
@@ -352,4 +343,4 @@ int acpi_unmap_cpu(int cpu)
 }
 EXPORT_SYMBOL(acpi_unmap_cpu);
 
-#endif /* CONFIG_ACPI_HOTPLUG_CPU */
+#endif /* CONFIG_ACPI_HOTPLUG_PRESENT_CPU */

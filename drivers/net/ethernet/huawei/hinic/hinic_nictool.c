@@ -2431,7 +2431,7 @@ int hinic_tool_k_init(void)
 
 	/* Create equipment */
 	/*lint -save -e160*/
-	g_nictool_class = class_create(THIS_MODULE, HIADM_DEV_CLASS);
+	g_nictool_class = class_create(HIADM_DEV_CLASS);
 	/*lint -restore*/
 	if (IS_ERR(g_nictool_class)) {
 		pr_err("Create nictool_class fail\n");

@@ -205,11 +205,7 @@ out:
 
 int __kprobes kprobe_fault_handler(struct pt_regs *regs, unsigned long mmcsr)
 {
-	struct kprobe *cur = kprobe_running();
 	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
-
-	if (cur->fault_handler && cur->fault_handler(cur, regs, mmcsr))
-		return 1;
 
 	if (kcb->kprobe_status & KPROBE_HIT_SS) {
 		regs->pc = kcb->target_pc;
@@ -256,22 +252,22 @@ static void __used kretprobe_trampoline_holder(void)
 			/* Keep the assembler from reordering and placing JR here. */
 			".set noreorder\n\t"
 			"nop\n\t"
-			".global kretprobe_trampoline\n"
-			"kretprobe_trampoline:\n\t"
+			".global __kretprobe_trampoline\n"
+			"__kretprobe_trampoline:\n\t"
 			"nop\n\t"
 			: : : "memory");
 }
 
-void kretprobe_trampoline(void);
+void __kretprobe_trampoline(void);
 
 void __kprobes arch_prepare_kretprobe(struct kretprobe_instance *ri,
 		struct pt_regs *regs)
 {
-	ri->ret_addr = (kprobe_opcode_t *) regs->r26;
+	ri->ret_addr = (kprobe_opcode_t *) regs->regs[26];
 	ri->fp = NULL;
 
 	/* Replace the return addr with trampoline addr */
-	regs->r26 = (unsigned long)kretprobe_trampoline;
+	regs->regs[26] = (unsigned long)__kretprobe_trampoline;
 }
 
 /*
@@ -282,9 +278,9 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 {
 	unsigned long orig_ret_address;
 
-	orig_ret_address = __kretprobe_trampoline_handler(regs, kretprobe_trampoline, NULL);
+	orig_ret_address = __kretprobe_trampoline_handler(regs, NULL);
 	instruction_pointer(regs) = orig_ret_address;
-	regs->r26 = orig_ret_address;
+	regs->regs[26] = orig_ret_address;
 
 	/*
 	 * By returning a non-zero value, we are telling
@@ -296,14 +292,14 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 
 int __kprobes arch_trampoline_kprobe(struct kprobe *p)
 {
-	if (p->addr == (kprobe_opcode_t *)kretprobe_trampoline)
+	if (p->addr == (kprobe_opcode_t *)__kretprobe_trampoline)
 		return 1;
 
 	return 0;
 }
 
 static struct kprobe trampoline_p = {
-	.addr = (kprobe_opcode_t *)kretprobe_trampoline,
+	.addr = (kprobe_opcode_t *)__kretprobe_trampoline,
 	.pre_handler = trampoline_probe_handler
 };
 

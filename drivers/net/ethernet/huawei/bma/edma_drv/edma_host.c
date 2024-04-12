@@ -751,7 +751,7 @@ static int edma_host_send_msg(struct edma_host_s *edma_host)
 		if (send_mbx_hdr->mbxlen > HOST_MAX_SEND_MBX_LEN) {
 			/*share memory is disable */
 			send_mbx_hdr->mbxlen = 0;
-			BMA_LOG(DLOG_ERROR, "mbxlen is too long\n");
+			BMA_LOG(DLOG_DEBUG, "mbxlen is too long\n");
 			return -EFAULT;
 		}
 

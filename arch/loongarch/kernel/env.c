@@ -8,10 +8,10 @@
 #include <linux/efi.h>
 #include <linux/export.h>
 #include <linux/memblock.h>
-#include <linux/of_fdt.h>
 #include <asm/early_ioremap.h>
 #include <asm/bootinfo.h>
 #include <asm/loongson.h>
+#include <asm/setup.h>
 #include "legacy_boot.h"
 
 u64 efi_system_table;
@@ -21,9 +21,9 @@ EXPORT_SYMBOL(loongson_sysconf);
 void __init init_environ(void)
 {
 	int efi_boot = fw_arg0;
-	struct efi_memory_map_data data;
-	char *cmdline;
-	void *fdt_ptr;
+	char *cmdline = early_memremap_ro(fw_arg1, COMMAND_LINE_SIZE);
+
+	legacy_boot_init(fw_arg0, fw_arg1, fw_arg2);
 
 	if (efi_bp)
 		return;
@@ -33,27 +33,11 @@ void __init init_environ(void)
 	else
 		clear_bit(EFI_BOOT, &efi.flags);
 
-	if (fw_arg2 == 0)
-		goto parse_fdt;
-
-	cmdline = early_memremap_ro(fw_arg1, COMMAND_LINE_SIZE);
 	strscpy(boot_command_line, cmdline, COMMAND_LINE_SIZE);
+	strscpy(init_command_line, cmdline, COMMAND_LINE_SIZE);
 	early_memunmap(cmdline, COMMAND_LINE_SIZE);
 
 	efi_system_table = fw_arg2;
-
-	return;
-
-parse_fdt:
-	fdt_ptr = early_memremap_ro(fw_arg1, SZ_64K);
-
-	early_init_dt_scan(fdt_ptr);
-	early_init_fdt_reserve_self();
-	efi_system_table = efi_get_fdt_params(&data);
-
-	efi_memmap_init_early(&data);
-	memblock_reserve(data.phys_map & PAGE_MASK,
-			 PAGE_ALIGN(data.size + (data.phys_map & ~PAGE_MASK)));
 }
 
 static int __init init_cpu_fullname(void)

@@ -5,9 +5,11 @@
 #ifndef __KVM_ARM_VGIC_H
 #define __KVM_ARM_VGIC_H
 
-#include <linux/kernel.h>
+#include <linux/bits.h>
 #include <linux/kvm.h>
 #include <linux/irqreturn.h>
+#include <linux/kref.h>
+#include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/static_key.h>
 #include <linux/types.h>
@@ -33,8 +35,39 @@
 #define irq_is_spi(irq) ((irq) >= VGIC_NR_PRIVATE_IRQS && \
 			 (irq) <= VGIC_MAX_SPI)
 
-/*The number of lpi translation cache lists*/
+#ifdef CONFIG_VIRT_PLAT_DEV
+struct shadow_dev {
+	struct kvm              *kvm;
+	struct list_head        entry;
+
+	u32                     devid;  /* guest visible device id */
+	u32                     nvecs;
+	unsigned long           *enable;
+	int                     *host_irq;
+	struct kvm_msi          *msi;
+
+	struct platform_device  *pdev;
+
+	struct work_struct      destroy;
+};
+#endif
+
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+/* Information about HiSilicon implementation of vtimer (GICv4.1-based) */
+struct vtimer_info {
+	u32 intid;
+
+	bool (*get_active_stat)(struct kvm_vcpu *vcpu, int vintid);
+	void (*set_active_stat)(struct kvm_vcpu *vcpu, int vintid, bool active);
+};
+
+u16 kvm_vgic_get_vcpu_vpeid(struct kvm_vcpu *vcpu);
+#endif
+
+#ifdef CONFIG_KVM_ARM_MULTI_LPI_TRANSLATE_CACHE
+/* The number of lpi translation cache lists */
 #define LPI_TRANS_CACHES_NUM 8
+#endif
 
 enum vgic_type {
 	VGIC_V2,		/* Good ol' GICv2 */
@@ -75,6 +108,17 @@ struct vgic_global {
 	bool			has_gicv4;
 	bool			has_gicv4_1;
 
+	/* Pseudo GICv3 from outer space */
+	bool			no_hw_deactivation;
+
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+	/*
+	 * Hardware (HiSilicon implementation) has vtimer interrupt
+	 * direct injection support?
+	 */
+	bool                    has_direct_vtimer;
+#endif
+
 	/* GIC system register CPU interface */
 	struct static_key_false gicv3_cpuif;
 
@@ -90,6 +134,26 @@ extern struct vgic_global kvm_vgic_global_state;
 enum vgic_irq_config {
 	VGIC_CONFIG_EDGE = 0,
 	VGIC_CONFIG_LEVEL
+};
+
+/*
+ * Per-irq ops overriding some common behavious.
+ *
+ * Always called in non-preemptible section and the functions can use
+ * kvm_arm_get_running_vcpu() to get the vcpu pointer for private IRQs.
+ */
+struct irq_ops {
+	/* Per interrupt flags for special-cased interrupts */
+	unsigned long flags;
+
+#define VGIC_IRQ_SW_RESAMPLE	BIT(0)	/* Clear the active state for resampling */
+
+	/*
+	 * Callback function pointer to in-kernel devices that can tell us the
+	 * state of the input level of mapped level-triggered IRQ faster than
+	 * peaking into the physical GIC.
+	 */
+	bool (*get_input_level)(int vintid);
 };
 
 struct vgic_irq {
@@ -129,20 +193,20 @@ struct vgic_irq {
 	u8 group;			/* 0 == group 0, 1 == group 1 */
 	enum vgic_irq_config config;	/* Level or edge */
 
-	/*
-	 * Callback function pointer to in-kernel devices that can tell us the
-	 * state of the input level of mapped level-triggered IRQ faster than
-	 * peaking into the physical GIC.
-	 *
-	 * Always called in non-preemptible section and the functions can use
-	 * kvm_arm_get_running_vcpu() to get the vcpu pointer for private
-	 * IRQs.
-	 */
-	bool (*get_input_level)(int vintid);
+	struct irq_ops *ops;
 
 	void *owner;			/* Opaque pointer to reserve an interrupt
 					   for in-kernel devices. */
+
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+	struct vtimer_info *vtimer_info;        /* vtimer interrupt only */
+#endif
 };
+
+static inline bool vgic_irq_needs_resampling(struct vgic_irq *irq)
+{
+	return irq->ops && (irq->ops->flags & VGIC_IRQ_SW_RESAMPLE);
+}
 
 struct vgic_register_region;
 struct vgic_its;
@@ -166,11 +230,13 @@ struct vgic_io_device {
 	struct kvm_io_device dev;
 };
 
+#ifdef CONFIG_KVM_ARM_MULTI_LPI_TRANSLATE_CACHE
 struct its_trans_cache {
 	/* LPI translation cache */
-	struct list_head        lpi_cache;
-	raw_spinlock_t          lpi_cache_lock;
+	struct list_head	lpi_cache;
+	raw_spinlock_t		lpi_cache_lock;
 };
+#endif
 
 struct vgic_its {
 	/* The base address of the ITS control register frame */
@@ -219,6 +285,9 @@ struct vgic_dist {
 
 	/* Implementation revision as reported in the GICD_IIDR */
 	u32			implementation_rev;
+#define KVM_VGIC_IMP_REV_2	2 /* GICv2 restorable groups */
+#define KVM_VGIC_IMP_REV_3	3 /* GICv3 GICR_CTLR.{IW,CES,RWP} */
+#define KVM_VGIC_IMP_REV_LATEST	KVM_VGIC_IMP_REV_3
 
 	/* Userspace can write to GICv2 IGROUPR */
 	bool			v2_groups_user_writable;
@@ -242,12 +311,17 @@ struct vgic_dist {
 
 	/* Wants SGIs without active state */
 	bool			nassgireq;
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+	/* Indicate whether the vtimer irqbypass mode is used */
+	bool			vtimer_irqbypass;
+#endif
 
 	struct vgic_irq		*spis;
 
 	struct vgic_io_device	dist_iodev;
 
 	bool			has_its;
+	bool			table_write_in_progress;
 
 	/*
 	 * Contains the attributes and gpa of the LPI configuration table.
@@ -262,8 +336,13 @@ struct vgic_dist {
 	struct list_head	lpi_list_head;
 	int			lpi_list_count;
 
-	/* LPI translation cache array*/
+#ifdef CONFIG_KVM_ARM_MULTI_LPI_TRANSLATE_CACHE
+	/* LPI translation cache array */
 	struct its_trans_cache lpi_translation_cache[LPI_TRANS_CACHES_NUM];
+#else
+	/* LPI translation cache */
+	struct list_head	lpi_translation_cache;
+#endif
 
 	/* used by vgic-debug */
 	struct vgic_state_iter *iter;
@@ -276,6 +355,10 @@ struct vgic_dist {
 	 * else.
 	 */
 	struct its_vm		its_vm;
+#ifdef CONFIG_VIRT_PLAT_DEV
+	raw_spinlock_t		sdev_list_lock;
+	struct list_head	sdev_list_head;
+#endif
 };
 
 struct vgic_v2_cpu_if {
@@ -315,6 +398,12 @@ struct vgic_cpu {
 
 	struct vgic_irq private_irqs[VGIC_NR_PRIVATE_IRQS];
 
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+	/* Indicate whether the vtimer irqbypass mode is used */
+	bool vtimer_irqbypass;
+	struct vtimer_info vtimer;
+#endif
+
 	raw_spinlock_t ap_list_lock;	/* Protects the ap_list */
 
 	/*
@@ -331,11 +420,13 @@ struct vgic_cpu {
 	 */
 	struct vgic_io_device	rd_iodev;
 	struct vgic_redist_region *rdreg;
+	u32 rdreg_index;
+	atomic_t syncr_busy;
 
 	/* Contains the attributes and gpa of the LPI pending tables. */
 	u64 pendbaser;
-
-	bool lpis_enabled;
+	/* GICR_CTLR.{ENABLE_LPIS,RWP} */
+	atomic_t ctlr;
 
 	/* Cache guest priority bits */
 	u32 num_pri_bits;
@@ -347,7 +438,7 @@ struct vgic_cpu {
 extern struct static_key_false vgic_v2_cpuif_trap;
 extern struct static_key_false vgic_v3_cpuif_trap;
 
-int kvm_vgic_addr(struct kvm *kvm, unsigned long type, u64 *addr, bool write);
+int kvm_set_legacy_vgic_v2_addr(struct kvm *kvm, struct kvm_arm_device_addr *dev_addr);
 void kvm_vgic_early_init(struct kvm *kvm);
 int kvm_vgic_vcpu_init(struct kvm_vcpu *vcpu);
 int kvm_vgic_create(struct kvm *kvm, u32 type);
@@ -360,8 +451,9 @@ void kvm_vgic_init_cpu_hardware(void);
 int kvm_vgic_inject_irq(struct kvm *kvm, int cpuid, unsigned int intid,
 			bool level, void *owner);
 int kvm_vgic_map_phys_irq(struct kvm_vcpu *vcpu, unsigned int host_irq,
-			  u32 vintid, bool (*get_input_level)(int vindid));
+			  u32 vintid, struct irq_ops *ops);
 int kvm_vgic_unmap_phys_irq(struct kvm_vcpu *vcpu, unsigned int vintid);
+int kvm_vgic_get_map(struct kvm_vcpu *vcpu, unsigned int vintid);
 bool kvm_vgic_map_is_active(struct kvm_vcpu *vcpu, unsigned int vintid);
 
 int kvm_vgic_vcpu_pending_irq(struct kvm_vcpu *vcpu);
@@ -382,6 +474,16 @@ void kvm_vgic_flush_hwstate(struct kvm_vcpu *vcpu);
 void kvm_vgic_reset_mapped_irq(struct kvm_vcpu *vcpu, u32 vintid);
 
 void vgic_v3_dispatch_sgi(struct kvm_vcpu *vcpu, u64 reg, bool allow_group1);
+
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+/**
+ * kvm_vgic_vtimer_irqbypass_support - Get the vtimer irqbypass HW capability
+ */
+static inline bool kvm_vgic_vtimer_irqbypass_support(void)
+{
+	return kvm_vgic_global_state.has_direct_vtimer;
+}
+#endif
 
 /**
  * kvm_vgic_get_max_vcpus - Get the maximum number of VCPUs allowed by HW
@@ -412,6 +514,28 @@ int kvm_vgic_v4_unset_forwarding(struct kvm *kvm, int irq,
 
 int vgic_v4_load(struct kvm_vcpu *vcpu);
 void vgic_v4_commit(struct kvm_vcpu *vcpu);
-int vgic_v4_put(struct kvm_vcpu *vcpu, bool need_db);
+int vgic_v4_put(struct kvm_vcpu *vcpu);
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+int kvm_vgic_config_vtimer_irqbypass(struct kvm_vcpu *vcpu, u32 vintid,
+		bool (*get_as)(struct kvm_vcpu *, int),
+		void (*set_as)(struct kvm_vcpu *, int, bool));
+#endif
+
+/* CPU HP callbacks */
+void kvm_vgic_cpu_up(void);
+void kvm_vgic_cpu_down(void);
+
+#ifdef CONFIG_VIRT_PLAT_DEV
+extern bool sdev_enable;
+
+void kvm_shadow_dev_init(void);
+int kvm_shadow_dev_create(struct kvm *kvm, struct kvm_master_dev_info *mdi);
+void kvm_shadow_dev_delete(struct kvm *kvm, u32 devid);
+void kvm_shadow_dev_delete_all(struct kvm *kvm);
+struct shadow_dev *kvm_shadow_dev_get(struct kvm *kvm, struct kvm_msi *msi);
+
+int shadow_dev_virq_bypass_inject(struct kvm *kvm,
+				  struct kvm_kernel_irq_routing_entry *e);
+#endif
 
 #endif /* __KVM_ARM_VGIC_H */

@@ -18,14 +18,6 @@
 #include <math-emu/single.h>
 #include <math-emu/double.h>
 
-#define math_debug 0
-
-#define DEBUG_INFO(fmt, arg...)					\
-	do {							\
-		if (math_debug)					\
-			printk(KERN_DEBUG fmt, ## arg);		\
-	} while (0)
-
 /*
  * This is for sw64
  */
@@ -271,14 +263,14 @@ extern void sw64_write_fp_reg_s(unsigned long reg, unsigned long val);
 
 MODULE_DESCRIPTION("FP Software completion module");
 
-extern long (*sw64_fp_emul_imprecise)(struct pt_regs *, unsigned long);
+extern long (*sw64_fp_emul_imprecise)(struct pt_regs *regs, unsigned long write_mask);
 extern long (*sw64_fp_emul)(unsigned long pc);
 
-static long (*save_emul_imprecise)(struct pt_regs *, unsigned long);
+static long (*save_emul_imprecise)(struct pt_regs *regs, unsigned long write_mask);
 static long (*save_emul)(unsigned long pc);
 
-long do_sw_fp_emul_imprecise(struct pt_regs *, unsigned long);
-long do_sw_fp_emul(unsigned long);
+long do_sw_fp_emul_imprecise(struct pt_regs *regs, unsigned long write_mask);
+long do_sw_fp_emul(unsigned long pc);
 
 int init_module(void)
 {
@@ -332,12 +324,12 @@ long sw64_fp_emul(unsigned long pc)
 	func   = (insn >>  5) & 0xff;
 	fpcr = rdfpcr();
 	mode   = (fpcr >> FPCR_DYN_SHIFT) & 0x3;
-	DEBUG_INFO("======= Entering Floating mathe emulation =====\n");
-	DEBUG_INFO("Floating math emulation insn = %#lx, opcode=%d, func=%d\n", insn, opcode, func);
-	DEBUG_INFO("SW64 hardware fpcr = %#lx\n", fpcr);
+	pr_debug("======= Entering Floating mathe emulation =====\n");
+	pr_debug("Floating math emulation insn = %#lx, opcode=%d, func=%d\n", insn, opcode, func);
+	pr_debug("SW64 hardware fpcr = %#lx\n", fpcr);
 	swcr = swcr_update_status(current_thread_info()->ieee_state, fpcr);
-	DEBUG_INFO("SW64 software swcr = %#lx\n", swcr);
-	DEBUG_INFO("fa:%#lx,fb:%#lx,fc:%#lx,func:%#lx,mode:%#lx\n", fa, fb, fc, func, mode);
+	pr_debug("SW64 software swcr = %#lx\n", swcr);
+	pr_debug("fa:%#lx,fb:%#lx,fc:%#lx,func:%#lx,mode:%#lx\n", fa, fb, fc, func, mode);
 
 	if (opcode == OP_SIMD_NORMAL) { /* float simd math  */
 		if (func == FNC_VADDS || func == FNC_VSUBS  || func == FNC_VSQRTS
@@ -421,7 +413,7 @@ long sw64_fp_emul(unsigned long pc)
 		goto pack_d;
 
 	case FOP_FNC_DIVS:
-		DEBUG_INFO("FOP_FNC_DIVS\n");
+		pr_debug("FOP_FNC_DIVS\n");
 		va = sw64_read_fp_reg_s(fa);
 		vb = sw64_read_fp_reg_s(fb);
 		FP_UNPACK_SP(SA, &va);
@@ -430,7 +422,7 @@ long sw64_fp_emul(unsigned long pc)
 		goto pack_s;
 
 	case FOP_FNC_DIVD:
-		DEBUG_INFO("FOP_FNC_DIVD\n");
+		pr_debug("FOP_FNC_DIVD\n");
 		va = sw64_read_fp_reg(fa);
 		vb = sw64_read_fp_reg(fb);
 		FP_UNPACK_DP(DA, &va);
@@ -478,7 +470,7 @@ long sw64_fp_emul(unsigned long pc)
 		/* CMPTEQ, CMPTUN don't trap on QNaN, while CMPTLT and CMPTLE do */
 		if (res == 3 && (((func == FOP_FNC_CMPLT) || (func == FOP_FNC_CMPLE))
 					|| FP_ISSIGNAN_D(DA) || FP_ISSIGNAN_D(DB))) {
-			DEBUG_INFO("CMPLT CMPLE:func:%d, trap on QNaN.", func);
+			pr_debug("CMPLT CMPLE:func:%d, trap on QNaN.", func);
 			FP_SET_EXCEPTION(FP_EX_INVALID);
 		}
 		switch (func) {
@@ -571,8 +563,8 @@ pack_s:
 
 	if ((_fex & FP_EX_UNDERFLOW) && (swcr & IEEE_MAP_UMZ))
 		vc = 0;
-	DEBUG_INFO("SW64 Emulation S-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
-	DEBUG_INFO("SW64 Emulation S-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
+	pr_debug("SW64 Emulation S-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
+	pr_debug("SW64 Emulation S-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
 	sw64_write_fp_reg_s(fc, vc);
 	goto done;
 
@@ -580,8 +572,8 @@ pack_d:
 	FP_PACK_DP(&vc, DR);
 	if ((_fex & FP_EX_UNDERFLOW) && (swcr & IEEE_MAP_UMZ))
 		vc = 0;
-	DEBUG_INFO("SW64 Emulation D-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
-	DEBUG_INFO("SW64 Emulation D-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
+	pr_debug("SW64 Emulation D-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
+	pr_debug("SW64 Emulation D-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
 done_d:
 	sw64_write_fp_reg(fc, vc);
 	goto done;
@@ -608,7 +600,7 @@ done:
 		/* Update hardware control register.  */
 		fpcr &= (~FPCR_MASK | FPCR_DYN_MASK);
 		fpcr |= ieee_swcr_to_fpcr(swcr);
-		DEBUG_INFO("SW64 before write fpcr = %#lx\n", fpcr);
+		pr_debug("SW64 before write fpcr = %#lx\n", fpcr);
 		wrfpcr(fpcr);
 
 		/* Do we generate a signal?  */
@@ -641,7 +633,7 @@ done:
 	return 0;
 
 bad_insn:
-	printk(KERN_ERR "%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
+	pr_err("%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
 	return -1;
 }
 
@@ -745,52 +737,52 @@ long simd_cmp_emul_d(unsigned long pc)
 	fpcr = rdfpcr();
 	mode   = (fpcr >> FPCR_DYN_SHIFT) & 0x3;
 
-	DEBUG_INFO("======== Entering SIMD floating-CMP math emulation =======\n");
-	DEBUG_INFO("hardware fpcr = %#lx\n", fpcr);
+	pr_debug("======== Entering SIMD floating-CMP math emulation =======\n");
+	pr_debug("hardware fpcr = %#lx\n", fpcr);
 	swcr = swcr_update_status(current_thread_info()->ieee_state, fpcr);
-	DEBUG_INFO("software swcr = %#lx\n", swcr);
-	DEBUG_INFO("fa:%#lx,fb:%#lx,fc:%#lx,func:%#lx,mode:%#lx\n", fa, fb, fc, func, mode);
+	pr_debug("software swcr = %#lx\n", swcr);
+	pr_debug("fa:%#lx,fb:%#lx,fc:%#lx,func:%#lx,mode:%#lx\n", fa, fb, fc, func, mode);
 	read_fp_reg_d(fa, &va_p0, &va_p1, &va_p2, &va_p3);
 	read_fp_reg_d(fb, &vb_p0, &vb_p1, &vb_p2, &vb_p3);
 	read_fp_reg_d(fc, &vc_p0, &vc_p1, &vc_p2, &vc_p3);
-	DEBUG_INFO("va_p0:%#lx, va_p1:%#lx, va_p2:%#lx, va_p3:%#lx\n", va_p0, va_p1, va_p2, va_p3);
-	DEBUG_INFO("vb_p0:%#lx, vb_p1:%#lx, vb_p2:%#lx, vb_p3:%#lx\n", vb_p0, vb_p1, vb_p2, vb_p3);
-	DEBUG_INFO("vc_p0:%#lx, vc_p1:%#lx, vc_p2:%#lx, vc_p3:%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
+	pr_debug("va_p0:%#lx, va_p1:%#lx, va_p2:%#lx, va_p3:%#lx\n", va_p0, va_p1, va_p2, va_p3);
+	pr_debug("vb_p0:%#lx, vb_p1:%#lx, vb_p2:%#lx, vb_p3:%#lx\n", vb_p0, vb_p1, vb_p2, vb_p3);
+	pr_debug("vc_p0:%#lx, vc_p1:%#lx, vc_p2:%#lx, vc_p3:%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
 	working_part = WORKING_PART_0;
 simd_working:
 	_fex = 0;
 	switch (working_part) {
 	case WORKING_PART_0:
-		DEBUG_INFO("WORKING_PART_0\n");
+		pr_debug("WORKING_PART_0\n");
 		va = va_p0;
 		vb = vb_p0;
 		vc = vc_p0;
 		break;
 	case WORKING_PART_1:
-		DEBUG_INFO("WORKING_PART_1\n");
+		pr_debug("WORKING_PART_1\n");
 		va = va_p1;
 		vb = vb_p1;
 		vc = vc_p1;
 		break;
 	case WORKING_PART_2:
-		DEBUG_INFO("WORKING_PART_2\n");
+		pr_debug("WORKING_PART_2\n");
 		va = va_p2;
 		vb = vb_p2;
 		vc = vc_p2;
 		break;
 	case WORKING_PART_3:
-		DEBUG_INFO("WORKING_PART_3\n");
+		pr_debug("WORKING_PART_3\n");
 		va = va_p3;
 		vb = vb_p3;
 		vc = vc_p3;
 		break;
 	}
-	DEBUG_INFO("Before unpack va:%#lx, vb:%#lx\n", va, vb);
+	pr_debug("Before unpack va:%#lx, vb:%#lx\n", va, vb);
 	FP_UNPACK_RAW_DP(DA, &va);
 	FP_UNPACK_RAW_DP(DB, &vb);
-	DEBUG_INFO("DA_e:%d, _FP_FRAC_ZEROP_1(DA):%d\n", DA_e, _FP_FRAC_ZEROP_1(DA));
-	DEBUG_INFO("DB_e:%d, _FP_FRAC_ZEROP_1(DB):%d\n", DA_e, _FP_FRAC_ZEROP_1(DA));
-	DEBUG_INFO("DA iszero:%d, DB iszero:%d\n", ((!DA_e && _FP_FRAC_ZEROP_1(DA)) ? 1 : 0),
+	pr_debug("DA_e:%d, _FP_FRAC_ZEROP_1(DA):%d\n", DA_e, _FP_FRAC_ZEROP_1(DA));
+	pr_debug("DB_e:%d, _FP_FRAC_ZEROP_1(DB):%d\n", DA_e, _FP_FRAC_ZEROP_1(DA));
+	pr_debug("DA iszero:%d, DB iszero:%d\n", ((!DA_e && _FP_FRAC_ZEROP_1(DA)) ? 1 : 0),
 			((!DB_e && _FP_FRAC_ZEROP_1(DB))));
 	if (!DA_e && !_FP_FRAC_ZEROP_1(DA)) {
 		FP_SET_EXCEPTION(FP_EX_DENORM);
@@ -807,10 +799,10 @@ simd_working:
 	/* CMPTEQ, CMPTUN don't trap on QNaN, while CMPTLT and CMPTLE do */
 	if (res == 3 && (((func == FOP_FNC_CMPLT) || (func == FOP_FNC_CMPLE))
 				|| FP_ISSIGNAN_D(DA) || FP_ISSIGNAN_D(DB))) {
-		DEBUG_INFO("CMPLT CMPLE:func:%d, trap on QNaN.", func);
+		pr_debug("CMPLT CMPLE:func:%d, trap on QNaN.", func);
 		FP_SET_EXCEPTION(FP_EX_INVALID);
 	}
-	DEBUG_INFO("res:%d\n", res);
+	pr_debug("res:%d\n", res);
 	switch (func) {
 	case FNC_VFCMPUN:
 		if (res != 3)
@@ -904,13 +896,13 @@ done:
 		}
 
 		fpcr = fpcr_p0 | fpcr_p1 | fpcr_p2 | fpcr_p3;
-		DEBUG_INFO("fex_p0 = %#lx\n", fex_p0);
-		DEBUG_INFO("fex_p1 = %#lx\n", fex_p1);
-		DEBUG_INFO("fex_p2 = %#lx\n", fex_p2);
-		DEBUG_INFO("fex_p3 = %#lx\n", fex_p3);
-		DEBUG_INFO("SIMD emulation almost finished.before write fpcr = %#lx\n", fpcr);
+		pr_debug("fex_p0 = %#lx\n", fex_p0);
+		pr_debug("fex_p1 = %#lx\n", fex_p1);
+		pr_debug("fex_p2 = %#lx\n", fex_p2);
+		pr_debug("fex_p3 = %#lx\n", fex_p3);
+		pr_debug("SIMD emulation almost finished.before write fpcr = %#lx\n", fpcr);
 		wrfpcr(fpcr);
-		DEBUG_INFO("Before write fp: vc_p0=%#lx, vc_p1=%#lx, vc_p2=%#lx, vc_p3=%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
+		pr_debug("Before write fp: vc_p0=%#lx, vc_p1=%#lx, vc_p2=%#lx, vc_p3=%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
 		write_fp_reg_d(fc, vc_p0, vc_p1, vc_p2, vc_p3);
 
 		/* Do we generate a signal?  */
@@ -931,15 +923,15 @@ done:
 			if (_fex & IEEE_TRAP_ENABLE_INV)
 				si_code = FPE_FLTINV;
 		}
-		DEBUG_INFO("SIMD finished.. si_code:%#lx\n", si_code);
+		pr_debug("SIMD finished.. si_code:%#lx\n", si_code);
 		return si_code;
 
 	}
-	DEBUG_INFO("SIMD finished.. si_code:%#lx\n", si_code);
+	pr_debug("SIMD finished.. si_code:%#lx\n", si_code);
 	return 0;
 
 bad_insn:
-	printk(KERN_ERR "%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
+	pr_err("%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
 	return -1;
 }
 
@@ -968,23 +960,23 @@ long simd_fp_emul_d(unsigned long pc)
 	fpcr = rdfpcr();
 	mode   = (fpcr >> FPCR_DYN_SHIFT) & 0x3;
 
-	DEBUG_INFO("======== Entering SIMD D-floating math emulation =======\n");
-	DEBUG_INFO("hardware fpcr = %#lx\n", fpcr);
+	pr_debug("======== Entering SIMD D-floating math emulation =======\n");
+	pr_debug("hardware fpcr = %#lx\n", fpcr);
 	swcr = swcr_update_status(current_thread_info()->ieee_state, fpcr);
-	DEBUG_INFO("software swcr = %#lx\n", swcr);
-	DEBUG_INFO("fa:%#lx,fb:%#lx,fc:%#lx,func:%#lx,mode:%#lx\n", fa, fb, fc, func, mode);
+	pr_debug("software swcr = %#lx\n", swcr);
+	pr_debug("fa:%#lx,fb:%#lx,fc:%#lx,func:%#lx,mode:%#lx\n", fa, fb, fc, func, mode);
 	read_fp_reg_d(fa, &va_p0, &va_p1, &va_p2, &va_p3);
 	read_fp_reg_d(fb, &vb_p0, &vb_p1, &vb_p2, &vb_p3);
 	read_fp_reg_d(fc, &vc_p0, &vc_p1, &vc_p2, &vc_p3);
-	DEBUG_INFO("va_p0:%#lx, va_p1:%#lx, va_p2:%#lx, va_p3:%#lx\n", va_p0, va_p1, va_p2, va_p3);
-	DEBUG_INFO("vb_p0:%#lx, vb_p1:%#lx, vb_p2:%#lx, vb_p3:%#lx\n", vb_p0, vb_p1, vb_p2, vb_p3);
-	DEBUG_INFO("vc_p0:%#lx, vc_p1:%#lx, vc_p2:%#lx, vc_p3:%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
+	pr_debug("va_p0:%#lx, va_p1:%#lx, va_p2:%#lx, va_p3:%#lx\n", va_p0, va_p1, va_p2, va_p3);
+	pr_debug("vb_p0:%#lx, vb_p1:%#lx, vb_p2:%#lx, vb_p3:%#lx\n", vb_p0, vb_p1, vb_p2, vb_p3);
+	pr_debug("vc_p0:%#lx, vc_p1:%#lx, vc_p2:%#lx, vc_p3:%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
 	working_part = WORKING_PART_0;
 simd_working:
 	_fex = 0;
 	switch (working_part) {
 	case WORKING_PART_0:
-		DEBUG_INFO("WORKING_PART_0\n");
+		pr_debug("WORKING_PART_0\n");
 		va = va_p0;
 		vb = vb_p0;
 		vc = vc_p0;
@@ -994,7 +986,7 @@ simd_working:
 			if ((DA_c == SW64_FP_NORMAL) && (DB_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("LOW: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
+				pr_debug("LOW: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
 		} else {
 			SW64_FP_NAN_D(DA, &va);
 			SW64_FP_NAN_D(DB, &vb);
@@ -1003,7 +995,7 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_1:
-		DEBUG_INFO("WORKING_PART_1\n");
+		pr_debug("WORKING_PART_1\n");
 		va = va_p1;
 		vb = vb_p1;
 		vc = vc_p1;
@@ -1013,7 +1005,7 @@ simd_working:
 			if ((DA_c == SW64_FP_NORMAL) && (DB_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
+				pr_debug("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
 		} else {
 			SW64_FP_NAN_D(DA, &va);
 			SW64_FP_NAN_D(DB, &vb);
@@ -1023,7 +1015,7 @@ simd_working:
 
 		break;
 	case WORKING_PART_2:
-		DEBUG_INFO("WORKING_PART_2\n");
+		pr_debug("WORKING_PART_2\n");
 		va = va_p2;
 		vb = vb_p2;
 		vc = vc_p2;
@@ -1033,7 +1025,7 @@ simd_working:
 			if ((DA_c == SW64_FP_NORMAL) && (DB_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
+				pr_debug("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
 		} else {
 			SW64_FP_NAN_D(DA, &va);
 			SW64_FP_NAN_D(DB, &vb);
@@ -1042,7 +1034,7 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_3:
-		DEBUG_INFO("WORKING_PART_3\n");
+		pr_debug("WORKING_PART_3\n");
 		va = va_p3;
 		vb = vb_p3;
 		vc = vc_p3;
@@ -1052,7 +1044,7 @@ simd_working:
 			if ((DA_c == SW64_FP_NORMAL) && (DB_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
+				pr_debug("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
 		} else {
 			SW64_FP_NAN_D(DA, &va);
 			SW64_FP_NAN_D(DB, &vb);
@@ -1067,35 +1059,35 @@ simd_working:
 
 	switch (func) {
 	case FNC_VSUBD:
-		DEBUG_INFO("FNC_VSUBD\n");
+		pr_debug("FNC_VSUBD\n");
 		FP_SUB_D(DR, DA, DB);
 		goto pack_d;
 	case FNC_VMULD:
-		DEBUG_INFO("FNC_VMULD\n");
+		pr_debug("FNC_VMULD\n");
 		FP_MUL_D(DR, DA, DB);
 		goto pack_d;
 	case FNC_VADDD:
-		DEBUG_INFO("FNC_VADDD\n");
+		pr_debug("FNC_VADDD\n");
 		FP_ADD_D(DR, DA, DB);
 		goto pack_d;
 	case FNC_VDIVD:
-		DEBUG_INFO("FNC_VDIVD\n");
+		pr_debug("FNC_VDIVD\n");
 		FP_DIV_D(DR, DA, DB);
 		goto pack_d;
 	case FNC_VSQRTD:
-		DEBUG_INFO("FNC_VSQRTD\n");
+		pr_debug("FNC_VSQRTD\n");
 		FP_SQRT_D(DR, DB);
 		goto pack_d;
 	}
 pack_d:
 	FP_PACK_DP(&vc, DR);
 	if ((_fex & FP_EX_UNDERFLOW) && (swcr & IEEE_MAP_UMZ)) {
-		DEBUG_INFO("pack_d, vc=0 !!!!\n");
+		pr_debug("pack_d, vc=0 !!!!\n");
 		vc = 0;
 	}
 
-	DEBUG_INFO("SW64 SIMD Emulation D-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
-	DEBUG_INFO("SW64 SIMD Emulation D-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
+	pr_debug("SW64 SIMD Emulation D-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
+	pr_debug("SW64 SIMD Emulation D-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
 next_working_s:
 	switch (working_part) {
 	case WORKING_PART_0:
@@ -1171,13 +1163,13 @@ done:
 		}
 
 		fpcr = fpcr_p0 | fpcr_p1 | fpcr_p2 | fpcr_p3;
-		DEBUG_INFO("fex_p0 = %#lx\n", fex_p0);
-		DEBUG_INFO("fex_p1 = %#lx\n", fex_p1);
-		DEBUG_INFO("fex_p2 = %#lx\n", fex_p2);
-		DEBUG_INFO("fex_p3 = %#lx\n", fex_p3);
-		DEBUG_INFO("SIMD emulation almost finished.before write fpcr = %#lx\n", fpcr);
+		pr_debug("fex_p0 = %#lx\n", fex_p0);
+		pr_debug("fex_p1 = %#lx\n", fex_p1);
+		pr_debug("fex_p2 = %#lx\n", fex_p2);
+		pr_debug("fex_p3 = %#lx\n", fex_p3);
+		pr_debug("SIMD emulation almost finished.before write fpcr = %#lx\n", fpcr);
 		wrfpcr(fpcr);
-		DEBUG_INFO("Before write fp: vp_p0=%#lx, vc_p1=%#lx, vc_p2=%#lx, vc_p3=%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
+		pr_debug("Before write fp: vp_p0=%#lx, vc_p1=%#lx, vc_p2=%#lx, vc_p3=%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
 		write_fp_reg_d(fc, vc_p0, vc_p1, vc_p2, vc_p3);
 
 		/* Do we generate a signal?  */
@@ -1198,14 +1190,14 @@ done:
 			if (_fex & IEEE_TRAP_ENABLE_INV)
 				si_code = FPE_FLTINV;
 		}
-		DEBUG_INFO("SIMD finished.. si_code:%#lx\n", si_code);
+		pr_debug("SIMD finished.. si_code:%#lx\n", si_code);
 		return si_code;
 	}
-	DEBUG_INFO("SIMD finished.. si_code:%#lx\n", si_code);
+	pr_debug("SIMD finished.. si_code:%#lx\n", si_code);
 	return 0;
 
 bad_insn:
-	printk(KERN_ERR "%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
+	pr_err("%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
 	return -1;
 }
 
@@ -1234,23 +1226,23 @@ long simd_fp_emul_s(unsigned long pc)
 	fpcr = rdfpcr();
 	mode   = (fpcr >> FPCR_DYN_SHIFT) & 0x3;
 
-	DEBUG_INFO("======== Entering SIMD S-floating math emulation =======\n");
-	DEBUG_INFO("hardware fpcr = %#lx\n", fpcr);
+	pr_debug("======== Entering SIMD S-floating math emulation =======\n");
+	pr_debug("hardware fpcr = %#lx\n", fpcr);
 	swcr = swcr_update_status(current_thread_info()->ieee_state, fpcr);
-	DEBUG_INFO("software swcr = %#lx\n", swcr);
-	DEBUG_INFO("fa:%#lx,fb:%#lx,fc:%#lx,func:%#lx,mode:%#lx\n", fa, fb, fc, func, mode);
+	pr_debug("software swcr = %#lx\n", swcr);
+	pr_debug("fa:%#lx,fb:%#lx,fc:%#lx,func:%#lx,mode:%#lx\n", fa, fb, fc, func, mode);
 	read_fp_reg_s(fa, &va_p0, &va_p1, &va_p2, &va_p3);
 	read_fp_reg_s(fb, &vb_p0, &vb_p1, &vb_p2, &vb_p3);
 	read_fp_reg_s(fc, &vc_p0, &vc_p1, &vc_p2, &vc_p3);
-	DEBUG_INFO("va_p0:%#lx, va_p1:%#lx, va_p2:%#lx, va_p3:%#lx\n", va_p0, va_p1, va_p2, va_p3);
-	DEBUG_INFO("vb_p0:%#lx, vb_p1:%#lx, vb_p2:%#lx, vb_p3:%#lx\n", vb_p0, vb_p1, vb_p2, vb_p3);
-	DEBUG_INFO("vc_p0:%#lx, vc_p1:%#lx, vc_p2:%#lx, vc_p3:%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
+	pr_debug("va_p0:%#lx, va_p1:%#lx, va_p2:%#lx, va_p3:%#lx\n", va_p0, va_p1, va_p2, va_p3);
+	pr_debug("vb_p0:%#lx, vb_p1:%#lx, vb_p2:%#lx, vb_p3:%#lx\n", vb_p0, vb_p1, vb_p2, vb_p3);
+	pr_debug("vc_p0:%#lx, vc_p1:%#lx, vc_p2:%#lx, vc_p3:%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
 	working_part = WORKING_PART_0;
 simd_working:
 	_fex = 0;
 	switch (working_part) {
 	case WORKING_PART_0:
-		DEBUG_INFO("WORKING_PART_0\n");
+		pr_debug("WORKING_PART_0\n");
 		va = va_p0;
 		vb = vb_p0;
 		vc = vc_p0;
@@ -1260,7 +1252,7 @@ simd_working:
 			if ((SA_c == SW64_FP_NORMAL) && (SB_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("PART0: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
+				pr_debug("PART0: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
 		} else {
 			SW64_FP_NAN_S(SA, &va);
 			SW64_FP_NAN_S(SB, &vb);
@@ -1269,7 +1261,7 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_1:
-		DEBUG_INFO("WORKING_PART_1\n");
+		pr_debug("WORKING_PART_1\n");
 		va = va_p1;
 		vb = vb_p1;
 		vc = vc_p1;
@@ -1279,7 +1271,7 @@ simd_working:
 			if ((SA_c == SW64_FP_NORMAL) && (SB_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("PART1: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
+				pr_debug("PART1: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
 		} else {
 			SW64_FP_NAN_S(SA, &va);
 			SW64_FP_NAN_S(SB, &vb);
@@ -1288,7 +1280,7 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_2:
-		DEBUG_INFO("WORKING_PART_2\n");
+		pr_debug("WORKING_PART_2\n");
 		va = va_p2;
 		vb = vb_p2;
 		vc = vc_p2;
@@ -1298,7 +1290,7 @@ simd_working:
 			if ((SA_c == SW64_FP_NORMAL) && (SB_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("PART2: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
+				pr_debug("PART2: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
 		} else {
 			SW64_FP_NAN_S(SA, &va);
 			SW64_FP_NAN_S(SB, &vb);
@@ -1307,7 +1299,7 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_3:
-		DEBUG_INFO("WORKING_PART_3\n");
+		pr_debug("WORKING_PART_3\n");
 		va = va_p3;
 		vb = vb_p3;
 		vc = vc_p3;
@@ -1317,7 +1309,7 @@ simd_working:
 			if ((SA_c == SW64_FP_NORMAL) && (SB_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("PART3: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
+				pr_debug("PART3: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
 		} else {
 			SW64_FP_NAN_S(SA, &va);
 			SW64_FP_NAN_S(SB, &vb);
@@ -1333,35 +1325,35 @@ simd_working:
 
 	switch (func) {
 	case FNC_VSUBS:
-		DEBUG_INFO("FNC_VSUBS\n");
+		pr_debug("FNC_VSUBS\n");
 		FP_SUB_S(SR, SA, SB);
 		goto pack_s;
 	case FNC_VMULS:
-		DEBUG_INFO("FNC_VMULS\n");
+		pr_debug("FNC_VMULS\n");
 		FP_MUL_S(SR, SA, SB);
 		goto pack_s;
 	case FNC_VADDS:
-		DEBUG_INFO("FNC_VADDS\n");
+		pr_debug("FNC_VADDS\n");
 		FP_ADD_S(SR, SA, SB);
 		goto pack_s;
 	case FNC_VDIVS:
-		DEBUG_INFO("FNC_VDIVS\n");
+		pr_debug("FNC_VDIVS\n");
 		FP_DIV_S(SR, SA, SB);
 		goto pack_s;
 	case FNC_VSQRTS:
-		DEBUG_INFO("FNC_VSQRTS\n");
+		pr_debug("FNC_VSQRTS\n");
 		FP_SQRT_S(SR, SB);
 		goto pack_s;
 	}
 pack_s:
 	FP_PACK_SP(&vc, SR);
 	if ((_fex & FP_EX_UNDERFLOW) && (swcr & IEEE_MAP_UMZ)) {
-		DEBUG_INFO("pack_s, vc=0 !!!!\n");
+		pr_debug("pack_s, vc=0 !!!!\n");
 		vc = 0;
 	}
 
-	DEBUG_INFO("SW64 SIMD Emulation S-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
-	DEBUG_INFO("SW64 SIMD Emulation S-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
+	pr_debug("SW64 SIMD Emulation S-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
+	pr_debug("SW64 SIMD Emulation S-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
 next_working_s:
 	switch (working_part) {
 	case WORKING_PART_0:
@@ -1401,7 +1393,7 @@ done:
 			fpcr_p0 = fpcr;
 			fpcr_p0 &= (~FPCR_MASK | FPCR_DYN_MASK);
 			fpcr_p0 |= ieee_swcr_to_fpcr(swcr_p0);
-			DEBUG_INFO("fex_p0: fpcr_p0:%#lx\n", fpcr_p0);
+			pr_debug("fex_p0: fpcr_p0:%#lx\n", fpcr_p0);
 		}
 
 		if (fex_p1) {
@@ -1413,7 +1405,7 @@ done:
 			fpcr_p1 = fpcr;
 			fpcr_p1 &= (~FPCR_MASK | FPCR_DYN_MASK);
 			fpcr_p1 |= ieee_swcr_to_fpcr(swcr_p1);
-			DEBUG_INFO("fex_p1: fpcr_p1:%#lx\n", fpcr_p1);
+			pr_debug("fex_p1: fpcr_p1:%#lx\n", fpcr_p1);
 		}
 
 		if (fex_p2) {
@@ -1425,7 +1417,7 @@ done:
 			fpcr_p2 = fpcr;
 			fpcr_p2 &= (~FPCR_MASK | FPCR_DYN_MASK);
 			fpcr_p2 |= ieee_swcr_to_fpcr(swcr_p2);
-			DEBUG_INFO("fex_p2: fpcr_p2:%#lx\n", fpcr_p2);
+			pr_debug("fex_p2: fpcr_p2:%#lx\n", fpcr_p2);
 		}
 
 		if (fex_p3) {
@@ -1437,18 +1429,18 @@ done:
 			fpcr_p3 = fpcr;
 			fpcr_p3 &= (~FPCR_MASK | FPCR_DYN_MASK);
 			fpcr_p3 |= ieee_swcr_to_fpcr(swcr_p3);
-			DEBUG_INFO("fex_p3: fpcr_p3:%#lx\n", fpcr_p3);
+			pr_debug("fex_p3: fpcr_p3:%#lx\n", fpcr_p3);
 		}
 
 		fpcr = fpcr_p0 | fpcr_p1 | fpcr_p2 | fpcr_p3;
-		DEBUG_INFO("fex_p0 = %#lx\n", fex_p0);
-		DEBUG_INFO("fex_p1 = %#lx\n", fex_p1);
-		DEBUG_INFO("fex_p2 = %#lx\n", fex_p2);
-		DEBUG_INFO("fex_p3 = %#lx\n", fex_p3);
-		DEBUG_INFO("SIMD emulation almost finished.before write fpcr = %#lx\n", fpcr);
+		pr_debug("fex_p0 = %#lx\n", fex_p0);
+		pr_debug("fex_p1 = %#lx\n", fex_p1);
+		pr_debug("fex_p2 = %#lx\n", fex_p2);
+		pr_debug("fex_p3 = %#lx\n", fex_p3);
+		pr_debug("SIMD emulation almost finished.before write fpcr = %#lx\n", fpcr);
 		wrfpcr(fpcr);
 
-		DEBUG_INFO("Before write fp: vc_p0=%#lx, vc_p1=%#lx, vc_p2=%#lx, vc_p3=%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
+		pr_debug("Before write fp: vc_p0=%#lx, vc_p1=%#lx, vc_p2=%#lx, vc_p3=%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
 		write_fp_reg_s(fc, vc_p0, vc_p1, vc_p2, vc_p3);
 
 		/* Do we generate a signal?  */
@@ -1469,14 +1461,14 @@ done:
 			if (_fex & IEEE_TRAP_ENABLE_INV)
 				si_code = FPE_FLTINV;
 		}
-		DEBUG_INFO("SIMD finished.. si_code:%#lx\n", si_code);
+		pr_debug("SIMD finished.. si_code:%#lx\n", si_code);
 		return si_code;
 	}
-	DEBUG_INFO("SIMD finished.. si_code:%#lx\n", si_code);
+	pr_debug("SIMD finished.. si_code:%#lx\n", si_code);
 	return 0;
 
 bad_insn:
-	printk(KERN_ERR "%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
+	pr_err("%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
 	return -1;
 
 }
@@ -1520,10 +1512,10 @@ long mul_add_fp_emul(unsigned long pc)
 	fpcr = rdfpcr();
 	mode   = (fpcr >> FPCR_DYN_SHIFT) & 0x3;
 
-	DEBUG_INFO("===== Entering SW64 MUL-ADD Emulation =====\n");
-	DEBUG_INFO("hardware fpcr = %#lx\n", fpcr);
+	pr_debug("===== Entering SW64 MUL-ADD Emulation =====\n");
+	pr_debug("hardware fpcr = %#lx\n", fpcr);
 	swcr = swcr_update_status(current_thread_info()->ieee_state, fpcr);
-	DEBUG_INFO("software swcr = %#lx\n", swcr);
+	pr_debug("software swcr = %#lx\n", swcr);
 
 	if (func == FNC_FMAS || func == FNC_FMSS || func == FNC_FNMAS || func == FNC_FNMSS) {
 		va = sw64_read_fp_reg_s(fa);
@@ -1543,7 +1535,7 @@ long mul_add_fp_emul(unsigned long pc)
 		FP_UNPACK_DP(DC, &vc);
 		FP_UNPACK_DP(D_ZERO, &vzero);
 	}
-	DEBUG_INFO("va = %#lx, vb = %#lx, vc = %#lx\n", va, vb, vc);
+	pr_debug("va = %#lx, vb = %#lx, vc = %#lx\n", va, vb, vc);
 	switch (func) {
 	case FNC_FMAS:
 		FP_MUL_S(S_TMP, SA, SB);
@@ -1603,7 +1595,7 @@ pack_d:
 	sw64_write_fp_reg(fd, vd);
 
 done:
-	DEBUG_INFO("vd = %#lx\n", vd);
+	pr_debug("vd = %#lx\n", vd);
 	if (_fex) {
 		/* Record exceptions in software control word.  */
 		swcr |= (_fex << IEEE_STATUS_TO_EXCSUM_SHIFT);
@@ -1649,7 +1641,7 @@ done:
 	return 0;
 
 bad_insn:
-	printk(KERN_ERR "%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
+	pr_err("%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
 	return -1;
 }
 
@@ -1685,28 +1677,28 @@ long simd_mul_add_fp_emul_s(unsigned long pc)
 
 	int working_part;
 
-	DEBUG_INFO("======== Entering SIMD S-floating mul-add emulation =======\n");
+	pr_debug("======== Entering SIMD S-floating mul-add emulation =======\n");
 	swcr = swcr_update_status(current_thread_info()->ieee_state, fpcr);
-	DEBUG_INFO("software swcr = %#lx\n", swcr);
-	DEBUG_INFO("hardware fpcr = %#lx\n", fpcr);
+	pr_debug("software swcr = %#lx\n", swcr);
+	pr_debug("hardware fpcr = %#lx\n", fpcr);
 	read_fp_reg_s(fa, &va_p0, &va_p1, &va_p2, &va_p3);
 	read_fp_reg_s(fb, &vb_p0, &vb_p1, &vb_p2, &vb_p3);
 	read_fp_reg_s(fc, &vc_p0, &vc_p1, &vc_p2, &vc_p3);
 	read_fp_reg_s(fd, &vd_p0, &vd_p1, &vd_p2, &vd_p3);
-	DEBUG_INFO("va_p0:%#lx, va_p1:%#lx, va_p2:%#lx, va_p3:%#lx\n", va_p0, va_p1, va_p2, va_p3);
-	DEBUG_INFO("vb_p0:%#lx, vb_p1:%#lx, vb_p2:%#lx, vb_p3:%#lx\n", vb_p0, vb_p1, vb_p2, vb_p3);
-	DEBUG_INFO("vc_p0:%#lx, vc_p1:%#lx, vc_p2:%#lx, vc_p3:%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
-	DEBUG_INFO("vd_p0:%#lx, vd_p1:%#lx, vd_p2:%#lx, vd_p3:%#lx\n", vd_p0, vd_p1, vd_p2, vd_p3);
+	pr_debug("va_p0:%#lx, va_p1:%#lx, va_p2:%#lx, va_p3:%#lx\n", va_p0, va_p1, va_p2, va_p3);
+	pr_debug("vb_p0:%#lx, vb_p1:%#lx, vb_p2:%#lx, vb_p3:%#lx\n", vb_p0, vb_p1, vb_p2, vb_p3);
+	pr_debug("vc_p0:%#lx, vc_p1:%#lx, vc_p2:%#lx, vc_p3:%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
+	pr_debug("vd_p0:%#lx, vd_p1:%#lx, vd_p2:%#lx, vd_p3:%#lx\n", vd_p0, vd_p1, vd_p2, vd_p3);
 	working_part = WORKING_PART_0;
 simd_working:
 	_fex = 0;
 	switch (working_part) {
 	case WORKING_PART_0:
-		DEBUG_INFO("WORKING_PART_0\n");
+		pr_debug("WORKING_PART_0\n");
 		va = va_p0;
 		vb = vb_p0;
 		vc = vc_p0;
-		DEBUG_INFO("FPCR_STATUS_MASK0 : %#lx, fpcr :%#lx\n", FPCR_STATUS_MASK0, fpcr);
+		pr_debug("FPCR_STATUS_MASK0 : %#lx, fpcr :%#lx\n", FPCR_STATUS_MASK0, fpcr);
 		if ((fpcr & FPCR_STATUS_MASK0) == 0) {
 			SW64_FP_NORMAL_S(SA, &va);
 			SW64_FP_NORMAL_S(SB, &vb);
@@ -1714,7 +1706,7 @@ simd_working:
 			if ((SA_c == SW64_FP_NORMAL) && (SB_c == SW64_FP_NORMAL) && (SC_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("LOW: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
+				pr_debug("LOW: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
 		} else {
 			SW64_FP_NAN_S(SA, &va);
 			SW64_FP_NAN_S(SB, &vb);
@@ -1723,11 +1715,11 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_1:
-		DEBUG_INFO("WORKING_PART_1\n");
+		pr_debug("WORKING_PART_1\n");
 		va = va_p1;
 		vb = vb_p1;
 		vc = vc_p1;
-		DEBUG_INFO("FPCR_STATUS_MASK1 : %#lx, fpcr :%#lx\n", FPCR_STATUS_MASK0, fpcr);
+		pr_debug("FPCR_STATUS_MASK1 : %#lx, fpcr :%#lx\n", FPCR_STATUS_MASK0, fpcr);
 		if ((fpcr & FPCR_STATUS_MASK1) == 0) {
 			SW64_FP_NORMAL_S(SA, &va);
 			SW64_FP_NORMAL_S(SB, &vb);
@@ -1735,7 +1727,7 @@ simd_working:
 			if ((SA_c == SW64_FP_NORMAL) && (SB_c == SW64_FP_NORMAL) && (SC_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("HIGH: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
+				pr_debug("HIGH: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
 		} else {
 			SW64_FP_NAN_S(SA, &va);
 			SW64_FP_NAN_S(SB, &vb);
@@ -1744,7 +1736,7 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_2:
-		DEBUG_INFO("WORKING_PART_2\n");
+		pr_debug("WORKING_PART_2\n");
 		va = va_p2;
 		vb = vb_p2;
 		vc = vc_p2;
@@ -1755,7 +1747,7 @@ simd_working:
 			if ((SA_c == SW64_FP_NORMAL) && (SB_c == SW64_FP_NORMAL) && (SC_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("HIGH: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
+				pr_debug("HIGH: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
 		} else {
 			SW64_FP_NAN_S(SA, &va);
 			SW64_FP_NAN_S(SB, &vb);
@@ -1764,7 +1756,7 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_3:
-		DEBUG_INFO("WORKING_PART_3\n");
+		pr_debug("WORKING_PART_3\n");
 		va = va_p3;
 		vb = vb_p3;
 		vc = vc_p3;
@@ -1775,7 +1767,7 @@ simd_working:
 			if ((SA_c == SW64_FP_NORMAL) && (SB_c == SW64_FP_NORMAL) && (SC_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("HIGH: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
+				pr_debug("HIGH: SA_c = %#lx, SB_c = %#lx\n", SA_c, SB_c);
 		} else {
 			SW64_FP_NAN_S(SA, &va);
 			SW64_FP_NAN_S(SB, &vb);
@@ -1818,8 +1810,8 @@ pack_s:
 	FP_PACK_SP(&vd, SR);
 	if ((_fex & FP_EX_UNDERFLOW) && (swcr & IEEE_MAP_UMZ))
 		vd = 0;
-	DEBUG_INFO("SW64 SIMD Emulation S-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
-	DEBUG_INFO("SW64 SIMD Emulation S-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
+	pr_debug("SW64 SIMD Emulation S-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
+	pr_debug("SW64 SIMD Emulation S-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
 next_working_s:
 	switch (working_part) {
 	case WORKING_PART_0:
@@ -1895,13 +1887,13 @@ done:
 		}
 
 		fpcr = fpcr_p0 | fpcr_p1 | fpcr_p2 | fpcr_p3;
-		DEBUG_INFO("fex_p0 = %#lx\n", fex_p0);
-		DEBUG_INFO("fex_p1 = %#lx\n", fex_p1);
-		DEBUG_INFO("fex_p2 = %#lx\n", fex_p2);
-		DEBUG_INFO("fex_p3 = %#lx\n", fex_p3);
-		DEBUG_INFO("SIMD emulation almost finished.before write fpcr = %#lx\n", fpcr);
+		pr_debug("fex_p0 = %#lx\n", fex_p0);
+		pr_debug("fex_p1 = %#lx\n", fex_p1);
+		pr_debug("fex_p2 = %#lx\n", fex_p2);
+		pr_debug("fex_p3 = %#lx\n", fex_p3);
+		pr_debug("SIMD emulation almost finished.before write fpcr = %#lx\n", fpcr);
 		wrfpcr(fpcr);
-		DEBUG_INFO("Before write fp: vp_p0=%#lx, vc_p1=%#lx, vc_p2=%#lx, vc_p3=%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
+		pr_debug("Before write fp: vp_p0=%#lx, vc_p1=%#lx, vc_p2=%#lx, vc_p3=%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
 		write_fp_reg_s(fd, vd_p0, vd_p1, vd_p2, vd_p3); /* write to fd */
 
 		/* Do we generate a signal?  */
@@ -1922,15 +1914,15 @@ done:
 			if (_fex & IEEE_TRAP_ENABLE_INV)
 				si_code = FPE_FLTINV;
 		}
-		DEBUG_INFO("SIMD finished.. si_code:%#lx\n", si_code);
+		pr_debug("SIMD finished.. si_code:%#lx\n", si_code);
 		return si_code;
 
 	}
-	DEBUG_INFO("SIMD finished.. si_code:%#lx\n", si_code);
+	pr_debug("SIMD finished.. si_code:%#lx\n", si_code);
 	return 0;
 
 bad_insn:
-	printk(KERN_ERR "%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
+	pr_err("%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
 	return -1;
 }
 
@@ -1965,24 +1957,24 @@ long simd_mul_add_fp_emul_d(unsigned long pc)
 
 	int working_part;
 
-	DEBUG_INFO("======== Entering SIMD D-floating mul-add emulation =======\n");
-	DEBUG_INFO("hardware fpcr = %#lx\n", fpcr);
+	pr_debug("======== Entering SIMD D-floating mul-add emulation =======\n");
+	pr_debug("hardware fpcr = %#lx\n", fpcr);
 	swcr = swcr_update_status(current_thread_info()->ieee_state, fpcr);
-	DEBUG_INFO("software swcr = %#lx\n", swcr);
+	pr_debug("software swcr = %#lx\n", swcr);
 	read_fp_reg_d(fa, &va_p0, &va_p1, &va_p2, &va_p3);
 	read_fp_reg_d(fb, &vb_p0, &vb_p1, &vb_p2, &vb_p3);
 	read_fp_reg_d(fc, &vc_p0, &vc_p1, &vc_p2, &vc_p3);
 	read_fp_reg_d(fd, &vd_p0, &vd_p1, &vd_p2, &vd_p3);
-	DEBUG_INFO("va_p0:%#lx, va_p1:%#lx, va_p2:%#lx, va_p3:%#lx\n", va_p0, va_p1, va_p2, va_p3);
-	DEBUG_INFO("vb_p0:%#lx, vb_p1:%#lx, vb_p2:%#lx, vb_p3:%#lx\n", vb_p0, vb_p1, vb_p2, vb_p3);
-	DEBUG_INFO("vc_p0:%#lx, vc_p1:%#lx, vc_p2:%#lx, vc_p3:%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
-	DEBUG_INFO("vd_p0:%#lx, vd_p1:%#lx, vd_p2:%#lx, vd_p3:%#lx\n", vd_p0, vd_p1, vd_p2, vd_p3);
+	pr_debug("va_p0:%#lx, va_p1:%#lx, va_p2:%#lx, va_p3:%#lx\n", va_p0, va_p1, va_p2, va_p3);
+	pr_debug("vb_p0:%#lx, vb_p1:%#lx, vb_p2:%#lx, vb_p3:%#lx\n", vb_p0, vb_p1, vb_p2, vb_p3);
+	pr_debug("vc_p0:%#lx, vc_p1:%#lx, vc_p2:%#lx, vc_p3:%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
+	pr_debug("vd_p0:%#lx, vd_p1:%#lx, vd_p2:%#lx, vd_p3:%#lx\n", vd_p0, vd_p1, vd_p2, vd_p3);
 	working_part = WORKING_PART_0;
 simd_working:
 	_fex = 0;
 	switch (working_part) {
 	case WORKING_PART_0:
-		DEBUG_INFO("WORKING_PART_0\n");
+		pr_debug("WORKING_PART_0\n");
 		va = va_p0;
 		vb = vb_p0;
 		vc = vc_p0;
@@ -1994,7 +1986,7 @@ simd_working:
 			if ((DA_c == SW64_FP_NORMAL) && (DB_c == SW64_FP_NORMAL) && (DC_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("LOW: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
+				pr_debug("LOW: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
 		} else {
 			SW64_FP_NAN_D(DA, &va);
 			SW64_FP_NAN_D(DB, &vb);
@@ -2004,7 +1996,7 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_1:
-		DEBUG_INFO("WORKING_PART_1\n");
+		pr_debug("WORKING_PART_1\n");
 		va = va_p1;
 		vb = vb_p1;
 		vc = vc_p1;
@@ -2016,7 +2008,7 @@ simd_working:
 			if ((DA_c == SW64_FP_NORMAL) && (DB_c == SW64_FP_NORMAL) && (DC_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
+				pr_debug("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
 		} else {
 			SW64_FP_NAN_D(DA, &va);
 			SW64_FP_NAN_D(DB, &vb);
@@ -2026,7 +2018,7 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_2:
-		DEBUG_INFO("WORKING_PART_2\n");
+		pr_debug("WORKING_PART_2\n");
 		va = va_p2;
 		vb = vb_p2;
 		vc = vc_p2;
@@ -2038,7 +2030,7 @@ simd_working:
 			if ((DA_c == SW64_FP_NORMAL) && (DB_c == SW64_FP_NORMAL) && (DC_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
+				pr_debug("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
 		} else {
 			SW64_FP_NAN_D(DA, &va);
 			SW64_FP_NAN_D(DB, &vb);
@@ -2048,7 +2040,7 @@ simd_working:
 		}
 		break;
 	case WORKING_PART_3:
-		DEBUG_INFO("WORKING_PART_3\n");
+		pr_debug("WORKING_PART_3\n");
 		va = va_p3;
 		vb = vb_p3;
 		vc = vc_p3;
@@ -2060,7 +2052,7 @@ simd_working:
 			if ((DA_c == SW64_FP_NORMAL) && (DB_c == SW64_FP_NORMAL) && (DC_c == SW64_FP_NORMAL))
 				goto next_working_s;
 			else
-				DEBUG_INFO("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
+				pr_debug("HIGH: DA_c = %#lx, DB_c = %#lx\n", DA_c, DB_c);
 		} else {
 			SW64_FP_NAN_D(DA, &va);
 			SW64_FP_NAN_D(DB, &vb);
@@ -2106,8 +2098,8 @@ pack_d:
 	FP_PACK_DP(&vd, DR);
 	if ((_fex & FP_EX_UNDERFLOW) && (swcr & IEEE_MAP_UMZ))
 		vd = 0;
-	DEBUG_INFO("SW64 SIMD Emulation D-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
-	DEBUG_INFO("SW64 SIMD Emulation D-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
+	pr_debug("SW64 SIMD Emulation D-floating _fex=%#lx, va=%#lx, vb=%#lx, vc=%#lx\n", _fex, va, vb, vc);
+	pr_debug("SW64 SIMD Emulation D-floating mode=%#lx,func=%#lx, swcr=%#lx\n", mode, func, swcr);
 next_working_s:
 	switch (working_part) {
 	case WORKING_PART_0:
@@ -2183,14 +2175,14 @@ done:
 		}
 
 		fpcr = fpcr_p0 | fpcr_p1 | fpcr_p2 | fpcr_p3;
-		DEBUG_INFO("fex_p0 = %#lx\n", fex_p0);
-		DEBUG_INFO("fex_p1 = %#lx\n", fex_p1);
-		DEBUG_INFO("fex_p2 = %#lx\n", fex_p2);
-		DEBUG_INFO("fex_p3 = %#lx\n", fex_p3);
-		DEBUG_INFO("SIMD emulation almost finished.before write fpcr = %#lx\n", fpcr);
+		pr_debug("fex_p0 = %#lx\n", fex_p0);
+		pr_debug("fex_p1 = %#lx\n", fex_p1);
+		pr_debug("fex_p2 = %#lx\n", fex_p2);
+		pr_debug("fex_p3 = %#lx\n", fex_p3);
+		pr_debug("SIMD emulation almost finished.before write fpcr = %#lx\n", fpcr);
 		wrfpcr(fpcr);
 
-		DEBUG_INFO("Before write fp: vp_p0=%#lx, vc_p1=%#lx, vc_p2=%#lx, vc_p3=%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
+		pr_debug("Before write fp: vp_p0=%#lx, vc_p1=%#lx, vc_p2=%#lx, vc_p3=%#lx\n", vc_p0, vc_p1, vc_p2, vc_p3);
 		write_fp_reg_d(fd, vd_p0, vd_p1, vd_p2, vd_p3); /* write to fd */
 
 		/* Do we generate a signal?  */
@@ -2211,14 +2203,14 @@ done:
 			if (_fex & IEEE_TRAP_ENABLE_INV)
 				si_code = FPE_FLTINV;
 		}
-		DEBUG_INFO("SIMD finished.. si_code:%#lx\n", si_code);
+		pr_debug("SIMD finished.. si_code:%#lx\n", si_code);
 		return si_code;
 	}
-	DEBUG_INFO("SIMD finished.. si_code:%#lx\n", si_code);
+	pr_debug("SIMD finished.. si_code:%#lx\n", si_code);
 	return 0;
 
 bad_insn:
-	printk(KERN_ERR "%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
+	pr_err("%s: Invalid FP insn %#x at %#lx\n", __func__, insn, pc);
 	return -1;
 }
 

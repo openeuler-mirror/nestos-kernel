@@ -8,46 +8,20 @@
 
 #include <asm/kvm_emulate.h>
 
-static int kvm_is_in_guest(void)
+
+bool kvm_arch_vcpu_in_kernel(struct kvm_vcpu *vcpu)
 {
-	return kvm_get_running_vcpu() != NULL;
+	return (vcpu->arch.regs.ps & 8) != 0;
 }
 
-static int kvm_is_user_mode(void)
+unsigned long kvm_arch_vcpu_get_ip(struct kvm_vcpu *vcpu)
 {
-	struct kvm_vcpu *vcpu;
-
-	vcpu = kvm_get_running_vcpu();
-
-	if (vcpu)
-		return (vcpu->arch.regs.ps & 8) != 0;
-
-	return 0;
+	return vcpu->arch.regs.pc;
 }
 
-static unsigned long kvm_get_guest_ip(void)
+
+
+static inline bool kvm_arch_pmi_in_guest(struct kvm_vcpu *vcpu)
 {
-	struct kvm_vcpu *vcpu;
-
-	vcpu = kvm_get_running_vcpu();
-
-	if (vcpu)
-		return vcpu->arch.regs.pc;
-	return 0;
-}
-
-static struct perf_guest_info_callbacks kvm_guest_cbs = {
-	.is_in_guest	= kvm_is_in_guest,
-	.is_user_mode	= kvm_is_user_mode,
-	.get_guest_ip	= kvm_get_guest_ip,
-};
-
-int kvm_sw64_perf_init(void)
-{
-	return perf_register_guest_info_callbacks(&kvm_guest_cbs);
-}
-
-int kvm_sw64_perf_teardown(void)
-{
-	return perf_unregister_guest_info_callbacks(&kvm_guest_cbs);
+	return IS_ENABLED(CONFIG_GUEST_PERF_EVENTS) && !!vcpu;
 }

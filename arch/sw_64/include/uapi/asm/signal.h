@@ -99,7 +99,7 @@ typedef unsigned long sigset_t;
 struct sigaction {
 	union {
 		__sighandler_t	_sa_handler;
-		void (*_sa_sigaction)(int, struct siginfo *, void *);
+		void (*_sa_sigaction)(int sig, struct siginfo *info, void *ucontext);
 	} _u;
 	sigset_t	sa_mask;
 	int		sa_flags;

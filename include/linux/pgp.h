@@ -13,6 +13,8 @@
 #ifndef _LINUX_PGP_H
 #define _LINUX_PGP_H
 
+#ifdef CONFIG_PGP_LIBRARY
+
 #include <linux/types.h>
 #include <linux/key.h>
 
@@ -195,14 +197,14 @@ struct pgp_key_v3_packet {
 	struct pgp_time	creation_time;
 	u8 expiry[2];			/* 0 or time in days till expiry */
 	enum pgp_pubkey_algo pubkey_algo : 8;
-	u8 key_material[0];
+	u8 key_material[];
 } __packed;
 
 struct pgp_key_v4_packet {
 	enum pgp_key_version version : 8;
 	struct pgp_time	creation_time;
 	enum pgp_pubkey_algo pubkey_algo : 8;
-	u8 key_material[0];
+	u8 key_material[];
 } __packed;
 
 /*
@@ -217,4 +219,5 @@ enum pgp_literal_data_format {
 int __init preload_pgp_keys(const u8 *pgpdata, size_t pgpdatalen,
 			    struct key *keyring);
 
+#endif /* CONFIG_PGP_LIBRARY */
 #endif /* _LINUX_PGP_H */

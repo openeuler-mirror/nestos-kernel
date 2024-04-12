@@ -55,7 +55,7 @@
 #define HCLGE_COMM_NIC_CMQ_DESC_NUM_S		3
 #define HCLGE_COMM_NIC_CMQ_DESC_NUM		1024
 #define HCLGE_COMM_CMDQ_TX_TIMEOUT_DEFAULT	30000
-#define HCLGE_COMM_CMDQ_TX_TIMEOUT_500MS	500000
+#define HCLGE_COMM_CMDQ_CFG_RST_TIMEOUT		1000000
 
 enum hclge_opcode_type {
 	/* Generic commands */
@@ -91,6 +91,7 @@ enum hclge_opcode_type {
 	HCLGE_OPC_DFX_RCB_REG		= 0x004D,
 	HCLGE_OPC_DFX_TQP_REG		= 0x004E,
 	HCLGE_OPC_DFX_SSU_REG_2		= 0x004F,
+	HCLGE_OPC_DFX_GEN_REG		= 0x7038,
 
 	HCLGE_OPC_QUERY_DEV_SPECS	= 0x0050,
 	HCLGE_OPC_GET_QUEUE_ERR_VF      = 0x0067,
@@ -105,6 +106,7 @@ enum hclge_opcode_type {
 	HCLGE_OPC_MAC_TNL_INT_EN	= 0x0311,
 	HCLGE_OPC_CLEAR_MAC_TNL_INT	= 0x0312,
 	HCLGE_OPC_COMMON_LOOPBACK       = 0x0315,
+	HCLGE_OPC_QUERY_FEC_STATS	= 0x0316,
 	HCLGE_OPC_CONFIG_FEC_MODE	= 0x031A,
 	HCLGE_OPC_QUERY_ROH_TYPE_INFO	= 0x0389,
 
@@ -153,6 +155,7 @@ enum hclge_opcode_type {
 	HCLGE_OPC_TM_INTERNAL_STS	= 0x0850,
 	HCLGE_OPC_TM_INTERNAL_CNT	= 0x0851,
 	HCLGE_OPC_TM_INTERNAL_STS_1	= 0x0852,
+	HCLGE_OPC_TM_TC_RATE_LIMIT_CFG	= 0x0871,
 	HCLGE_OPC_TM_FLUSH		= 0x0872,
 
 	/* Packet buffer allocate commands */
@@ -245,6 +248,9 @@ enum hclge_opcode_type {
 	HCLGE_OPC_QCN_AJUST_INIT	= 0x1A07,
 	HCLGE_OPC_QCN_DFX_CNT_STATUS    = 0x1A08,
 
+	/* SCC commands */
+	HCLGE_OPC_QUERY_SCC_VER		= 0x1A84,
+
 	/* Mailbox command */
 	HCLGEVF_OPC_MBX_PF_TO_VF	= 0x2000,
 	HCLGEVF_OPC_MBX_VF_TO_PF	= 0x2001,
@@ -309,6 +315,23 @@ enum hclge_opcode_type {
 
 	/* Query link diagnosis info command */
 	HCLGE_OPC_QUERY_LINK_DIAGNOSIS	= 0x702A,
+
+	/* EXT command */
+	HCLGE_OPC_CONFIG_NIC_CLOCK = 0x0060,
+	HCLGE_OPC_CONFIG_SWITCH_PARAM = 0x1033,
+	HCLGE_OPC_CONFIG_VLAN_FILTER = 0x1100,
+	HCLGE_OPC_SET_NOTIFY_PKT = 0x180A,
+	HCLGE_OPC_CONFIG_1D_TORUS = 0x2300,
+	HCLGE_OPC_CHIP_ID_GET = 0x7003,
+	HCLGE_OPC_GET_CHIP_NUM = 0x7005,
+	HCLGE_OPC_GET_PORT_NUM = 0x7006,
+	HCLGE_OPC_SET_LED = 0x7007,
+	HCLGE_OPC_DISABLE_NET_LANE = 0x7008,
+	HCLGE_OPC_CFG_PAUSE_STORM_PARA = 0x7019,
+	HCLGE_OPC_CFG_GET_HILINK_REF_LOS = 0x701B,
+	HCLGE_OPC_GET_PORT_FAULT_STATUS = 0x7023,
+	HCLGE_OPC_SFP_GET_PRESENT = 0x7101,
+	HCLGE_OPC_SFP_SET_STATUS = 0x7102,
 };
 
 enum hclge_comm_cmd_return_status {
@@ -347,11 +370,13 @@ enum HCLGE_COMM_CAP_BITS {
 	HCLGE_COMM_CAP_CQ_B = 18,
 	HCLGE_COMM_CAP_GRO_B = 20,
 	HCLGE_COMM_CAP_FD_B = 21,
+	HCLGE_COMM_CAP_FEC_STATS_B = 25,
 	HCLGE_COMM_CAP_VF_FAULT_B = 26,
 	HCLGE_COMM_CAP_LANE_NUM_B = 27,
 	HCLGE_COMM_CAP_WOL_B = 28,
 	HCLGE_COMM_CAP_NOTIFY_PKT_B = 29,
 	HCLGE_COMM_CAP_TM_FLUSH_B = 31,
+	HCLGE_COMM_CAP_ERR_MOD_GEN_REG_B = 32,
 };
 
 enum HCLGE_COMM_API_CAP_BITS {
@@ -391,6 +416,11 @@ struct hclge_comm_query_version_cmd {
 	__le32 caps[HCLGE_COMM_QUERY_CAP_LENGTH]; /* capabilities of device */
 };
 
+struct hclge_comm_query_scc_cmd {
+	__le32 scc_version;
+	u8 rsv[20];
+};
+
 #define HCLGE_DESC_DATA_LEN		6
 struct hclge_desc {
 	__le16 opcode;
@@ -422,11 +452,22 @@ enum hclge_comm_cmd_status {
 	HCLGE_COMM_ERR_CSQ_ERROR	= -3,
 };
 
+struct hclge_comm_hw;
+struct hclge_comm_cmq_ops {
+	void (*trace_cmd_send)(struct hclge_comm_hw *hw,
+			       struct hclge_desc *desc,
+			       int num, bool is_special);
+	void (*trace_cmd_get)(struct hclge_comm_hw *hw,
+			      struct hclge_desc *desc,
+			      int num, bool is_special);
+};
+
 struct hclge_comm_cmq {
 	struct hclge_comm_cmq_ring csq;
 	struct hclge_comm_cmq_ring crq;
 	u16 tx_timeout;
 	enum hclge_comm_cmd_status last_status;
+	struct hclge_comm_cmq_ops ops;
 };
 
 struct hclge_comm_hw {
@@ -473,5 +514,6 @@ int hclge_comm_cmd_queue_init(struct pci_dev *pdev, struct hclge_comm_hw *hw);
 int hclge_comm_cmd_init(struct hnae3_ae_dev *ae_dev, struct hclge_comm_hw *hw,
 			u32 *fw_version, bool is_pf,
 			unsigned long reset_pending);
-
+void hclge_comm_cmd_init_ops(struct hclge_comm_hw *hw,
+			     const struct hclge_comm_cmq_ops *ops);
 #endif

@@ -346,7 +346,7 @@ int chip3_spi_add_host(struct device *dev, struct chip3_spi *dws)
 	master->handle_err = chip3_spi_handle_err;
 	master->max_speed_hz = dws->max_freq;
 	master->dev.of_node = dev->of_node;
-	master->flags = SPI_MASTER_GPIO_SS;
+	master->flags = SPI_CONTROLLER_GPIO_SS;
 	master->max_transfer_size = chip3_spi_max_length;
 	master->max_message_size = chip3_spi_max_length;
 
@@ -399,6 +399,6 @@ int chip3_spi_resume_host(struct chip3_spi *dws)
 }
 EXPORT_SYMBOL_GPL(chip3_spi_resume_host);
 
-MODULE_AUTHOR("Platform@wiat.com");
+MODULE_AUTHOR("Platform@wxiat.com");
 MODULE_DESCRIPTION("Driver for Sunway CHIP3 SPI controller core");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
