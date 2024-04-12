@@ -510,7 +510,7 @@ xlog_recover_do_reg_buffer(
 			if (fa) {
 				xfs_alert(mp,
 	"dquot corrupt at %pS trying to replay into block 0x%llx",
-					fa, bp->b_bn);
+					fa, xfs_buf_daddr(bp));
 				goto next;
 			}
 		}
@@ -616,7 +616,7 @@ xlog_recover_do_inode_buffer(
 	inodes_per_buf = BBTOB(bp->b_length) >> mp->m_sb.sb_inodelog;
 	for (i = 0; i < inodes_per_buf; i++) {
 		next_unlinked_offset = (i * mp->m_sb.sb_inodesize) +
-			offsetof(xfs_dinode_t, di_next_unlinked);
+			offsetof(struct xfs_dinode, di_next_unlinked);
 
 		while (next_unlinked_offset >=
 		       (reg_buf_offset + reg_buf_bytes)) {
@@ -950,13 +950,10 @@ xlog_recover_buf_commit_pass2(
 
 		/*
 		 * We're skipping replay of this buffer log item due to the log
-		 * item LSN being behind the ondisk buffer.  Verify the buffer
-		 * contents since we aren't going to run the write verifier.
+		 * item LSN being behind the ondisk buffer.  clear XBF_DONE flag
+		 * of the buffer to prevent buffer from being used without verify.
 		 */
-		if (bp->b_ops) {
-			bp->b_ops->verify_read(bp);
-			error = bp->b_error;
-		}
+		bp->b_flags &= ~XBF_DONE;
 		goto out_release;
 	}
 
@@ -988,6 +985,7 @@ xlog_recover_buf_commit_pass2(
 			if (be32_to_cpu(sb->sb_agcount) > mp->m_sb.sb_agcount) {
 				error = xfs_initialize_perag(mp,
 						be32_to_cpu(sb->sb_agcount),
+						be64_to_cpu(sb->sb_dblocks),
 						&mp->m_maxagi);
 				if (error)
 					goto out_release;

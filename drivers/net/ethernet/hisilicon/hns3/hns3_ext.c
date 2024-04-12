@@ -34,13 +34,13 @@ static int nic_invoke_pri_ops(struct net_device *ndev, int opcode,
 	struct hnae3_handle *h;
 	int ret;
 
+	if (nic_netdev_match_check(ndev))
+		return -ENODEV;
+
 	if ((!data && length) || (data && !length)) {
 		netdev_err(ndev, "failed to check data and length");
 		return -EINVAL;
 	}
-
-	if (nic_netdev_match_check(ndev))
-		return -ENODEV;
 
 	h = hns3_get_handle(ndev);
 	if (!h->ae_algo->ops->priv_ops)
@@ -58,6 +58,9 @@ static int nic_invoke_pri_ops(struct net_device *ndev, int opcode,
 void nic_chip_recover_handler(struct net_device *ndev,
 			      enum hnae3_event_type_custom event_t)
 {
+	if (nic_netdev_match_check(ndev))
+		return;
+
 	dev_info(&ndev->dev, "reset type is %d!!\n", event_t);
 
 	if (event_t == HNAE3_PPU_POISON_CUSTOM)
@@ -74,8 +77,8 @@ void nic_chip_recover_handler(struct net_device *ndev,
 }
 EXPORT_SYMBOL(nic_chip_recover_handler);
 
-static int nic_check_pfc_storm_para(int dir, int enable, int period_ms,
-				    int times, int recovery_period_ms)
+static int nic_check_pfc_storm_para(u32 dir, u32 enable, u32 period_ms,
+				    u32 times, u32 recovery_period_ms)
 {
 	if ((dir != HNS3_PFC_STORM_PARA_DIR_RX &&
 	     dir != HNS3_PFC_STORM_PARA_DIR_TX) ||
@@ -93,15 +96,14 @@ static int nic_check_pfc_storm_para(int dir, int enable, int period_ms,
 	return 0;
 }
 
-int nic_set_pfc_storm_para(struct net_device *ndev, int dir, int enable,
-			   int period_ms, int times, int recovery_period_ms)
+int nic_set_pfc_storm_para(struct net_device *ndev, u32 dir, u32 enable,
+			   u32 period_ms, u32 times, u32 recovery_period_ms)
 {
 	struct hnae3_pfc_storm_para para;
 
 	if (nic_check_pfc_storm_para(dir, enable, period_ms, times,
 				     recovery_period_ms)) {
-		dev_err(&ndev->dev,
-			"set pfc storm para failed because invalid input param.\n");
+		pr_err("set pfc storm para failed because invalid input param.\n");
 		return -EINVAL;
 	}
 
@@ -116,8 +118,8 @@ int nic_set_pfc_storm_para(struct net_device *ndev, int dir, int enable,
 }
 EXPORT_SYMBOL(nic_set_pfc_storm_para);
 
-int nic_get_pfc_storm_para(struct net_device *ndev, int dir, int *enable,
-			   int *period_ms, int *times, int *recovery_period_ms)
+int nic_get_pfc_storm_para(struct net_device *ndev, u32 dir, u32 *enable,
+			   u32 *period_ms, u32 *times, u32 *recovery_period_ms)
 {
 	struct hnae3_pfc_storm_para para;
 	int ret;
@@ -125,8 +127,7 @@ int nic_get_pfc_storm_para(struct net_device *ndev, int dir, int *enable,
 	if (!enable || !period_ms || !times || !recovery_period_ms ||
 	    (dir != HNS3_PFC_STORM_PARA_DIR_RX &&
 	     dir != HNS3_PFC_STORM_PARA_DIR_TX)) {
-		dev_err(&ndev->dev,
-			"get pfc storm para failed because invalid input param.\n");
+		pr_err("get pfc storm para failed because invalid input param.\n");
 		return -EINVAL;
 	}
 
@@ -183,6 +184,9 @@ int nic_clean_stats64(struct net_device *ndev, struct rtnl_link_stats64 *stats)
 	struct hnae3_handle *h;
 	int i, ret;
 
+	if (nic_netdev_match_check(ndev))
+		return -ENODEV;
+
 	priv = netdev_priv(ndev);
 	h = hns3_get_handle(ndev);
 	kinfo = &h->kinfo;
@@ -222,14 +226,14 @@ int nic_set_cpu_affinity(struct net_device *ndev, cpumask_t *affinity_mask)
 	int ret = 0;
 	u16 i;
 
-	if (!ndev || !affinity_mask) {
+	if (nic_netdev_match_check(ndev))
+		return -ENODEV;
+
+	if (!affinity_mask) {
 		netdev_err(ndev,
 			   "Invalid input param when set ethernet cpu affinity\n");
 		return -EINVAL;
 	}
-
-	if (nic_netdev_match_check(ndev))
-		return -ENODEV;
 
 	priv = netdev_priv(ndev);
 	rtnl_lock();
@@ -395,10 +399,10 @@ int nic_set_tx_timeout(struct net_device *ndev, int tx_timeout)
 	if (nic_netdev_match_check(ndev))
 		return -ENODEV;
 
-	if (tx_timeout <= 0)
+	if (tx_timeout <= 0 || tx_timeout > HNS3_MAX_TX_TIMEOUT)
 		return -EINVAL;
 
-	ndev->watchdog_timeo = tx_timeout;
+	ndev->watchdog_timeo = tx_timeout * HZ;
 
 	return 0;
 }
@@ -483,7 +487,7 @@ int nic_set_mac_state(struct net_device *ndev, int enable)
 }
 EXPORT_SYMBOL(nic_set_mac_state);
 
-int nic_set_led(struct net_device *ndev, int type, int status)
+int nic_set_led(struct net_device *ndev, u32 type, u32 status)
 {
 	struct hnae3_led_state_para para;
 

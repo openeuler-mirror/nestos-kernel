@@ -13,6 +13,7 @@
 #ifndef __ASSEMBLY__
 
 #include <linux/personality.h> /* for READ_IMPLIES_EXEC */
+#include <linux/types.h> /* for gfp_t */
 #include <asm/pgtable-types.h>
 
 struct page;
@@ -29,25 +30,28 @@ void copy_highpage(struct page *to, struct page *from);
 #define __HAVE_ARCH_COPY_HIGHPAGE
 
 #ifdef CONFIG_ARCH_HAS_COPY_MC
-extern void copy_page_mc(void *to, const void *from);
-void copy_highpage_mc(struct page *to, struct page *from);
-#define __HAVE_ARCH_COPY_HIGHPAGE_MC
+int copy_mc_page(void *to, const void *from);
+int copy_mc_highpage(struct page *to, struct page *from);
+#define __HAVE_ARCH_COPY_MC_HIGHPAGE
 
-void copy_user_highpage_mc(struct page *to, struct page *from,
+int copy_mc_user_highpage(struct page *to, struct page *from,
 		unsigned long vaddr, struct vm_area_struct *vma);
-#define __HAVE_ARCH_COPY_USER_HIGHPAGE_MC
+#define __HAVE_ARCH_COPY_MC_USER_HIGHPAGE
 #endif
 
-#define __alloc_zeroed_user_highpage(movableflags, vma, vaddr) \
-	alloc_page_vma(GFP_HIGHUSER | __GFP_ZERO | movableflags, vma, vaddr)
-#define __HAVE_ARCH_ALLOC_ZEROED_USER_HIGHPAGE
+struct folio *vma_alloc_zeroed_movable_folio(struct vm_area_struct *vma,
+						unsigned long vaddr);
+#define vma_alloc_zeroed_movable_folio vma_alloc_zeroed_movable_folio
+
+void tag_clear_highpage(struct page *to);
+#define __HAVE_ARCH_TAG_CLEAR_HIGHPAGE
 
 #define clear_user_page(page, vaddr, pg)	clear_page(page)
 #define copy_user_page(to, from, vaddr, pg)	copy_page(to, from)
 
 typedef struct page *pgtable_t;
 
-extern int pfn_valid(unsigned long);
+int pfn_is_map_memory(unsigned long pfn);
 
 #include <asm/memory.h>
 

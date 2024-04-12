@@ -822,7 +822,7 @@ static int get_netdev_name(struct hinic3_nic_dev *nic_dev, const void *buf_in,
 		return -EFAULT;
 	}
 
-	strlcpy(buf_out, nic_dev->netdev->name, IFNAMSIZ);
+	strscpy(buf_out, nic_dev->netdev->name, IFNAMSIZ);
 
 	return 0;
 }

@@ -41,18 +41,6 @@ static inline void __buffer_unlink(struct journal_head *jh)
 }
 
 /*
- * Check a checkpoint buffer could be release or not.
- *
- * Requires j_list_lock
- */
-static inline bool __cp_buffer_busy(struct journal_head *jh)
-{
-	struct buffer_head *bh = jh2bh(jh);
-
-	return (jh->b_transaction || buffer_locked(bh) || buffer_dirty(bh));
-}
-
-/*
  * __jbd2_log_wait_for_space: wait until there is space in the journal.
  *
  * Called under j-state_lock *only*.  It will be unlocked if we have to wait
@@ -165,7 +153,7 @@ int jbd2_log_do_checkpoint(journal_t *journal)
 	tid_t			this_tid;
 	int			result, batch_count = 0;
 
-	jbd_debug(1, "Start checkpoint\n");
+	jbd2_debug(1, "Start checkpoint\n");
 
 	/*
 	 * First thing: if there are any transactions in the log which
@@ -174,7 +162,7 @@ int jbd2_log_do_checkpoint(journal_t *journal)
 	 */
 	result = jbd2_cleanup_journal_tail(journal);
 	trace_jbd2_checkpoint(journal, result);
-	jbd_debug(1, "cleanup_journal_tail returned %d\n", result);
+	jbd2_debug(1, "cleanup_journal_tail returned %d\n", result);
 	if (result <= 0)
 		return result;
 
@@ -341,7 +329,7 @@ int jbd2_cleanup_journal_tail(journal_t *journal)
 	 * jbd2_cleanup_journal_tail() doesn't get called all that often.
 	 */
 	if (journal->j_flags & JBD2_BARRIER)
-		blkdev_issue_flush(journal->j_fs_dev, GFP_NOFS);
+		blkdev_issue_flush(journal->j_fs_dev);
 
 	return __jbd2_update_log_tail(journal, first_tid, blocknr);
 }
@@ -725,5 +713,5 @@ void __jbd2_journal_drop_transaction(journal_t *journal, transaction_t *transact
 
 	trace_jbd2_drop_transaction(journal, transaction);
 
-	jbd_debug(1, "Dropping transaction %d, all done\n", transaction->t_tid);
+	jbd2_debug(1, "Dropping transaction %d, all done\n", transaction->t_tid);
 }

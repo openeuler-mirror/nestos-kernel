@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- *  linux/arch/sw/kernel/setup.c
- *
- *  Copyright (C) 1995  Linus Torvalds
- */
 
 /*
  * Bootup setup stuff.
@@ -27,14 +22,16 @@
 #include <linux/of_platform.h>
 #include <linux/genalloc.h>
 #include <linux/acpi.h>
+#include <linux/cpu.h>
 
 #include <asm/efi.h>
 #include <asm/kvm_cma.h>
 #include <asm/mmu_context.h>
 #include <asm/sw64_init.h>
+#include <asm/timer.h>
+#include <asm/pci_impl.h>
 
 #include "proto.h"
-#include "pci_impl.h"
 
 #undef DEBUG_DISCONTIG
 #ifdef DEBUG_DISCONTIG
@@ -43,9 +40,13 @@
 #define DBGDCONT(args...)
 #endif
 
+int __cpu_to_rcid[NR_CPUS];		/* Map logical to physical */
+EXPORT_SYMBOL(__cpu_to_rcid);
 
 DEFINE_PER_CPU(unsigned long, hard_node_id) = { 0 };
+static DEFINE_PER_CPU(struct cpu, cpu_devices);
 
+#ifdef CONFIG_SUBARCH_C3B
 #if defined(CONFIG_KVM) || defined(CONFIG_KVM_MODULE)
 struct cma *sw64_kvm_cma;
 EXPORT_SYMBOL(sw64_kvm_cma);
@@ -56,12 +57,13 @@ static phys_addr_t kvm_mem_base;
 struct gen_pool *sw64_kvm_pool;
 EXPORT_SYMBOL(sw64_kvm_pool);
 #endif
+#endif
 
 static inline int phys_addr_valid(unsigned long addr)
 {
 	/*
 	 * At this point memory probe has not been done such that max_pfn
-	 * and other physical address variables cannnot be used, so let's
+	 * and other physical address variables cannot be used, so let's
 	 * roughly judge physical address based on arch specific bit.
 	 */
 	return !(addr >> (cpu_desc.pa_bits - 1));
@@ -361,7 +363,7 @@ void __init process_memmap(void)
 	static int i;	// Make it static so we won't start over again every time.
 	int ret;
 	phys_addr_t base, size;
-	unsigned long dma_end __maybe_unused = virt_to_phys((void *)MAX_DMA_ADDRESS);
+	unsigned long dma_end __maybe_unused = (MAX_DMA32_PFN << PAGE_SHIFT);
 
 	if (!memblock_initialized)
 		return;
@@ -408,9 +410,8 @@ void __init process_memmap(void)
 					pr_err("initrd memmap region [mem %#018llx-%#018llx] extends beyond end of memory (%#018llx)\n",
 							old_base, old_base + size - 1, memblock_end_of_DRAM());
 					break;
-				} else {
-					memmap_map[i].addr = base;
 				}
+				memmap_map[i].addr = base;
 			}
 			pr_info("initrd memmap region [mem %#018llx-%#018llx]\n", base, base + size - 1);
 			ret = memblock_reserve(base, size);
@@ -547,23 +548,19 @@ int page_is_ram(unsigned long pfn)
 
 static int __init topology_init(void)
 {
-	int i;
-
-#ifdef CONFIG_NUMA
-	for_each_online_node(i)
-		register_one_node(i);
-#endif
+	int i, ret;
 
 	for_each_possible_cpu(i) {
-		struct cpu *p = kzalloc(sizeof(*p), GFP_KERNEL);
+		struct cpu *cpu = &per_cpu(cpu_devices, i);
 
-		if (!p)
-			return -ENOMEM;
 #ifdef CONFIG_HOTPLUG_CPU
 		if (i != 0)
-			p->hotpluggable = 1;
+			cpu->hotpluggable = 1;
 #endif
-		register_cpu(p, i);
+		ret = register_cpu(cpu, i);
+		if (unlikely(ret))
+			pr_warn("Warning: %s: register_cpu %d failed (%d)\n",
+			       __func__, i, ret);
 	}
 
 	return 0;
@@ -577,7 +574,7 @@ static void __init setup_machine_fdt(void)
 	const char *name;
 
 	/* Give a chance to select kernel builtin DTB firstly */
-	if (IS_ENABLED(CONFIG_SW64_BUILTIN_DTB))
+	if (IS_ENABLED(CONFIG_BUILTIN_DTB))
 		dt_virt = (void *)__dtb_start;
 	else {
 		dt_virt = (void *)sunway_boot_params->dtb_start;
@@ -588,7 +585,7 @@ static void __init setup_machine_fdt(void)
 		}
 	}
 
-	if (!phys_addr_valid(virt_to_phys(dt_virt)) ||
+	if (!phys_addr_valid(__boot_pa(dt_virt)) ||
 			!early_init_dt_scan(dt_virt)) {
 		pr_crit("\n"
 			"Error: invalid device tree blob at virtual address %px\n"
@@ -631,25 +628,6 @@ static void __init setup_cpu_info(void)
 	cpu_desc.arch_rev = CPUID_ARCH_REV(val);
 	cpu_desc.pa_bits = CPUID_PA_BITS(val);
 	cpu_desc.va_bits = CPUID_VA_BITS(val);
-
-	if (*(unsigned long *)MMSIZE) {
-		static_branch_disable(&run_mode_host_key);
-		if (*(unsigned long *)MMSIZE & EMUL_FLAG) {
-			pr_info("run mode: emul\n");
-			static_branch_disable(&run_mode_guest_key);
-			static_branch_enable(&run_mode_emul_key);
-
-		} else {
-			pr_info("run mode: guest\n");
-			static_branch_enable(&run_mode_guest_key);
-			static_branch_disable(&run_mode_emul_key);
-		}
-	} else {
-		pr_info("run mode: host\n");
-		static_branch_enable(&run_mode_host_key);
-		static_branch_disable(&run_mode_guest_key);
-		static_branch_disable(&run_mode_emul_key);
-	}
 
 	for (i = 0; i < VENDOR_ID_MAX; i++) {
 		val = cpuid(GET_VENDOR_ID, i);
@@ -694,6 +672,28 @@ static void __init setup_cpu_info(void)
 	}
 }
 
+static void __init setup_run_mode(void)
+{
+	if (*(unsigned long *)MMSIZE) {
+		static_branch_disable(&run_mode_host_key);
+		if (*(unsigned long *)MMSIZE & EMUL_FLAG) {
+			pr_info("run mode: emul\n");
+			static_branch_disable(&run_mode_guest_key);
+			static_branch_enable(&run_mode_emul_key);
+
+		} else {
+			pr_info("run mode: guest\n");
+			static_branch_enable(&run_mode_guest_key);
+			static_branch_disable(&run_mode_emul_key);
+		}
+	} else {
+		pr_info("run mode: host\n");
+		static_branch_enable(&run_mode_host_key);
+		static_branch_disable(&run_mode_guest_key);
+		static_branch_disable(&run_mode_emul_key);
+	}
+}
+
 static void __init setup_socket_info(void)
 {
 	int i;
@@ -728,6 +728,7 @@ static void __init reserve_mem_for_initrd(void)
 }
 #endif /* CONFIG_BLK_DEV_INITRD */
 
+#ifdef CONFIG_SUBARCH_C3B
 #if defined(CONFIG_KVM) || defined(CONFIG_KVM_MODULE)
 static int __init early_kvm_reserved_mem(char *p)
 {
@@ -750,24 +751,28 @@ void __init sw64_kvm_reserve(void)
 			PAGE_SIZE, 0, "sw64_kvm_cma", &sw64_kvm_cma);
 }
 #endif
+#endif
 
 void __init
 setup_arch(char **cmdline_p)
 {
+	/**
+	 * Work around the unaligned access exception to parse ACPI
+	 * tables in the following function acpi_boot_table_init().
+	 */
+	trap_init();
+
 	jump_label_init();
 	setup_cpu_info();
-	sw64_chip->fixup();
-	sw64_chip_init->fixup();
+	setup_run_mode();
+	setup_chip_ops();
 	setup_socket_info();
 	show_socket_mem_layout();
-	sw64_chip_init->early_init.setup_core_start(&core_start);
+	sw64_chip_init->early_init.setup_core_map(&core_start);
 	if (is_guest_or_emul())
-		sw64_chip_init->early_init.get_smp_info();
+		get_vt_smp_info();
 
 	setup_sched_clock();
-#ifdef CONFIG_GENERIC_SCHED_CLOCK
-	sw64_sched_clock_init();
-#endif
 
 	setup_machine_fdt();
 
@@ -781,12 +786,12 @@ setup_arch(char **cmdline_p)
 	if (!sunway_boot_params->cmdline)
 		sunway_boot_params->cmdline = (unsigned long)COMMAND_LINE;
 
-	strlcpy(boot_command_line, (char *)sunway_boot_params->cmdline, COMMAND_LINE_SIZE);
+	strscpy(boot_command_line, (char *)sunway_boot_params->cmdline, COMMAND_LINE_SIZE);
 
 #if IS_ENABLED(CONFIG_CMDLINE_BOOL)
 #if IS_ENABLED(CONFIG_CMDLINE_OVERRIDE)
-	strlcpy(boot_command_line, builtin_cmdline, COMMAND_LINE_SIZE);
-	strlcpy((char *)sunway_boot_params->cmdline, boot_command_line, COMMAND_LINE_SIZE);
+	strscpy(boot_command_line, builtin_cmdline, COMMAND_LINE_SIZE);
+	strscpy((char *)sunway_boot_params->cmdline, boot_command_line, COMMAND_LINE_SIZE);
 #else
 	if (builtin_cmdline[0]) {
 		/* append builtin to boot loader cmdline */
@@ -795,19 +800,8 @@ setup_arch(char **cmdline_p)
 	}
 #endif /* CMDLINE_EXTEND */
 #endif
-	if (IS_ENABLED(CONFIG_SW64_CHIP3_ASIC_DEBUG) &&
-			IS_ENABLED(CONFIG_SW64_CHIP3)) {
-		unsigned long bmc, cpu_online, node;
 
-		bmc = *(unsigned long *)__va(0x800000);
-		pr_info("bmc = %ld\n", bmc);
-		cpu_online = sw64_chip->get_cpu_num();
-		for (node = 0; node < cpu_online; node++)
-			sw64_io_write(node, SI_FAULT_INT_EN, 0);
-		sprintf(boot_command_line, "root=/dev/sda2 ip=172.16.137.%ld::172.16.137.254:255.255.255.0::eth0:off", 180+bmc);
-	}
-
-	strlcpy(command_line, boot_command_line, COMMAND_LINE_SIZE);
+	strscpy(command_line, boot_command_line, COMMAND_LINE_SIZE);
 	*cmdline_p = command_line;
 
 	/*
@@ -831,8 +825,24 @@ setup_arch(char **cmdline_p)
 	reserve_crashkernel();
 
 	/* Reserve large chunks of memory for use by CMA for KVM. */
+#ifdef CONFIG_SUBARCH_C3B
 #if defined(CONFIG_KVM) || defined(CONFIG_KVM_MODULE)
 	sw64_kvm_reserve();
+#endif
+#endif
+
+	efi_init();
+
+	/* Try to upgrade ACPI tables via initrd */
+	acpi_table_upgrade();
+
+	/* Parse the ACPI tables for possible boot-time configuration */
+	acpi_boot_table_init();
+
+#ifdef CONFIG_SMP
+	setup_smp();
+#else
+	store_cpu_data(0);
 #endif
 
 	sw64_numa_init();
@@ -846,11 +856,6 @@ setup_arch(char **cmdline_p)
 	paging_init();
 
 	kexec_control_page_init();
-
-	efi_init();
-
-	/* Parse the ACPI tables for possible boot-time configuration */
-	acpi_boot_table_init();
 
 	/*
 	 * Initialize the machine. Usually has to do with setting up
@@ -875,19 +880,14 @@ setup_arch(char **cmdline_p)
 #endif
 
 	/* Default root filesystem to sda2.  */
-	ROOT_DEV = Root_SDA2;
+	ROOT_DEV = MKDEV(SCSI_DISK0_MAJOR, 2);
 
-#ifdef CONFIG_SMP
-	setup_smp();
-#else
-	store_cpu_data(0);
-#endif
-
+	if (acpi_disabled) {
 #ifdef CONFIG_NUMA
-	cpu_set_node();
+		cpu_set_node();
 #endif
-	if (acpi_disabled)
 		device_tree_init();
+	}
 }
 
 
@@ -897,7 +897,7 @@ show_cpuinfo(struct seq_file *f, void *slot)
 	int i;
 	unsigned long cpu_freq;
 
-	cpu_freq = get_cpu_freq() / 1000 / 1000;
+	cpu_freq = cpuid(GET_CPU_FREQ, 0);
 
 	for_each_online_cpu(i) {
 		/*
@@ -921,7 +921,7 @@ show_cpuinfo(struct seq_file *f, void *slot)
 				"cache size\t: %u KB\n"
 				"physical id\t: %d\n"
 				"bogomips\t: %lu.%02lu\n",
-				cpu_freq, cpu_data[i].tcache.size >> 10,
+				get_cpu_freq() / 1000 / 1000, cpu_data[i].tcache.size >> 10,
 				cpu_topology[i].package_id,
 				loops_per_jiffy / (500000/HZ),
 				(loops_per_jiffy / (5000/HZ)) % 100);
@@ -989,6 +989,8 @@ device_initcall(add_pcspkr);
 
 #ifdef CONFIG_DEBUG_FS
 struct dentry *sw64_debugfs_dir;
+EXPORT_SYMBOL(sw64_debugfs_dir);
+
 static int __init debugfs_sw64(void)
 {
 	struct dentry *d;
@@ -1011,6 +1013,7 @@ static int __init sw64_of_init(void)
 core_initcall(sw64_of_init);
 #endif
 
+#ifdef CONFIG_SUBARCH_C3B
 #if defined(CONFIG_KVM) || defined(CONFIG_KVM_MODULE)
 static int __init sw64_kvm_pool_init(void)
 {
@@ -1054,4 +1057,5 @@ out:
 	return -ENOMEM;
 }
 core_initcall_sync(sw64_kvm_pool_init);
+#endif
 #endif

@@ -61,8 +61,6 @@
 #define IDR3_BBML1			1
 #define IDR3_BBML2			2
 #define IDR3_RIL			(1 << 10)
-#define IDR3_MPAM			(1 << 7)
-#define ARM_SMMU_IDR3_CFG		0x140C
 
 #define ARM_SMMU_IDR5			0x14
 #define IDR5_STALL_MAX			GENMASK(31, 16)
@@ -79,6 +77,12 @@
 #define IDR5_OAS_52_BIT			6
 #define IDR5_VAX			GENMASK(11, 10)
 #define IDR5_VAX_52_BIT			1
+
+#define ARM_SMMU_IIDR			0x18
+#define IIDR_PRODUCTID			GENMASK(31, 20)
+#define IIDR_VARIANT			GENMASK(19, 16)
+#define IIDR_REVISION			GENMASK(15, 12)
+#define IIDR_IMPLEMENTER		GENMASK(11, 0)
 
 #define ARM_SMMU_CR0			0x20
 #define CR0_ATSCHK			(1 << 4)
@@ -135,6 +139,26 @@
 #define ARM_SMMU_GERROR_IRQ_CFG1	0x70
 #define ARM_SMMU_GERROR_IRQ_CFG2	0x74
 
+#define ARM_SMMU_IDR6			0x190
+#define IDR6_LOG2NUMP			GENMASK(27, 24)
+#define IDR6_LOG2NUMQ			GENMASK(19, 16)
+#define IDR6_BA_DOORBELLS		GENMASK(9, 0)
+
+#define ARM_SMMU_ECMDQ_BASE		0x00
+#define ARM_SMMU_ECMDQ_PROD		0x08
+#define ARM_SMMU_ECMDQ_CONS		0x0c
+#define ECMDQ_MAX_SZ_SHIFT		8
+#define ECMDQ_PROD_EN			(1 << 31)
+#define ECMDQ_CONS_ENACK		(1 << 31)
+#define ECMDQ_CONS_ERR			(1 << 23)
+#define ECMDQ_PROD_ERRACK		(1 << 23)
+
+#define ARM_SMMU_ECMDQ_CP_BASE		0x4000
+#define ECMDQ_CP_ADDR			GENMASK_ULL(51, 12)
+#define ECMDQ_CP_CMDQGS			GENMASK_ULL(2, 1)
+#define ECMDQ_CP_PRESET			(1UL << 0)
+#define ECMDQ_CP_RRESET_SIZE		0x10000
+
 #define ARM_SMMU_STRTAB_BASE		0x80
 #define STRTAB_BASE_RA			(1UL << 62)
 #define STRTAB_BASE_ADDR_MASK		GENMASK_ULL(51, 6)
@@ -163,33 +187,6 @@
 #define ARM_SMMU_PRIQ_IRQ_CFG0		0xd0
 #define ARM_SMMU_PRIQ_IRQ_CFG1		0xd8
 #define ARM_SMMU_PRIQ_IRQ_CFG2		0xdc
-
-#define ARM_SMMU_MPAMIDR		0x130
-#define MPAMIDR_PMG_MAX			GENMASK(23, 16)
-#define MPAMIDR_PARTID_MAX		GENMASK(15, 0)
-
-#define ARM_SMMU_USER_CFG0		0xe00
-#define ARM_SMMU_USER_MPAM_EN		(1UL << 30)
-
-#define ARM_SMMU_IDR6			0x190
-#define IDR6_LOG2NUMP			GENMASK(27, 24)
-#define IDR6_LOG2NUMQ			GENMASK(19, 16)
-#define IDR6_BA_DOORBELLS		GENMASK(9, 0)
-
-#define ARM_SMMU_ECMDQ_BASE		0x00
-#define ARM_SMMU_ECMDQ_PROD		0x08
-#define ARM_SMMU_ECMDQ_CONS		0x0c
-#define ECMDQ_MAX_SZ_SHIFT		8
-#define ECMDQ_PROD_EN			(1 << 31)
-#define ECMDQ_CONS_ENACK		(1 << 31)
-#define ECMDQ_CONS_ERR			(1 << 23)
-#define ECMDQ_PROD_ERRACK		(1 << 23)
-
-#define ARM_SMMU_ECMDQ_CP_BASE		0x4000
-#define ECMDQ_CP_ADDR			GENMASK_ULL(51, 12)
-#define ECMDQ_CP_CMDQGS			GENMASK_ULL(2, 1)
-#define ECMDQ_CP_PRESET			(1UL << 0)
-#define ECMDQ_CP_RRESET_SIZE		0x10000
 
 #define ARM_SMMU_REG_SZ			0xe00
 
@@ -221,7 +218,7 @@
 #ifdef CONFIG_CMA_ALIGNMENT
 #define Q_MAX_SZ_SHIFT			(PAGE_SHIFT + CONFIG_CMA_ALIGNMENT)
 #else
-#define Q_MAX_SZ_SHIFT			(PAGE_SHIFT + MAX_ORDER - 1)
+#define Q_MAX_SZ_SHIFT			(PAGE_SHIFT + MAX_ORDER)
 #endif
 
 /*
@@ -239,6 +236,11 @@
 #define STRTAB_L1_DESC_L2PTR_MASK	GENMASK_ULL(51, 6)
 
 #define STRTAB_STE_DWORDS		8
+
+struct arm_smmu_ste {
+	__le64 data[STRTAB_STE_DWORDS];
+};
+
 #define STRTAB_STE_0_V			(1UL << 0)
 #define STRTAB_STE_0_CFG		GENMASK_ULL(3, 1)
 #define STRTAB_STE_0_CFG_ABORT		0
@@ -265,8 +267,6 @@
 #define STRTAB_STE_1_S1COR		GENMASK_ULL(5, 4)
 #define STRTAB_STE_1_S1CSH		GENMASK_ULL(7, 6)
 
-#define STRTAB_STE_1_PPAR		(1UL << 18)
-#define STRTAB_STE_1_S1MPAM		(1UL << 26)
 #define STRTAB_STE_1_S1STALLD		(1UL << 27)
 
 #define STRTAB_STE_1_EATS		GENMASK_ULL(29, 28)
@@ -296,11 +296,6 @@
 #define STRTAB_STE_2_S2R		(1UL << 58)
 
 #define STRTAB_STE_3_S2TTB_MASK		GENMASK_ULL(51, 4)
-
-#define STRTAB_STE_4_PARTID_MASK	GENMASK_ULL(31, 16)
-
-#define STRTAB_STE_5_MPAM_NS		(1UL << 8)
-#define STRTAB_STE_5_PMG_MASK		GENMASK_ULL(7, 0)
 
 /*
  * Context descriptors.
@@ -342,9 +337,6 @@
 #define CTXDESC_CD_0_ASID		GENMASK_ULL(63, 48)
 
 #define CTXDESC_CD_1_TTB0_MASK		GENMASK_ULL(51, 4)
-
-#define CTXDESC_CD_5_PARTID_MASK	GENMASK_ULL(47, 32)
-#define CTXDESC_CD_5_PMG_MASK		GENMASK_ULL(55, 48)
 
 /*
  * When the SMMU only supports linear context descriptor tables, pick a
@@ -405,9 +397,6 @@
 #define CMDQ_PRI_0_SID			GENMASK_ULL(63, 32)
 #define CMDQ_PRI_1_GRPID		GENMASK_ULL(8, 0)
 #define CMDQ_PRI_1_RESP			GENMASK_ULL(13, 12)
-#define CMDQ_PRI_1_RESP_FAILURE		0UL
-#define CMDQ_PRI_1_RESP_INVALID		1UL
-#define CMDQ_PRI_1_RESP_SUCCESS		2UL
 
 #define CMDQ_RESUME_0_RESP_TERM		0UL
 #define CMDQ_RESUME_0_RESP_RETRY	1UL
@@ -475,6 +464,12 @@
 #define MSI_IOVA_BASE			0x8000000
 #define MSI_IOVA_LENGTH			0x100000
 
+enum pri_resp {
+	PRI_RESP_DENY = 0,
+	PRI_RESP_FAIL = 1,
+	PRI_RESP_SUCC = 2,
+};
+
 struct arm_smmu_cmdq_ent {
 	/* Common fields */
 	u8				opcode;
@@ -485,8 +480,6 @@ struct arm_smmu_cmdq_ent {
 		#define CMDQ_OP_PREFETCH_CFG	0x1
 		struct {
 			u32			sid;
-			u8			size;
-			u64			addr;
 		} prefetch;
 
 		#define CMDQ_OP_CFGI_STE	0x3
@@ -536,7 +529,7 @@ struct arm_smmu_cmdq_ent {
 			u32			sid;
 			u32			ssid;
 			u16			grpid;
-			u8			resp;
+			enum pri_resp		resp;
 		} pri;
 
 		#define CMDQ_OP_RESUME		0x44
@@ -572,8 +565,10 @@ struct arm_smmu_ll_queue {
 struct arm_smmu_queue {
 	struct arm_smmu_ll_queue	llq;
 	int				irq; /* Wired interrupt */
+#ifdef CONFIG_ARM_SMMU_V3_ECMDQ
 	u32				ecmdq_prod;
 	rwlock_t			ecmdq_lock;
+#endif
 
 	__le64				*base;
 	dma_addr_t			base_dma;
@@ -597,13 +592,17 @@ struct arm_smmu_cmdq {
 	atomic_long_t			*valid_map;
 	atomic_t			owner_prod;
 	atomic_t			lock;
+#ifdef CONFIG_ARM_SMMU_V3_ECMDQ
 	int				shared;
+#endif
 };
 
+#ifdef CONFIG_ARM_SMMU_V3_ECMDQ
 struct arm_smmu_ecmdq {
 	struct arm_smmu_cmdq		cmdq;
 	void __iomem			*base;
 };
+#endif
 
 struct arm_smmu_cmdq_batch {
 	u64				cmds[CMDQ_BATCH_ENTRIES * CMDQ_ENT_DWORDS];
@@ -618,16 +617,13 @@ struct arm_smmu_evtq {
 
 struct arm_smmu_priq {
 	struct arm_smmu_queue		q;
-	struct iopf_queue		*iopf;
-	u64				batch;
-	wait_queue_head_t		wq;
 };
 
 /* High-level stream table and context descriptor structures */
 struct arm_smmu_strtab_l1_desc {
 	u8				span;
 
-	__le64				*l2ptr;
+	struct arm_smmu_ste		*l2ptr;
 	dma_addr_t			l2ptr_dma;
 };
 
@@ -651,13 +647,11 @@ struct arm_smmu_ctx_desc_cfg {
 	dma_addr_t			cdtab_dma;
 	struct arm_smmu_l1_ctx_desc	*l1_desc;
 	unsigned int			num_l1_ents;
-};
-
-struct arm_smmu_s1_cfg {
-	struct arm_smmu_ctx_desc_cfg	cdcfg;
-	struct arm_smmu_ctx_desc	cd;
 	u8				s1fmt;
+	/* log2 of the maximum number of CDs supported by this table */
 	u8				s1cdmax;
+	/* Whether CD entries in this table have the stall bit set. */
+	u8				stall_enabled:1;
 };
 
 struct arm_smmu_s2_cfg {
@@ -703,23 +697,28 @@ struct arm_smmu_device {
 #define ARM_SMMU_FEAT_E2H		(1 << 18)
 #define ARM_SMMU_FEAT_HA		(1 << 19)
 #define ARM_SMMU_FEAT_HD		(1 << 20)
-#define ARM_SMMU_FEAT_BBML1		(1 << 21)
-#define ARM_SMMU_FEAT_BBML2		(1 << 22)
-#define ARM_SMMU_FEAT_ECMDQ		(1 << 23)
-#define ARM_SMMU_FEAT_MPAM		(1 << 24)
+#define ARM_SMMU_FEAT_NESTING		(1 << 21)
+#define ARM_SMMU_FEAT_BBML1		(1 << 22)
+#define ARM_SMMU_FEAT_BBML2		(1 << 23)
+#define ARM_SMMU_FEAT_ECMDQ		(1 << 24)
 	u32				features;
 
 #define ARM_SMMU_OPT_SKIP_PREFETCH	(1 << 0)
 #define ARM_SMMU_OPT_PAGE0_REGS_ONLY	(1 << 1)
 #define ARM_SMMU_OPT_MSIPOLL		(1 << 2)
+#define ARM_SMMU_OPT_CMDQ_FORCE_SYNC	(1 << 3)
+#define ARM_SMMU_OPT_SYNC_MAP		(1 << 4)
 	u32				options;
 
+#ifdef CONFIG_ARM_SMMU_V3_ECMDQ
 	union {
 		u32			nr_ecmdq;
 		u32			ecmdq_enabled;
 	};
+
 	struct arm_smmu_ecmdq *__percpu	*ecmdqs;
 	struct arm_smmu_ecmdq  __percpu	*ecmdq;
+#endif
 
 	struct arm_smmu_cmdq		cmdq;
 	struct arm_smmu_evtq		evtq;
@@ -737,7 +736,7 @@ struct arm_smmu_device {
 
 #define ARM_SMMU_MAX_VMIDS		(1 << 16)
 	unsigned int			vmid_bits;
-	DECLARE_BITMAP(vmid_map, ARM_SMMU_MAX_VMIDS);
+	struct ida			vmid_map;
 
 	unsigned int			ssid_bits;
 	unsigned int			sid_bits;
@@ -749,9 +748,6 @@ struct arm_smmu_device {
 
 	struct rb_root			streams;
 	struct mutex			streams_mutex;
-
-	unsigned int			mpam_partid_max;
-	unsigned int			mpam_pmg_max;
 
 	bool				bypass;
 };
@@ -769,14 +765,13 @@ struct arm_smmu_master {
 	struct arm_smmu_domain		*domain;
 	struct list_head		domain_head;
 	struct arm_smmu_stream		*streams;
+	/* Locked by the iommu core using the group mutex */
+	struct arm_smmu_ctx_desc_cfg	cd_table;
 	unsigned int			num_streams;
 	bool				ats_enabled;
 	bool				stall_enabled;
-	bool				pri_supported;
-	bool				prg_resp_needs_ssid;
 	bool				sva_enabled;
 	bool				iopf_enabled;
-	bool				auxd_enabled;
 	struct list_head		bonds;
 	unsigned int			ssid_bits;
 };
@@ -785,7 +780,6 @@ struct arm_smmu_master {
 enum arm_smmu_domain_stage {
 	ARM_SMMU_DOMAIN_S1 = 0,
 	ARM_SMMU_DOMAIN_S2,
-	ARM_SMMU_DOMAIN_NESTED,
 	ARM_SMMU_DOMAIN_BYPASS,
 };
 
@@ -794,28 +788,20 @@ struct arm_smmu_domain {
 	struct mutex			init_mutex; /* Protects smmu pointer */
 
 	struct io_pgtable_ops		*pgtbl_ops;
-	bool				non_strict;
-	bool				stall_enabled;
 	atomic_t			nr_ats_masters;
 
 	enum arm_smmu_domain_stage	stage;
 	union {
-		struct arm_smmu_s1_cfg	s1_cfg;
-		struct arm_smmu_s2_cfg	s2_cfg;
+		struct arm_smmu_ctx_desc	cd;
+		struct arm_smmu_s2_cfg		s2_cfg;
 	};
 
 	struct iommu_domain		domain;
 
-	/* Unused in aux domains */
 	struct list_head		devices;
 	spinlock_t			devices_lock;
 
 	struct list_head		mmu_notifiers;
-
-	/* Auxiliary domain stuff */
-	struct arm_smmu_domain		*parent;
-	ioasid_t			ssid;
-	unsigned long			aux_nr_devs;
 };
 
 static inline struct arm_smmu_domain *to_smmu_domain(struct iommu_domain *dom)
@@ -827,7 +813,7 @@ extern struct xarray arm_smmu_asid_xa;
 extern struct mutex arm_smmu_asid_lock;
 extern struct arm_smmu_ctx_desc quiet_cd;
 
-int arm_smmu_write_ctx_desc(struct arm_smmu_domain *smmu_domain, int ssid,
+int arm_smmu_write_ctx_desc(struct arm_smmu_master *smmu_master, int ssid,
 			    struct arm_smmu_ctx_desc *cd);
 void arm_smmu_tlb_inv_asid(struct arm_smmu_device *smmu, u16 asid);
 void arm_smmu_tlb_inv_range_asid(unsigned long iova, size_t size, int asid,
@@ -836,9 +822,6 @@ void arm_smmu_tlb_inv_range_asid(unsigned long iova, size_t size, int asid,
 bool arm_smmu_free_asid(struct arm_smmu_ctx_desc *cd);
 int arm_smmu_atc_inv_domain(struct arm_smmu_domain *smmu_domain, int ssid,
 			    unsigned long iova, size_t size);
-int arm_smmu_enable_pri(struct arm_smmu_master *master);
-void arm_smmu_disable_pri(struct arm_smmu_master *master);
-int arm_smmu_flush_priq(struct arm_smmu_device *smmu);
 
 #ifdef CONFIG_ARM_SMMU_V3_SVA
 bool arm_smmu_sva_supported(struct arm_smmu_device *smmu);
@@ -847,13 +830,10 @@ bool arm_smmu_master_sva_enabled(struct arm_smmu_master *master);
 int arm_smmu_master_enable_sva(struct arm_smmu_master *master);
 int arm_smmu_master_disable_sva(struct arm_smmu_master *master);
 bool arm_smmu_master_iopf_supported(struct arm_smmu_master *master);
-int arm_smmu_master_enable_iopf(struct arm_smmu_master *master);
-int arm_smmu_master_disable_iopf(struct arm_smmu_master *master);
-struct iommu_sva *arm_smmu_sva_bind(struct device *dev, struct mm_struct *mm,
-				    void *drvdata);
-void arm_smmu_sva_unbind(struct iommu_sva *handle);
-u32 arm_smmu_sva_get_pasid(struct iommu_sva *handle);
 void arm_smmu_sva_notifier_synchronize(void);
+struct iommu_domain *arm_smmu_sva_domain_alloc(void);
+void arm_smmu_sva_remove_dev_pasid(struct iommu_domain *domain,
+				   struct device *dev, ioasid_t id);
 #else /* CONFIG_ARM_SMMU_V3_SVA */
 static inline bool arm_smmu_sva_supported(struct arm_smmu_device *smmu)
 {
@@ -885,29 +865,17 @@ static inline bool arm_smmu_master_iopf_supported(struct arm_smmu_master *master
 	return false;
 }
 
-static inline int arm_smmu_master_enable_iopf(struct arm_smmu_master *master)
-{
-	return -ENODEV;
-}
-
-static inline int arm_smmu_master_disable_iopf(struct arm_smmu_master *master)
-{
-	return -ENODEV;
-}
-
-static inline struct iommu_sva *
-arm_smmu_sva_bind(struct device *dev, struct mm_struct *mm, void *drvdata)
-{
-	return ERR_PTR(-ENODEV);
-}
-
-static inline void arm_smmu_sva_unbind(struct iommu_sva *handle) {}
-
-static inline u32 arm_smmu_sva_get_pasid(struct iommu_sva *handle)
-{
-	return IOMMU_PASID_INVALID;
-}
-
 static inline void arm_smmu_sva_notifier_synchronize(void) {}
+
+static inline struct iommu_domain *arm_smmu_sva_domain_alloc(void)
+{
+	return NULL;
+}
+
+static inline void arm_smmu_sva_remove_dev_pasid(struct iommu_domain *domain,
+						 struct device *dev,
+						 ioasid_t id)
+{
+}
 #endif /* CONFIG_ARM_SMMU_V3_SVA */
 #endif /* _ARM_SMMU_V3_H */

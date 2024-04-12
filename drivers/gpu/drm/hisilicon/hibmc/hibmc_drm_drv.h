@@ -19,10 +19,7 @@
 #include <linux/i2c.h>
 
 #include <drm/drm_edid.h>
-#include <drm/drm_fb_helper.h>
 #include <drm/drm_framebuffer.h>
-
-struct drm_device;
 
 struct hibmc_connector {
 	struct drm_connector base;
@@ -34,17 +31,13 @@ struct hibmc_connector {
 struct hibmc_drm_private {
 	/* hw */
 	void __iomem   *mmio;
-	void __iomem   *fb_map;
-	unsigned long  fb_base;
-	unsigned long  fb_size;
 
 	/* drm */
-	struct drm_device  *dev;
+	struct drm_device dev;
 	struct drm_plane primary_plane;
 	struct drm_crtc crtc;
 	struct drm_encoder encoder;
 	struct hibmc_connector connector;
-	bool mode_config_initialized;
 };
 
 static inline struct hibmc_connector *to_hibmc_connector(struct drm_connector *connector)
@@ -54,23 +47,18 @@ static inline struct hibmc_connector *to_hibmc_connector(struct drm_connector *c
 
 static inline struct hibmc_drm_private *to_hibmc_drm_private(struct drm_device *dev)
 {
-	return dev->dev_private;
+	return container_of(dev, struct hibmc_drm_private, dev);
 }
 
 void hibmc_set_power_mode(struct hibmc_drm_private *priv,
-			  unsigned int power_mode);
+			  u32 power_mode);
 void hibmc_set_current_gate(struct hibmc_drm_private *priv,
-			    unsigned int gate);
+			    u32 gate);
 
 int hibmc_de_init(struct hibmc_drm_private *priv);
 int hibmc_vdac_init(struct hibmc_drm_private *priv);
 
 int hibmc_mm_init(struct hibmc_drm_private *hibmc);
-void hibmc_mm_fini(struct hibmc_drm_private *hibmc);
-int hibmc_dumb_create(struct drm_file *file, struct drm_device *dev,
-		      struct drm_mode_create_dumb *args);
 int hibmc_ddc_create(struct drm_device *drm_dev, struct hibmc_connector *connector);
-
-extern const struct drm_mode_config_funcs hibmc_mode_funcs;
 
 #endif

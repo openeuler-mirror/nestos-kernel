@@ -8,41 +8,6 @@
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM kvm
 
-TRACE_EVENT(kvm_trap_enter,
-	TP_PROTO(unsigned int vcpu_id, unsigned int esr_ec),
-	TP_ARGS(vcpu_id, esr_ec),
-
-	TP_STRUCT__entry(
-		__field(unsigned int,	vcpu_id)
-		__field(unsigned int,	esr_ec)
-	),
-
-	TP_fast_assign(
-		__entry->vcpu_id	= vcpu_id;
-		__entry->esr_ec		= esr_ec;
-	),
-
-	TP_printk("VCPU %u: HSR_EC=0x%04x (%s)",
-		  __entry->vcpu_id,
-		  __entry->esr_ec,
-		  __print_symbolic(__entry->esr_ec, kvm_arm_exception_class))
-);
-
-TRACE_EVENT(kvm_trap_exit,
-	TP_PROTO(unsigned int vcpu_id),
-	TP_ARGS(vcpu_id),
-
-	TP_STRUCT__entry(
-		__field(unsigned int,	vcpu_id)
-	),
-
-	TP_fast_assign(
-		__entry->vcpu_id	= vcpu_id;
-	),
-
-	TP_printk("VCPU %u", __entry->vcpu_id)
-);
-
 TRACE_EVENT(kvm_wfx_arm64,
 	TP_PROTO(unsigned long vcpu_pc, bool is_wfe),
 	TP_ARGS(vcpu_pc, is_wfe),
@@ -113,13 +78,17 @@ TRACE_EVENT(kvm_arm_clear_debug,
 	TP_printk("flags: 0x%08x", __entry->guest_debug)
 );
 
+/*
+ * The dreg32 name is a leftover from a distant past. This will really
+ * output a 64bit value...
+ */
 TRACE_EVENT(kvm_arm_set_dreg32,
-	TP_PROTO(const char *name, __u32 value),
+	TP_PROTO(const char *name, __u64 value),
 	TP_ARGS(name, value),
 
 	TP_STRUCT__entry(
 		__field(const char *, name)
-		__field(__u32, value)
+		__field(__u64, value)
 	),
 
 	TP_fast_assign(
@@ -127,7 +96,7 @@ TRACE_EVENT(kvm_arm_set_dreg32,
 		__entry->value = value;
 	),
 
-	TP_printk("%s: 0x%08x", __entry->name, __entry->value)
+	TP_printk("%s: 0x%llx", __entry->name, __entry->value)
 );
 
 TRACE_DEFINE_SIZEOF(__u64);

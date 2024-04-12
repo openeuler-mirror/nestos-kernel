@@ -30,6 +30,7 @@
 #define GICD_ICFGR			0x0C00
 #define GICD_IGRPMODR			0x0D00
 #define GICD_NSACR			0x0E00
+#define GICD_INMIR			0x0F80
 #define GICD_IGROUPRnE			0x1000
 #define GICD_ISENABLERnE		0x1200
 #define GICD_ICENABLERnE		0x1400
@@ -39,6 +40,7 @@
 #define GICD_ICACTIVERnE		0x1C00
 #define GICD_IPRIORITYRnE		0x2000
 #define GICD_ICFGRnE			0x3000
+#define GICD_INMIRnE			0x3B00
 #define GICD_IROUTER			0x6000
 #define GICD_IROUTERnE			0x8000
 #define GICD_IDREGS			0xFFD0
@@ -83,6 +85,7 @@
 #define GICD_TYPER_LPIS			(1U << 17)
 #define GICD_TYPER_MBIS			(1U << 16)
 #define GICD_TYPER_ESPI			(1U << 8)
+#define GICD_TYPER_NMI			(1U << 9)
 
 #define GICD_TYPER_ID_BITS(typer)	((((typer) >> 19) & 0x1f) + 1)
 #define GICD_TYPER_NUM_LPIS(typer)	((((typer) >> 11) & 0x1f) + 1)
@@ -127,6 +130,8 @@
 #define GICR_PIDR2			GICD_PIDR2
 
 #define GICR_CTLR_ENABLE_LPIS		(1UL << 0)
+#define GICR_CTLR_CES			(1UL << 1)
+#define GICR_CTLR_IR			(1UL << 2)
 #define GICR_CTLR_RWP			(1UL << 3)
 
 #define GICR_TYPER_CPU_NUMBER(r)	(((r) >> 8) & 0xffff)
@@ -236,6 +241,7 @@
 #define GICR_ICFGR0			GICD_ICFGR
 #define GICR_IGRPMODR0			GICD_IGRPMODR
 #define GICR_NSACR			GICD_NSACR
+#define GICR_INMIR0			GICD_INMIR
 
 #define GICR_TYPER_PLPIS		(1U << 0)
 #define GICR_TYPER_VLPIS		(1U << 1)
@@ -378,9 +384,18 @@
 #define GITS_TRANSLATER			0x10040
 
 #define GITS_SGIR			0x20020
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+/* HiSilicon IMP DEF register to set vPPI pending. */
+#define GITS_PPIR			0x200A8
+#endif
 
 #define GITS_SGIR_VPEID			GENMASK_ULL(47, 32)
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+/* Hackish... Extend it to [4:0] to support vPPI. */
+#define GITS_SGIR_VINTID		GENMASK_ULL(4, 0)
+#else
 #define GITS_SGIR_VINTID		GENMASK_ULL(3, 0)
+#endif
 
 #define GITS_CTLR_ENABLE		(1U << 0)
 #define GITS_CTLR_ImDe			(1U << 1)
@@ -401,6 +416,19 @@
 #define GITS_TYPER_VMOVP		(1ULL << 37)
 #define GITS_TYPER_VMAPP		(1ULL << 40)
 #define GITS_TYPER_SVPET		GENMASK_ULL(42, 41)
+
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+/* HiSilicon IMP DEF register */
+#define GITS_VERSION			0xC000
+
+/**
+ * HiSilicon IMP DEF field which indicates if the vPPI direct injection
+ * is supported.
+ * - 0: not supported
+ * - 1: supported
+ */
+#define GITS_VERSION_VTIMER		(1ULL << 12)
+#endif
 
 #define GITS_IIDR_REV_SHIFT		12
 #define GITS_IIDR_REV_MASK		(0xf << GITS_IIDR_REV_SHIFT)
@@ -575,66 +603,10 @@
 #define ICC_SRE_EL1_DFB			(1U << 1)
 #define ICC_SRE_EL1_SRE			(1U << 0)
 
-/*
- * Hypervisor interface registers (SRE only)
- */
-#define ICH_LR_VIRTUAL_ID_MASK		((1ULL << 32) - 1)
-
-#define ICH_LR_EOI			(1ULL << 41)
-#define ICH_LR_GROUP			(1ULL << 60)
-#define ICH_LR_HW			(1ULL << 61)
-#define ICH_LR_STATE			(3ULL << 62)
-#define ICH_LR_PENDING_BIT		(1ULL << 62)
-#define ICH_LR_ACTIVE_BIT		(1ULL << 63)
-#define ICH_LR_PHYS_ID_SHIFT		32
-#define ICH_LR_PHYS_ID_MASK		(0x3ffULL << ICH_LR_PHYS_ID_SHIFT)
-#define ICH_LR_PRIORITY_SHIFT		48
-#define ICH_LR_PRIORITY_MASK		(0xffULL << ICH_LR_PRIORITY_SHIFT)
-
 /* These are for GICv2 emulation only */
 #define GICH_LR_VIRTUALID		(0x3ffUL << 0)
 #define GICH_LR_PHYSID_CPUID_SHIFT	(10)
 #define GICH_LR_PHYSID_CPUID		(7UL << GICH_LR_PHYSID_CPUID_SHIFT)
-
-#define ICH_MISR_EOI			(1 << 0)
-#define ICH_MISR_U			(1 << 1)
-
-#define ICH_HCR_EN			(1 << 0)
-#define ICH_HCR_UIE			(1 << 1)
-#define ICH_HCR_NPIE			(1 << 3)
-#define ICH_HCR_TC			(1 << 10)
-#define ICH_HCR_TALL0			(1 << 11)
-#define ICH_HCR_TALL1			(1 << 12)
-#define ICH_HCR_EOIcount_SHIFT		27
-#define ICH_HCR_EOIcount_MASK		(0x1f << ICH_HCR_EOIcount_SHIFT)
-
-#define ICH_VMCR_ACK_CTL_SHIFT		2
-#define ICH_VMCR_ACK_CTL_MASK		(1 << ICH_VMCR_ACK_CTL_SHIFT)
-#define ICH_VMCR_FIQ_EN_SHIFT		3
-#define ICH_VMCR_FIQ_EN_MASK		(1 << ICH_VMCR_FIQ_EN_SHIFT)
-#define ICH_VMCR_CBPR_SHIFT		4
-#define ICH_VMCR_CBPR_MASK		(1 << ICH_VMCR_CBPR_SHIFT)
-#define ICH_VMCR_EOIM_SHIFT		9
-#define ICH_VMCR_EOIM_MASK		(1 << ICH_VMCR_EOIM_SHIFT)
-#define ICH_VMCR_BPR1_SHIFT		18
-#define ICH_VMCR_BPR1_MASK		(7 << ICH_VMCR_BPR1_SHIFT)
-#define ICH_VMCR_BPR0_SHIFT		21
-#define ICH_VMCR_BPR0_MASK		(7 << ICH_VMCR_BPR0_SHIFT)
-#define ICH_VMCR_PMR_SHIFT		24
-#define ICH_VMCR_PMR_MASK		(0xffUL << ICH_VMCR_PMR_SHIFT)
-#define ICH_VMCR_ENG0_SHIFT		0
-#define ICH_VMCR_ENG0_MASK		(1 << ICH_VMCR_ENG0_SHIFT)
-#define ICH_VMCR_ENG1_SHIFT		1
-#define ICH_VMCR_ENG1_MASK		(1 << ICH_VMCR_ENG1_SHIFT)
-
-#define ICH_VTR_PRI_BITS_SHIFT		29
-#define ICH_VTR_PRI_BITS_MASK		(7 << ICH_VTR_PRI_BITS_SHIFT)
-#define ICH_VTR_ID_BITS_SHIFT		23
-#define ICH_VTR_ID_BITS_MASK		(7 << ICH_VTR_ID_BITS_SHIFT)
-#define ICH_VTR_SEIS_SHIFT		22
-#define ICH_VTR_SEIS_MASK		(1 << ICH_VTR_SEIS_SHIFT)
-#define ICH_VTR_A3V_SHIFT		21
-#define ICH_VTR_A3V_MASK		(1 << ICH_VTR_A3V_SHIFT)
 
 #define ICC_IAR1_EL1_SPURIOUS		0x3ff
 
@@ -671,7 +643,7 @@ struct rdists {
 		void __iomem	*rd_base;
 		struct page	*pend_page;
 		phys_addr_t	phys_base;
-		bool		lpi_enabled;
+		u64             flags;
 		cpumask_t	*vpe_table_mask;
 		void		*vpe_l1_base;
 	} __percpu		*rdist;
@@ -680,23 +652,27 @@ struct rdists {
 	u64			flags;
 	u32			gicd_typer;
 	u32			gicd_typer2;
+	int                     cpuhp_memreserve_state;
 	bool			has_vlpis;
 	bool			has_rvpeid;
 	bool			has_direct_lpi;
 	bool			has_vpend_valid_dirty;
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+	bool			has_vtimer;
+#endif
 };
 
 struct irq_domain;
 struct fwnode_handle;
+int __init its_lpi_memreserve_init(void);
 int its_cpu_init(void);
-#ifdef CONFIG_ASCEND_INIT_ALL_GICR
-void its_set_gicr_nr(int nr);
-bool its_init_all_gicr(void);
-int its_cpu_init_others(void __iomem *base, phys_addr_t phys_base, int idx);
-#endif
 int its_init(struct fwnode_handle *handle, struct rdists *rdists,
 	     struct irq_domain *domain);
 int mbi_init(struct fwnode_handle *fwnode, struct irq_domain *parent);
+
+#ifdef CONFIG_VIRT_VTIMER_IRQ_BYPASS
+phys_addr_t get_gicr_paddr(int cpu);
+#endif
 
 static inline bool gic_enable_sre(void)
 {
@@ -711,6 +687,36 @@ static inline bool gic_enable_sre(void)
 	val = gic_read_sre();
 
 	return !!(val & ICC_SRE_EL1_SRE);
+}
+
+enum gic_intid_range {
+	SGI_RANGE,
+	PPI_RANGE,
+	SPI_RANGE,
+	EPPI_RANGE,
+	ESPI_RANGE,
+	LPI_RANGE,
+	__INVALID_RANGE__
+};
+
+static inline enum gic_intid_range __get_intid_range(irq_hw_number_t hwirq)
+{
+	switch (hwirq) {
+	case 0 ... 15:
+		return SGI_RANGE;
+	case 16 ... 31:
+		return PPI_RANGE;
+	case 32 ... 1019:
+		return SPI_RANGE;
+	case EPPI_BASE_INTID ... (EPPI_BASE_INTID + 63):
+		return EPPI_RANGE;
+	case ESPI_BASE_INTID ... (ESPI_BASE_INTID + 1023):
+		return ESPI_RANGE;
+	case 8192 ... GENMASK(23, 0):
+		return LPI_RANGE;
+	default:
+		return __INVALID_RANGE__;
+	}
 }
 
 #endif

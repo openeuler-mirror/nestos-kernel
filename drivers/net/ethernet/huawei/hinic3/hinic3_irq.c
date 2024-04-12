@@ -44,8 +44,8 @@ static void qp_add_napi(struct hinic3_irq *irq_cfg)
 {
 	struct hinic3_nic_dev *nic_dev = netdev_priv(irq_cfg->netdev);
 
-	netif_napi_add(nic_dev->netdev, &irq_cfg->napi,
-		       hinic3_poll, nic_dev->poll_weight);
+	netif_napi_add_weight(nic_dev->netdev, &irq_cfg->napi,
+			      hinic3_poll, nic_dev->poll_weight);
 	napi_enable(&irq_cfg->napi);
 }
 

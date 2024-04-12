@@ -18,7 +18,6 @@ static int sample_ustack(struct perf_sample *sample,
 	unsigned long sp;
 	u64 stack_size, *buf;
 
-	printf("enter %s\n", __func__);
 	buf = malloc(STACK_SIZE);
 	if (!buf) {
 		printf("failed to allocate sample uregs data\n");

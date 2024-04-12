@@ -12,6 +12,7 @@
 #include <linux/types.h>
 #include <generated/compile.h>
 #include <generated/utsrelease.h>
+#include <generated/utsversion.h>
 #include <linux/pgtable.h>
 
 #include CONFIG_UNCOMPRESS_INCLUDE
@@ -64,11 +65,11 @@ static u32 __memparse(const char *val, const char **retptr)
 		case 'g':
 		case 'G':
 			ret <<= 10;
-			/* fall through */
+			fallthrough;
 		case 'm':
 		case 'M':
 			ret <<= 10;
-			/* fall through */
+			fallthrough;
 		case 'k':
 		case 'K':
 			ret <<= 10;
@@ -230,7 +231,7 @@ static u32 get_memory_end(const void *fdt, u32 zimage_start)
 
 	get_cell_sizes(fdt, 0, &address_cells, &size_cells);
 
-	while(mem_node >= 0) {
+	while (mem_node >= 0) {
 		/*
 		 * Now find the 'reg' property of the /memory node, and iterate over
 		 * the base/size pairs.
@@ -300,26 +301,6 @@ static const char *get_cmdline_param(const char *cmdline, const char *param,
 	}
 	return NULL;
 }
-
-static void __puthex32(const char *name, u32 val)
-{
-	int i;
-
-	while (*name)
-		putc(*name++);
-	putc(':');
-	for (i = 28; i >= 0; i -= 4) {
-		char c = (val >> i) & 0xf;
-
-		if (c < 10)
-			putc(c + '0');
-		else
-			putc(c + 'a' - 10);
-	}
-	putc('\r');
-	putc('\n');
-}
-#define puthex32(val)	__puthex32(#val, (val))
 
 u32 kaslr_early_init(u32 *kaslr_offset, u32 image_base, u32 image_size,
 		     u32 seed, u32 zimage_start, const void *fdt,
@@ -425,16 +406,6 @@ u32 kaslr_early_init(u32 *kaslr_offset, u32 image_base, u32 image_size,
 	else
 		regions.pa_end = regions.pa_end - regions.image_size;
 
-	puthex32(regions.image_size);
-	puthex32(regions.pa_start);
-	puthex32(regions.pa_end);
-	puthex32(regions.zimage_start);
-	puthex32(regions.zimage_size);
-	puthex32(regions.dtb_start);
-	puthex32(regions.dtb_size);
-	puthex32(regions.initrd_start);
-	puthex32(regions.initrd_size);
-
 	/* check for a reserved-memory node and record its cell sizes */
 	regions.reserved_mem = fdt_path_offset(fdt, "/reserved-memory");
 	if (regions.reserved_mem >= 0)
@@ -453,13 +424,10 @@ u32 kaslr_early_init(u32 *kaslr_offset, u32 image_base, u32 image_size,
 	 * up at.
 	 */
 	count = count_suitable_regions(fdt, &regions, bitmap);
-	puthex32(count);
 
 	num = ((u16)seed * count) >> 16;
-	puthex32(num);
 
 	*kaslr_offset = get_region_number(num, bitmap, sizeof(bitmap) / sizeof(u32)) * SZ_2M;
-	puthex32(*kaslr_offset);
 
 	return *kaslr_offset;
 }

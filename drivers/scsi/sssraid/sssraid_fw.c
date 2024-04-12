@@ -28,8 +28,7 @@
 #include <scsi/scsi_transport.h>
 #include <scsi/scsi_dbg.h>
 
-#include <linux/unaligned/be_byteshift.h>
-#include <linux/unaligned/le_byteshift.h>
+#include <asm/unaligned.h>
 #include <linux/once.h>
 #include <linux/sched/signal.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
@@ -306,7 +305,6 @@ static int sssraid_setup_resources(struct sssraid_ioc *sdioc)
 
 	pci_set_drvdata(pdev, sdioc->shost);
 
-	pci_enable_pcie_error_reporting(pdev);
 	pci_save_state(pdev);
 
 	sssraid_ioc_disable_intr(sdioc);
@@ -1383,7 +1381,6 @@ void sssraid_cleanup_resources(struct sssraid_ioc *sdioc)
 	}
 
 	if (pci_is_enabled(pdev)) {
-		pci_disable_pcie_error_reporting(pdev);
 		pci_release_mem_regions(pdev);
 		pci_disable_device(pdev);
 	}
@@ -1553,7 +1550,7 @@ static void sssraid_complete_ioq_cmnd(struct sssraid_ioc *sdioc, u16 qidx,
 		scsi_dma_unmap(scmd);
 	}
 	sssraid_free_iod_res(sdioc, iod);
-	scmd->scsi_done(scmd);
+	scsi_done(scmd);
 }
 
 static void sssraid_process_admin_cq(struct sssraid_ioc *sdioc,

@@ -87,6 +87,12 @@ u32 g_testlbk;
 
 struct bspveth_device g_bspveth_dev = {};
 
+/* g_shutdown_flag is used to prevent veth_shutdown_task
+ * from being preempted by veth_dma_tx_timer_do_H.
+ * The default value is 0.The value 1 indicates that veth_shutdown_flag cannot be preempted,
+ * and the value 0 indicates that veth_shutdown_task can be preempted.
+ */
+static int g_shutdown_flag;
 static int veth_int_handler(struct notifier_block *pthis, unsigned long ev,
 			    void *unuse);
 
@@ -1106,12 +1112,7 @@ s32 veth_mac_set(struct net_device *pstr_dev, void *p_mac)
 	str_addr = (struct sockaddr *)p_mac;
 	puc_mac = (u8 *)str_addr->sa_data;
 
-	pstr_dev->dev_addr[0] = puc_mac[0];
-	pstr_dev->dev_addr[1] = puc_mac[1];
-	pstr_dev->dev_addr[2] = puc_mac[2];
-	pstr_dev->dev_addr[3] = puc_mac[3];
-	pstr_dev->dev_addr[4] = puc_mac[4];
-	pstr_dev->dev_addr[5] = puc_mac[5];
+	eth_hw_addr_set(pstr_dev, puc_mac);
 
 	return BSP_OK;
 }
@@ -1235,6 +1236,8 @@ void veth_netdev_func_init(struct net_device *dev)
 {
 	struct tag_pcie_comm_priv *priv =
 				(struct tag_pcie_comm_priv *)netdev_priv(dev);
+	/*9C:7D:A3:28:6F:F9*/
+	unsigned char veth_mac[ETH_ALEN] = {0x9C, 0x7D, 0xA3, 0x28, 0x6F, 0xF9};
 
 	VETH_LOG(DLOG_DEBUG, "eth init start\n");
 
@@ -1254,13 +1257,7 @@ void veth_netdev_func_init(struct net_device *dev)
 	memset(priv, 0, sizeof(struct tag_pcie_comm_priv));
 	strncpy(priv->net_type, MODULE_NAME, NET_TYPE_LEN);
 
-	/*9C:7D:A3:28:6F:F9*/
-	dev->dev_addr[0] = 0x9c;
-	dev->dev_addr[1] = 0x7d;
-	dev->dev_addr[2] = 0xa3;
-	dev->dev_addr[3] = 0x28;
-	dev->dev_addr[4] = 0x6f;
-	dev->dev_addr[5] = 0xf9;
+	eth_hw_addr_set(dev, veth_mac);
 
 	VETH_LOG(DLOG_DEBUG, "set veth MAC addr OK\n");
 }
@@ -1607,6 +1604,7 @@ void veth_netdev_exit(void)
 static void veth_shutdown_task(struct work_struct *work)
 {
 	struct net_device *netdev = g_bspveth_dev.pnetdev;
+	g_shutdown_flag = 1;
 
 	VETH_LOG(DLOG_ERROR, "veth is going down, please restart it manual\n");
 
@@ -1626,6 +1624,7 @@ static void veth_shutdown_task(struct work_struct *work)
 
 		(void)veth_dmatimer_close_H();
 	}
+	g_shutdown_flag = 0;
 }
 
 s32 veth_netdev_init(void)
@@ -1728,7 +1727,7 @@ void veth_dma_tx_timer_do_H(unsigned long data)
 
 	rxret = veth_dma_task_H(BSPVETH_RX);
 
-	if (txret == BSP_ERR_AGAIN || rxret == BSP_ERR_AGAIN) {
+	if ((txret == BSP_ERR_AGAIN || rxret == BSP_ERR_AGAIN) && (g_shutdown_flag == 0)) {
 #ifndef USE_TASKLET
 		(void)mod_timer(&g_bspveth_dev.dmatimer, jiffies_64);
 #else

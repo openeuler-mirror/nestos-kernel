@@ -1,58 +1,77 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
+ * Copyright (C) 2020-2023 Loongson Technology Corporation Limited
  */
 
-#include <linux/errno.h>
 #include <linux/err.h>
+#include <linux/errno.h>
+#include <linux/kvm_host.h>
 #include <linux/module.h>
 #include <linux/preempt.h>
 #include <linux/vmalloc.h>
-#include <asm/cacheflush.h>
-#include <asm/cacheops.h>
-#include <asm/cmpxchg.h>
 #include <asm/fpu.h>
 #include <asm/inst.h>
-#include <asm/mmu_context.h>
-#include <asm/cacheflush.h>
+#include <asm/loongarch.h>
+#include <asm/mmzone.h>
+#include <asm/numa.h>
 #include <asm/time.h>
 #include <asm/tlb.h>
-#include <asm/numa.h>
-#include "kvmcpu.h"
-#include <linux/kvm_host.h>
+#include <asm/kvm_csr.h>
+#include <asm/kvm_vcpu.h>
 #include "trace.h"
-#include "kvm_compat.h"
-#include "kvmcsr.h"
-#include "intc/ls3a_ext_irq.h"
 
-/*
- * Loongarch KVM callback handling for not implemented guest exiting
- */
-static int _kvm_fault_ni(struct kvm_vcpu *vcpu)
+static unsigned long kvm_emu_read_csr(struct kvm_vcpu *vcpu, int csrid)
 {
-	unsigned long estat, badv;
-	unsigned int exccode, inst;
+	unsigned long val = 0;
+	struct loongarch_csrs *csr = vcpu->arch.csr;
 
 	/*
-	 *  Fetch the instruction.
+	 * From LoongArch Reference Manual Volume 1 Chapter 4.2.1
+	 * For undefined CSR id, return value is 0
 	 */
-	badv = vcpu->arch.badv;
-	estat = vcpu->arch.host_estat;
-	exccode = (estat & KVM_ESTAT_EXC) >> KVM_ESTAT_EXC_SHIFT;
-	inst = vcpu->arch.badi;
-	kvm_err("Exccode: %d PC=%#lx inst=0x%08x BadVaddr=%#lx estat=%#llx\n",
-		exccode, vcpu->arch.pc, inst, badv, kvm_read_gcsr_estat());
-	kvm_arch_vcpu_dump_regs(vcpu);
-	vcpu->run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
-	return RESUME_HOST;
+	if (get_gcsr_flag(csrid) & SW_GCSR)
+		val = kvm_read_sw_gcsr(csr, csrid);
+	else
+		pr_warn_once("Unsupported csrrd 0x%x with pc %lx\n", csrid, vcpu->arch.pc);
+
+	return val;
 }
 
-static int _kvm_handle_csr(struct kvm_vcpu *vcpu, larch_inst inst)
+static unsigned long kvm_emu_write_csr(struct kvm_vcpu *vcpu, int csrid, unsigned long val)
 {
-	enum emulation_result er = EMULATE_DONE;
+	unsigned long old = 0;
+	struct loongarch_csrs *csr = vcpu->arch.csr;
+
+	if (get_gcsr_flag(csrid) & SW_GCSR) {
+		old = kvm_read_sw_gcsr(csr, csrid);
+		kvm_write_sw_gcsr(csr, csrid, val);
+	} else
+		pr_warn_once("Unsupported csrwr 0x%x with pc %lx\n", csrid, vcpu->arch.pc);
+
+	return old;
+}
+
+static unsigned long kvm_emu_xchg_csr(struct kvm_vcpu *vcpu, int csrid,
+				unsigned long csr_mask, unsigned long val)
+{
+	unsigned long old = 0;
+	struct loongarch_csrs *csr = vcpu->arch.csr;
+
+	if (get_gcsr_flag(csrid) & SW_GCSR) {
+		old = kvm_read_sw_gcsr(csr, csrid);
+		val = (old & ~csr_mask) | (val & csr_mask);
+		kvm_write_sw_gcsr(csr, csrid, val);
+		old = old & csr_mask;
+	} else
+		pr_warn_once("Unsupported csrxchg 0x%x with pc %lx\n", csrid, vcpu->arch.pc);
+
+	return old;
+}
+
+static int kvm_handle_csr(struct kvm_vcpu *vcpu, larch_inst inst)
+{
 	unsigned int rd, rj, csrid;
-	unsigned long csr_mask;
-	unsigned long val = 0;
+	unsigned long csr_mask, val = 0;
 
 	/*
 	 * CSR value mask imm
@@ -65,91 +84,214 @@ static int _kvm_handle_csr(struct kvm_vcpu *vcpu, larch_inst inst)
 	csrid = inst.reg2csr_format.csr;
 
 	/* Process CSR ops */
-	if (rj == 0) {
-		/* process csrrd */
-		val = _kvm_emu_read_csr(vcpu, csrid);
-		if (er != EMULATE_FAIL)
-			vcpu->arch.gprs[rd] = val;
-	} else if (rj == 1) {
-		/* process csrwr */
+	switch (rj) {
+	case 0: /* process csrrd */
+		val = kvm_emu_read_csr(vcpu, csrid);
+		vcpu->arch.gprs[rd] = val;
+		break;
+	case 1: /* process csrwr */
 		val = vcpu->arch.gprs[rd];
-		_kvm_emu_write_csr(vcpu, csrid, val);
-	} else {
-		/* process csrxchg */
+		val = kvm_emu_write_csr(vcpu, csrid, val);
+		vcpu->arch.gprs[rd] = val;
+		break;
+	default: /* process csrxchg */
 		val = vcpu->arch.gprs[rd];
 		csr_mask = vcpu->arch.gprs[rj];
-		_kvm_emu_xchg_csr(vcpu, csrid, csr_mask, val);
+		val = kvm_emu_xchg_csr(vcpu, csrid, csr_mask, val);
+		vcpu->arch.gprs[rd] = val;
+	}
+
+	return EMULATE_DONE;
+}
+
+int kvm_emu_iocsr(larch_inst inst, struct kvm_run *run, struct kvm_vcpu *vcpu)
+{
+	int ret;
+	unsigned long val;
+	u32 addr, rd, rj, opcode;
+
+	/*
+	 * Each IOCSR with different opcode
+	 */
+	rd = inst.reg2_format.rd;
+	rj = inst.reg2_format.rj;
+	opcode = inst.reg2_format.opcode;
+	addr = vcpu->arch.gprs[rj];
+	ret = EMULATE_DO_IOCSR;
+	run->iocsr_io.phys_addr = addr;
+	run->iocsr_io.is_write = 0;
+
+	/* LoongArch is Little endian */
+	switch (opcode) {
+	case iocsrrdb_op:
+		run->iocsr_io.len = 1;
+		break;
+	case iocsrrdh_op:
+		run->iocsr_io.len = 2;
+		break;
+	case iocsrrdw_op:
+		run->iocsr_io.len = 4;
+		break;
+	case iocsrrdd_op:
+		run->iocsr_io.len = 8;
+		break;
+	case iocsrwrb_op:
+		run->iocsr_io.len = 1;
+		run->iocsr_io.is_write = 1;
+		break;
+	case iocsrwrh_op:
+		run->iocsr_io.len = 2;
+		run->iocsr_io.is_write = 1;
+		break;
+	case iocsrwrw_op:
+		run->iocsr_io.len = 4;
+		run->iocsr_io.is_write = 1;
+		break;
+	case iocsrwrd_op:
+		run->iocsr_io.len = 8;
+		run->iocsr_io.is_write = 1;
+		break;
+	default:
+		ret = EMULATE_FAIL;
+		break;
+	}
+
+	if (ret == EMULATE_DO_IOCSR) {
+		if (run->iocsr_io.is_write) {
+			val = vcpu->arch.gprs[rd];
+			memcpy(run->iocsr_io.data, &val, run->iocsr_io.len);
+		}
+		vcpu->arch.io_gpr = rd;
+	}
+
+	return ret;
+}
+
+int kvm_complete_iocsr_read(struct kvm_vcpu *vcpu, struct kvm_run *run)
+{
+	enum emulation_result er = EMULATE_DONE;
+	unsigned long *gpr = &vcpu->arch.gprs[vcpu->arch.io_gpr];
+
+	switch (run->iocsr_io.len) {
+	case 1:
+		*gpr = *(s8 *)run->iocsr_io.data;
+		break;
+	case 2:
+		*gpr = *(s16 *)run->iocsr_io.data;
+		break;
+	case 4:
+		*gpr = *(s32 *)run->iocsr_io.data;
+		break;
+	case 8:
+		*gpr = *(s64 *)run->iocsr_io.data;
+		break;
+	default:
+		kvm_err("Bad IOCSR length: %d, addr is 0x%lx\n",
+				run->iocsr_io.len, vcpu->arch.badv);
+		er = EMULATE_FAIL;
+		break;
 	}
 
 	return er;
 }
 
-static int _kvm_emu_cache(struct kvm_vcpu *vcpu, larch_inst inst)
+int kvm_emu_idle(struct kvm_vcpu *vcpu)
 {
+	++vcpu->stat.idle_exits;
+	trace_kvm_exit_idle(vcpu, KVM_TRACE_EXIT_IDLE);
+
+	if (!kvm_arch_vcpu_runnable(vcpu))
+		kvm_vcpu_halt(vcpu);
+
 	return EMULATE_DONE;
 }
 
-static int _kvm_trap_handle_gspr(struct kvm_vcpu *vcpu)
+static int kvm_emu_cpucfg(struct kvm_vcpu *vcpu, larch_inst inst)
 {
-	enum emulation_result er = EMULATE_DONE;
-	struct kvm_run *run = vcpu->run;
-	larch_inst inst;
-	unsigned long curr_pc;
 	int rd, rj;
-	unsigned int index;
+	unsigned int index, ret;
+	unsigned long plv;
+
+	rd = inst.reg2_format.rd;
+	rj = inst.reg2_format.rj;
+	++vcpu->stat.cpucfg_exits;
+	index = vcpu->arch.gprs[rj];
 
 	/*
-	 *  Fetch the instruction.
+	 * By LoongArch Reference Manual 2.2.10.5
+	 * Return value is 0 for undefined cpucfg index
+	 *
+	 * Disable preemption since hw gcsr is accessed
 	 */
+	preempt_disable();
+	plv = kvm_read_hw_gcsr(LOONGARCH_CSR_CRMD) >> CSR_CRMD_PLV_SHIFT;
+	switch (index) {
+	case 0 ... (KVM_MAX_CPUCFG_REGS - 1):
+		vcpu->arch.gprs[rd] = vcpu->arch.cpucfg[index];
+		break;
+	case CPUCFG_KVM_SIG:
+		/*
+		 * Cpucfg emulation between 0x40000000 -- 0x400000ff
+		 * Return value with 0 if executed in user mode
+		 */
+		if ((plv & CSR_CRMD_PLV) == PLV_KERN)
+			vcpu->arch.gprs[rd] = *(unsigned int *)KVM_SIGNATURE;
+		else
+			vcpu->arch.gprs[rd] = 0;
+		break;
+	case CPUCFG_KVM_FEATURE:
+		ret = 0;
+		if ((plv & CSR_CRMD_PLV) == PLV_KERN) {
+			ret = KVM_FEATURE_PV_IPI;
+			if (sched_info_on())
+				ret |= KVM_FEATURE_STEAL_TIME;
+		}
+		vcpu->arch.gprs[rd] = ret;
+		break;
+	default:
+		vcpu->arch.gprs[rd] = 0;
+		break;
+	}
+
+	preempt_enable();
+	return EMULATE_DONE;
+}
+
+static int kvm_trap_handle_gspr(struct kvm_vcpu *vcpu)
+{
+	unsigned long curr_pc;
+	larch_inst inst;
+	enum emulation_result er = EMULATE_DONE;
+	struct kvm_run *run = vcpu->run;
+
+	/* Fetch the instruction */
 	inst.word = vcpu->arch.badi;
 	curr_pc = vcpu->arch.pc;
 	update_pc(&vcpu->arch);
 
+	trace_kvm_exit_gspr(vcpu, inst.word);
 	er = EMULATE_FAIL;
 	switch (((inst.word >> 24) & 0xff)) {
-	case 0x0:
-		/* cpucfg GSPR */
-		if (inst.reg2_format.opcode == 0x1B) {
-			rd = inst.reg2_format.rd;
-			rj = inst.reg2_format.rj;
-			++vcpu->stat.cpucfg_exits;
-			index = vcpu->arch.gprs[rj];
-			vcpu->arch.gprs[rd] = vcpu->kvm->arch.cpucfgs.cpucfg[index];
-			if (vcpu->arch.gprs[rd] == 0) {
-				/*
-				 * Fallback to get host cpucfg info, this is just for
-				 * compatible with older qemu.
-				 */
-				vcpu->arch.gprs[rd] = read_cpucfg(index);
-				/* Nested KVM is not supported */
-				if (index == 2)
-					vcpu->arch.gprs[rd] &= ~CPUCFG2_LVZP;
-			}
-			er = EMULATE_DONE;
-		}
+	case 0x0: /* CPUCFG GSPR */
+		if (inst.reg2_format.opcode == cpucfg_op)
+			er = kvm_emu_cpucfg(vcpu, inst);
 		break;
-	case 0x4:
-		/* csr GSPR */
-		er = _kvm_handle_csr(vcpu, inst);
+	case 0x4: /* CSR{RD,WR,XCHG} GSPR */
+		er = kvm_handle_csr(vcpu, inst);
 		break;
-	case 0x6:
-		/* iocsr,cache,idle GSPR */
+	case 0x6: /* Cache, Idle and IOCSR GSPR */
 		switch (((inst.word >> 22) & 0x3ff)) {
-		case 0x18:
-			/* cache GSPR */
-			er = _kvm_emu_cache(vcpu, inst);
-			trace_kvm_exit(vcpu, KVM_TRACE_EXIT_CACHE);
+		case 0x18: /* Cache GSPR */
+			er = EMULATE_DONE;
+			trace_kvm_exit_cache(vcpu, KVM_TRACE_EXIT_CACHE);
 			break;
-		case 0x19:
-			/* iocsr/idle GSPR */
+		case 0x19: /* Idle/IOCSR GSPR */
 			switch (((inst.word >> 15) & 0x1ffff)) {
-			case 0xc90:
-				/* iocsr GSPR */
-				er = _kvm_emu_iocsr(inst, run, vcpu);
+			case 0xc90: /* IOCSR GSPR */
+				er = kvm_emu_iocsr(inst, run, vcpu);
 				break;
-			case 0xc91:
-				/* idle GSPR */
-				er = _kvm_emu_idle(vcpu);
+			case 0xc91: /* Idle GSPR */
+				er = kvm_emu_idle(vcpu);
 				break;
 			default:
 				er = EMULATE_FAIL;
@@ -174,61 +316,22 @@ static int _kvm_trap_handle_gspr(struct kvm_vcpu *vcpu)
 		kvm_arch_vcpu_dump_regs(vcpu);
 		vcpu->arch.pc = curr_pc;
 	}
+
 	return er;
 }
 
-static int _kvm_check_hypcall(struct kvm_vcpu *vcpu)
+/*
+ * Trigger GSPR:
+ * 1) Execute CPUCFG instruction;
+ * 2) Execute CACOP/IDLE instructions;
+ * 3) Access to unimplemented CSRs/IOCSRs.
+ */
+static int kvm_handle_gspr(struct kvm_vcpu *vcpu)
 {
-	enum emulation_result ret;
-	larch_inst inst;
-	unsigned long curr_pc;
-	unsigned int code;
-
-	/*
-	 * Update PC and hold onto current PC in case there is
-	 * an error and we want to rollback the PC
-	 */
-	inst.word = vcpu->arch.badi;
-	code = inst.reg0i15_format.simmediate;
-	curr_pc = vcpu->arch.pc;
-	update_pc(&vcpu->arch);
-
-	ret = EMULATE_DONE;
-	switch (code) {
-	case KVM_HC_CODE_SERIVCE:
-		ret = EMULATE_PV_HYPERCALL;
-		break;
-	case KVM_HC_CODE_SWDBG:
-		/*
-		 * Only SWDBG(SoftWare DeBug) could stop vm
-		 * code other than 0 is ignored.
-		 */
-		ret = EMULATE_DEBUG;
-		break;
-	default:
-		kvm_info("[%#lx] HYPCALL %#03x unsupported\n", vcpu->arch.pc, code);
-		break;
-	}
-
-	if (ret == EMULATE_DEBUG)
-		vcpu->arch.pc = curr_pc;
-
-	return ret;
-}
-
-/* Execute cpucfg instruction will tirggerGSPR,
- * Also the access to unimplemented csrs 0x15
- * 0x16, 0x50~0x53, 0x80, 0x81, 0x90~0x95, 0x98
- * 0xc0~0xff, 0x100~0x109, 0x500~0x502,
- * cache_op, idle_op iocsr ops the same */
-static int _kvm_handle_gspr(struct kvm_vcpu *vcpu)
-{
-	enum emulation_result er = EMULATE_DONE;
 	int ret = RESUME_GUEST;
+	enum emulation_result er = EMULATE_DONE;
 
-	vcpu->arch.is_hypcall = 0;
-
-	er = _kvm_trap_handle_gspr(vcpu);
+	er = kvm_trap_handle_gspr(vcpu);
 
 	if (er == EMULATE_DONE) {
 		ret = RESUME_GUEST;
@@ -239,259 +342,529 @@ static int _kvm_handle_gspr(struct kvm_vcpu *vcpu)
 		vcpu->run->exit_reason = KVM_EXIT_LOONGARCH_IOCSR;
 		ret = RESUME_HOST;
 	} else {
-		kvm_err("%s internal error\n", __func__);
-		vcpu->run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
-		ret = RESUME_HOST;
+		kvm_queue_exception(vcpu, EXCCODE_INE, 0);
+		ret = RESUME_GUEST;
 	}
+
 	return ret;
 }
 
-static int _kvm_handle_hypcall(struct kvm_vcpu *vcpu)
+int kvm_emu_mmio_read(struct kvm_vcpu *vcpu, larch_inst inst)
+{
+	int ret;
+	unsigned int op8, opcode, rd;
+	struct kvm_run *run = vcpu->run;
+
+	run->mmio.phys_addr = vcpu->arch.badv;
+	vcpu->mmio_needed = 2;	/* signed */
+	op8 = (inst.word >> 24) & 0xff;
+	ret = EMULATE_DO_MMIO;
+
+	switch (op8) {
+	case 0x24 ... 0x27:	/* ldptr.w/d process */
+		rd = inst.reg2i14_format.rd;
+		opcode = inst.reg2i14_format.opcode;
+
+		switch (opcode) {
+		case ldptrw_op:
+			run->mmio.len = 4;
+			break;
+		case ldptrd_op:
+			run->mmio.len = 8;
+			break;
+		default:
+			break;
+		}
+		break;
+	case 0x28 ... 0x2e:	/* ld.b/h/w/d, ld.bu/hu/wu process */
+		rd = inst.reg2i12_format.rd;
+		opcode = inst.reg2i12_format.opcode;
+
+		switch (opcode) {
+		case ldb_op:
+			run->mmio.len = 1;
+			break;
+		case ldbu_op:
+			vcpu->mmio_needed = 1;	/* unsigned */
+			run->mmio.len = 1;
+			break;
+		case ldh_op:
+			run->mmio.len = 2;
+			break;
+		case ldhu_op:
+			vcpu->mmio_needed = 1;	/* unsigned */
+			run->mmio.len = 2;
+			break;
+		case ldw_op:
+			run->mmio.len = 4;
+			break;
+		case ldwu_op:
+			vcpu->mmio_needed = 1;	/* unsigned */
+			run->mmio.len = 4;
+			break;
+		case ldd_op:
+			run->mmio.len = 8;
+			break;
+		default:
+			ret = EMULATE_FAIL;
+			break;
+		}
+		break;
+	case 0x38:	/* ldx.b/h/w/d, ldx.bu/hu/wu process */
+		rd = inst.reg3_format.rd;
+		opcode = inst.reg3_format.opcode;
+
+		switch (opcode) {
+		case ldxb_op:
+			run->mmio.len = 1;
+			break;
+		case ldxbu_op:
+			run->mmio.len = 1;
+			vcpu->mmio_needed = 1;	/* unsigned */
+			break;
+		case ldxh_op:
+			run->mmio.len = 2;
+			break;
+		case ldxhu_op:
+			run->mmio.len = 2;
+			vcpu->mmio_needed = 1;	/* unsigned */
+			break;
+		case ldxw_op:
+			run->mmio.len = 4;
+			break;
+		case ldxwu_op:
+			run->mmio.len = 4;
+			vcpu->mmio_needed = 1;	/* unsigned */
+			break;
+		case ldxd_op:
+			run->mmio.len = 8;
+			break;
+		default:
+			ret = EMULATE_FAIL;
+			break;
+		}
+		break;
+	default:
+		ret = EMULATE_FAIL;
+	}
+
+	if (ret == EMULATE_DO_MMIO) {
+		/* Set for kvm_complete_mmio_read() use */
+		vcpu->arch.io_gpr = rd;
+		run->mmio.is_write = 0;
+		vcpu->mmio_is_write = 0;
+	} else {
+		kvm_err("Read not supported Inst=0x%08x @%lx BadVaddr:%#lx\n",
+			inst.word, vcpu->arch.pc, vcpu->arch.badv);
+		kvm_arch_vcpu_dump_regs(vcpu);
+		vcpu->mmio_needed = 0;
+	}
+
+	return ret;
+}
+
+int kvm_complete_mmio_read(struct kvm_vcpu *vcpu, struct kvm_run *run)
 {
 	enum emulation_result er = EMULATE_DONE;
-	int ret = RESUME_GUEST;
+	unsigned long *gpr = &vcpu->arch.gprs[vcpu->arch.io_gpr];
 
-	vcpu->arch.is_hypcall = 0;
-	er = _kvm_check_hypcall(vcpu);
+	/* Update with new PC */
+	update_pc(&vcpu->arch);
+	switch (run->mmio.len) {
+	case 1:
+		if (vcpu->mmio_needed == 2)
+			*gpr = *(s8 *)run->mmio.data;
+		else
+			*gpr = *(u8 *)run->mmio.data;
+		break;
+	case 2:
+		if (vcpu->mmio_needed == 2)
+			*gpr = *(s16 *)run->mmio.data;
+		else
+			*gpr = *(u16 *)run->mmio.data;
+		break;
+	case 4:
+		if (vcpu->mmio_needed == 2)
+			*gpr = *(s32 *)run->mmio.data;
+		else
+			*gpr = *(u32 *)run->mmio.data;
+		break;
+	case 8:
+		*gpr = *(s64 *)run->mmio.data;
+		break;
+	default:
+		kvm_err("Bad MMIO length: %d, addr is 0x%lx\n",
+				run->mmio.len, vcpu->arch.badv);
+		er = EMULATE_FAIL;
+		break;
+	}
 
-	if (er == EMULATE_PV_HYPERCALL)
-		ret = _kvm_handle_pv_hcall(vcpu);
-	else if (er == EMULATE_DEBUG) {
-		vcpu->run->exit_reason = KVM_EXIT_DEBUG;
-		ret = RESUME_HOST;
-	} else
-		ret = RESUME_GUEST;
+	return er;
+}
+
+int kvm_emu_mmio_write(struct kvm_vcpu *vcpu, larch_inst inst)
+{
+	int ret;
+	unsigned int rd, op8, opcode;
+	unsigned long curr_pc, rd_val = 0;
+	struct kvm_run *run = vcpu->run;
+	void *data = run->mmio.data;
+
+	/*
+	 * Update PC and hold onto current PC in case there is
+	 * an error and we want to rollback the PC
+	 */
+	curr_pc = vcpu->arch.pc;
+	update_pc(&vcpu->arch);
+
+	op8 = (inst.word >> 24) & 0xff;
+	run->mmio.phys_addr = vcpu->arch.badv;
+	ret = EMULATE_DO_MMIO;
+	switch (op8) {
+	case 0x24 ... 0x27:	/* stptr.w/d process */
+		rd = inst.reg2i14_format.rd;
+		opcode = inst.reg2i14_format.opcode;
+
+		switch (opcode) {
+		case stptrw_op:
+			run->mmio.len = 4;
+			*(unsigned int *)data = vcpu->arch.gprs[rd];
+			break;
+		case stptrd_op:
+			run->mmio.len = 8;
+			*(unsigned long *)data = vcpu->arch.gprs[rd];
+			break;
+		default:
+			ret = EMULATE_FAIL;
+			break;
+		}
+		break;
+	case 0x28 ... 0x2e:	/* st.b/h/w/d  process */
+		rd = inst.reg2i12_format.rd;
+		opcode = inst.reg2i12_format.opcode;
+		rd_val = vcpu->arch.gprs[rd];
+
+		switch (opcode) {
+		case stb_op:
+			run->mmio.len = 1;
+			*(unsigned char *)data = rd_val;
+			break;
+		case sth_op:
+			run->mmio.len = 2;
+			*(unsigned short *)data = rd_val;
+			break;
+		case stw_op:
+			run->mmio.len = 4;
+			*(unsigned int *)data = rd_val;
+			break;
+		case std_op:
+			run->mmio.len = 8;
+			*(unsigned long *)data = rd_val;
+			break;
+		default:
+			ret = EMULATE_FAIL;
+			break;
+		}
+		break;
+	case 0x38:	/* stx.b/h/w/d process */
+		rd = inst.reg3_format.rd;
+		opcode = inst.reg3_format.opcode;
+
+		switch (opcode) {
+		case stxb_op:
+			run->mmio.len = 1;
+			*(unsigned char *)data = vcpu->arch.gprs[rd];
+			break;
+		case stxh_op:
+			run->mmio.len = 2;
+			*(unsigned short *)data = vcpu->arch.gprs[rd];
+			break;
+		case stxw_op:
+			run->mmio.len = 4;
+			*(unsigned int *)data = vcpu->arch.gprs[rd];
+			break;
+		case stxd_op:
+			run->mmio.len = 8;
+			*(unsigned long *)data = vcpu->arch.gprs[rd];
+			break;
+		default:
+			ret = EMULATE_FAIL;
+			break;
+		}
+		break;
+	default:
+		ret = EMULATE_FAIL;
+	}
+
+	if (ret == EMULATE_DO_MMIO) {
+		run->mmio.is_write = 1;
+		vcpu->mmio_needed = 1;
+		vcpu->mmio_is_write = 1;
+	} else {
+		vcpu->arch.pc = curr_pc;
+		kvm_err("Write not supported Inst=0x%08x @%lx BadVaddr:%#lx\n",
+			inst.word, vcpu->arch.pc, vcpu->arch.badv);
+		kvm_arch_vcpu_dump_regs(vcpu);
+		/* Rollback PC if emulation was unsuccessful */
+	}
 
 	return ret;
 }
 
-static int _kvm_handle_gcm(struct kvm_vcpu *vcpu)
+static int kvm_handle_rdwr_fault(struct kvm_vcpu *vcpu, bool write)
 {
-	int ret, subcode;
+	int ret;
+	larch_inst inst;
+	enum emulation_result er = EMULATE_DONE;
+	struct kvm_run *run = vcpu->run;
+	unsigned long badv = vcpu->arch.badv;
 
-	vcpu->arch.is_hypcall = 0;
-	ret = RESUME_GUEST;
-	subcode = (vcpu->arch.host_estat & KVM_ESTAT_ESUBCODE) >> KVM_ESTAT_ESUBCODE_SHIFT;
-	if ((subcode != EXCSUBCODE_GCSC) && (subcode != EXCSUBCODE_GCHC)) {
-		kvm_err("%s internal error\n", __func__);
-		vcpu->run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
+	ret = kvm_handle_mm_fault(vcpu, badv, write);
+	if (ret) {
+		/* Treat as MMIO */
+		inst.word = vcpu->arch.badi;
+		if (write) {
+			er = kvm_emu_mmio_write(vcpu, inst);
+		} else {
+			/* A code fetch fault doesn't count as an MMIO */
+			if (kvm_is_ifetch_fault(&vcpu->arch)) {
+				kvm_queue_exception(vcpu, EXCCODE_ADE, EXSUBCODE_ADEF);
+				return RESUME_GUEST;
+			}
+
+			er = kvm_emu_mmio_read(vcpu, inst);
+		}
+	}
+
+	if (er == EMULATE_DONE) {
+		ret = RESUME_GUEST;
+	} else if (er == EMULATE_DO_MMIO) {
+		run->exit_reason = KVM_EXIT_MMIO;
 		ret = RESUME_HOST;
+	} else {
+		kvm_queue_exception(vcpu, EXCCODE_ADE, EXSUBCODE_ADEM);
+		ret = RESUME_GUEST;
 	}
 
 	return ret;
+}
+
+static int kvm_handle_read_fault(struct kvm_vcpu *vcpu)
+{
+	return kvm_handle_rdwr_fault(vcpu, false);
+}
+
+static int kvm_handle_write_fault(struct kvm_vcpu *vcpu)
+{
+	return kvm_handle_rdwr_fault(vcpu, true);
 }
 
 /**
- * _kvm_handle_fpu_disabled() - Guest used fpu however it is disabled at host
+ * kvm_handle_fpu_disabled() - Guest used fpu however it is disabled at host
  * @vcpu:	Virtual CPU context.
  *
  * Handle when the guest attempts to use fpu which hasn't been allowed
  * by the root context.
  */
-static int _kvm_handle_fpu_disabled(struct kvm_vcpu *vcpu)
+static int kvm_handle_fpu_disabled(struct kvm_vcpu *vcpu)
 {
 	struct kvm_run *run = vcpu->run;
+
+	if (!kvm_guest_has_fpu(&vcpu->arch)) {
+		kvm_queue_exception(vcpu, EXCCODE_INE, 0);
+		return RESUME_GUEST;
+	}
 
 	/*
 	 * If guest FPU not present, the FPU operation should have been
 	 * treated as a reserved instruction!
 	 * If FPU already in use, we shouldn't get this at all.
 	 */
-	if (WARN_ON(!_kvm_guest_has_fpu(&vcpu->arch) ||
-				vcpu->arch.aux_inuse & KVM_LARCH_FPU)) {
+	if (WARN_ON(vcpu->arch.aux_inuse & KVM_LARCH_FPU)) {
 		kvm_err("%s internal error\n", __func__);
 		run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
 		return RESUME_HOST;
 	}
 
 	kvm_own_fpu(vcpu);
+
 	return RESUME_GUEST;
 }
 
-/**
- * _kvm_handle_lsx_disabled() - Guest used LSX while disabled in root.
- * @vcpu:	Virtual CPU context.
+/*
+ * kvm_handle_lsx_disabled() - Guest used LSX while disabled in root.
+ * @vcpu:      Virtual CPU context.
  *
  * Handle when the guest attempts to use LSX when it is disabled in the root
  * context.
  */
-static int _kvm_handle_lsx_disabled(struct kvm_vcpu *vcpu)
+static int kvm_handle_lsx_disabled(struct kvm_vcpu *vcpu)
 {
-	struct kvm_run *run = vcpu->run;
+	if (kvm_own_lsx(vcpu))
+		kvm_queue_exception(vcpu, EXCCODE_INE, 0);
 
-	/*
-	 * If LSX not present or not exposed to guest, the LSX operation
-	 * should have been treated as a reserved instruction!
-	 * If LSX already in use, we shouldn't get this at all.
-	 */
-	if (!_kvm_guest_has_lsx(&vcpu->arch) ||
-	    !(kvm_read_gcsr_euen() & KVM_EUEN_LSXEN) ||
-	    vcpu->arch.aux_inuse & KVM_LARCH_LSX) {
-		kvm_err("%s internal error, lsx %d guest euen %llx aux %x",
-			__func__, _kvm_guest_has_lsx(&vcpu->arch),
-			kvm_read_gcsr_euen(), vcpu->arch.aux_inuse);
-		run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
-		return RESUME_HOST;
-	}
-
-#ifdef CONFIG_CPU_HAS_LSX
-	kvm_own_lsx(vcpu);
-#endif
 	return RESUME_GUEST;
 }
 
-bool _kvm_guest_has_lasx(struct kvm_vcpu *vcpu)
-{
-      return cpu_has_lasx && vcpu->arch.lsx_enabled && vcpu->kvm->arch.cpucfg_lasx;
-}
-
-/**
- * _kvm_handle_lasx_disabled() - Guest used LASX while disabled in root.
+/*
+ * kvm_handle_lasx_disabled() - Guest used LASX while disabled in root.
  * @vcpu:	Virtual CPU context.
  *
  * Handle when the guest attempts to use LASX when it is disabled in the root
  * context.
  */
-static int _kvm_handle_lasx_disabled(struct kvm_vcpu *vcpu)
+static int kvm_handle_lasx_disabled(struct kvm_vcpu *vcpu)
 {
-	struct kvm_run *run = vcpu->run;
+	if (kvm_own_lasx(vcpu))
+		kvm_queue_exception(vcpu, EXCCODE_INE, 0);
 
-	/*
-	 * If LASX not present or not exposed to guest, the LASX operation
-	 * should have been treated as a reserved instruction!
-	 * If LASX already in use, we shouldn't get this at all.
-	 */
-	if (!_kvm_guest_has_lasx(vcpu) ||
-	    !(kvm_read_gcsr_euen() & KVM_EUEN_LSXEN) ||
-	    !(kvm_read_gcsr_euen() & KVM_EUEN_LASXEN) ||
-	    vcpu->arch.aux_inuse & KVM_LARCH_LASX) {
-		kvm_err("%s internal error, lasx %d guest euen %llx aux %x",
-			__func__, _kvm_guest_has_lasx(vcpu),
-			kvm_read_gcsr_euen(), vcpu->arch.aux_inuse);
-		run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
-		return RESUME_HOST;
-	}
-
-#ifdef CONFIG_CPU_HAS_LASX
-	kvm_own_lasx(vcpu);
-#endif
 	return RESUME_GUEST;
 }
 
-
-static int _kvm_handle_read_fault(struct kvm_vcpu *vcpu)
+static int kvm_pv_send_ipi(struct kvm_vcpu *vcpu)
 {
-	struct kvm_run *run = vcpu->run;
-	ulong badv = vcpu->arch.badv;
-	larch_inst inst;
-	enum emulation_result er = EMULATE_DONE;
-	int ret = RESUME_GUEST;
+	unsigned long ipi_bitmap;
+	unsigned int min, cpu, i;
+	struct kvm_vcpu *dest;
 
-	if (kvm_handle_mm_fault(vcpu, badv, false)) {
-		/* A code fetch fault doesn't count as an MMIO */
-		if (kvm_is_ifetch_fault(&vcpu->arch)) {
-			kvm_err("%s ifetch error addr:%lx\n", __func__, badv);
-			run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
-			return RESUME_HOST;
-		}
+	min = vcpu->arch.gprs[LOONGARCH_GPR_A3];
+	for (i = 0; i < 2; i++, min += BITS_PER_LONG) {
+		ipi_bitmap = vcpu->arch.gprs[LOONGARCH_GPR_A1 + i];
+		if (!ipi_bitmap)
+			continue;
 
-		/* Treat as MMIO */
-		inst.word =  vcpu->arch.badi;
-		er = _kvm_emu_mmio_read(vcpu, inst);
-		if (er == EMULATE_FAIL) {
-			kvm_err("Guest Emulate Load failed: PC: %#lx, BadVaddr: %#lx\n",
-				vcpu->arch.pc, badv);
-			run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
-		}
-	}
+		cpu = find_first_bit((void *)&ipi_bitmap, BITS_PER_LONG);
+		while (cpu < BITS_PER_LONG) {
+			dest = kvm_get_vcpu_by_cpuid(vcpu->kvm, cpu + min);
+			cpu = find_next_bit((void *)&ipi_bitmap, BITS_PER_LONG,
+					cpu + 1);
+			if (!dest)
+				continue;
 
-	if (er == EMULATE_DONE) {
-		ret = RESUME_GUEST;
-	} else if (er == EMULATE_DO_MMIO) {
-		run->exit_reason = KVM_EXIT_MMIO;
-		ret = RESUME_HOST;
-	} else {
-		run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
-		ret = RESUME_HOST;
-	}
-	return ret;
-}
-
-static int _kvm_handle_write_fault(struct kvm_vcpu *vcpu)
-{
-	struct kvm_run *run = vcpu->run;
-	ulong badv = vcpu->arch.badv;
-	larch_inst inst;
-	enum emulation_result er = EMULATE_DONE;
-	int ret = RESUME_GUEST;
-
-	if (kvm_handle_mm_fault(vcpu, badv, true)) {
-
-		/* Treat as MMIO */
-		inst.word =  vcpu->arch.badi;
-		er = _kvm_emu_mmio_write(vcpu, inst);
-		if (er == EMULATE_FAIL) {
-			kvm_err("Guest Emulate Store failed: PC:  %#lx, BadVaddr: %#lx\n",
-				vcpu->arch.pc, badv);
-			run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
+			/*
+			 * Send SWI0 to dest vcpu to emulate IPI interrupt
+			 */
+			kvm_queue_irq(dest, INT_SWI0);
+			kvm_vcpu_kick(dest);
 		}
 	}
 
-	if (er == EMULATE_DONE) {
-		ret = RESUME_GUEST;
-	} else if (er == EMULATE_DO_MMIO) {
-		run->exit_reason = KVM_EXIT_MMIO;
-		ret = RESUME_HOST;
-	} else {
-		run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
-		ret = RESUME_HOST;
-	}
-	return ret;
+	return 0;
 }
 
-static int _kvm_handle_debug(struct kvm_vcpu *vcpu)
+static int kvm_save_notify(struct kvm_vcpu *vcpu)
 {
-	uint32_t fwps, mwps;
+	unsigned long id, data;
 
-	fwps = kvm_csr_readq(KVM_CSR_FWPS);
-	mwps = kvm_csr_readq(KVM_CSR_MWPS);
-	if (fwps & 0xff)
-		kvm_csr_writeq(fwps, KVM_CSR_FWPS);
-	if (mwps & 0xff)
-		kvm_csr_writeq(mwps, KVM_CSR_MWPS);
-	vcpu->run->debug.arch.exception = KVM_EXCCODE_WATCH;
-	vcpu->run->debug.arch.fwps = fwps;
-	vcpu->run->debug.arch.mwps = mwps;
-	vcpu->run->exit_reason = KVM_EXIT_DEBUG;
-	return RESUME_HOST;
-}
+	id = vcpu->arch.gprs[LOONGARCH_GPR_A1];
+	data = vcpu->arch.gprs[LOONGARCH_GPR_A2];
+	switch (id) {
+	case KVM_FEATURE_STEAL_TIME:
+		vcpu->arch.st.guest_addr = data;
+		vcpu->arch.st.last_steal = current->sched_info.run_delay;
+		kvm_make_request(KVM_REQ_RECORD_STEAL, vcpu);
+		break;
+	default:
+		break;
+	};
 
-static exit_handle_fn _kvm_fault_tables[KVM_INT_START] = {
-	[KVM_EXCCODE_TLBL]		= _kvm_handle_read_fault,
-	[KVM_EXCCODE_TLBS]		= _kvm_handle_write_fault,
-	[KVM_EXCCODE_TLBI]		= _kvm_handle_read_fault,
-	[KVM_EXCCODE_TLBM]		= _kvm_handle_write_fault,
-	[KVM_EXCCODE_TLBRI]		= _kvm_handle_read_fault,
-	[KVM_EXCCODE_TLBXI]		= _kvm_handle_read_fault,
-	[KVM_EXCCODE_FPDIS]		= _kvm_handle_fpu_disabled,
-	[KVM_EXCCODE_LSXDIS]	= _kvm_handle_lsx_disabled,
-	[KVM_EXCCODE_LASXDIS]	= _kvm_handle_lasx_disabled,
-	[KVM_EXCCODE_WATCH]		= _kvm_handle_debug,
-	[KVM_EXCCODE_GSPR]		= _kvm_handle_gspr,
-	[KVM_EXCCODE_HYP]		= _kvm_handle_hypcall,
-	[KVM_EXCCODE_GCM]		= _kvm_handle_gcm,
+	return 0;
 };
 
-int _kvm_handle_fault(struct kvm_vcpu *vcpu, int fault)
+/*
+ * hypercall emulation always return to guest, Caller should check retval.
+ */
+static void kvm_handle_pv_service(struct kvm_vcpu *vcpu)
 {
-	return _kvm_fault_tables[fault](vcpu);
+	unsigned long func = vcpu->arch.gprs[LOONGARCH_GPR_A0];
+	long ret;
+
+	switch (func) {
+	case KVM_HCALL_FUNC_PV_IPI:
+		kvm_pv_send_ipi(vcpu);
+		ret = KVM_HCALL_STATUS_SUCCESS;
+		break;
+	case KVM_HCALL_FUNC_NOTIFY:
+		ret = kvm_save_notify(vcpu);
+		break;
+	default:
+		ret = KVM_HCALL_INVALID_CODE;
+		break;
+	};
+
+	vcpu->arch.gprs[LOONGARCH_GPR_A0] = ret;
 }
 
-void _kvm_init_fault(void)
+static int kvm_handle_hypercall(struct kvm_vcpu *vcpu)
 {
-	int i;
+	larch_inst inst;
+	unsigned int code;
+	int ret;
 
-	for (i = 0; i < KVM_INT_START; i++)
-		if (!_kvm_fault_tables[i])
-			_kvm_fault_tables[i] = _kvm_fault_ni;
+	inst.word = vcpu->arch.badi;
+	code = inst.reg0i15_format.immediate;
+	ret = RESUME_GUEST;
+
+	switch (code) {
+	case KVM_HCALL_PV_SERVICE:
+		vcpu->stat.hypercall_exits++;
+		kvm_handle_pv_service(vcpu);
+		break;
+	case KVM_HCALL_SWDBG:
+		/* KVM_HC_SWDBG only in effective when SW_BP is enabled */
+		if (vcpu->guest_debug & KVM_GUESTDBG_USE_SW_BP) {
+			vcpu->run->exit_reason = KVM_EXIT_DEBUG;
+			ret = RESUME_HOST;
+		} else
+			vcpu->arch.gprs[LOONGARCH_GPR_A0] = KVM_HCALL_INVALID_CODE;
+		break;
+	default:
+		/* Treat it as noop intruction, only set return value */
+		vcpu->arch.gprs[LOONGARCH_GPR_A0] = KVM_HCALL_INVALID_CODE;
+		break;
+	}
+
+	if (ret == RESUME_GUEST)
+		update_pc(&vcpu->arch);
+
+	return ret;
+}
+
+/*
+ * LoongArch KVM callback handling for unimplemented guest exiting
+ */
+static int kvm_fault_ni(struct kvm_vcpu *vcpu)
+{
+	unsigned int ecode, inst;
+	unsigned long estat, badv;
+
+	/* Fetch the instruction */
+	inst = vcpu->arch.badi;
+	badv = vcpu->arch.badv;
+	estat = vcpu->arch.host_estat;
+	ecode = (estat & CSR_ESTAT_EXC) >> CSR_ESTAT_EXC_SHIFT;
+	kvm_err("ECode: %d PC=%#lx Inst=0x%08x BadVaddr=%#lx ESTAT=%#lx\n",
+			ecode, vcpu->arch.pc, inst, badv, read_gcsr_estat());
+	kvm_arch_vcpu_dump_regs(vcpu);
+	kvm_queue_exception(vcpu, EXCCODE_INE, 0);
+
+	return RESUME_GUEST;
+}
+
+static exit_handle_fn kvm_fault_tables[EXCCODE_INT_START] = {
+	[0 ... EXCCODE_INT_START - 1]	= kvm_fault_ni,
+	[EXCCODE_TLBI]			= kvm_handle_read_fault,
+	[EXCCODE_TLBL]			= kvm_handle_read_fault,
+	[EXCCODE_TLBS]			= kvm_handle_write_fault,
+	[EXCCODE_TLBM]			= kvm_handle_write_fault,
+	[EXCCODE_FPDIS]			= kvm_handle_fpu_disabled,
+	[EXCCODE_LSXDIS]		= kvm_handle_lsx_disabled,
+	[EXCCODE_LASXDIS]		= kvm_handle_lasx_disabled,
+	[EXCCODE_GSPR]			= kvm_handle_gspr,
+	[EXCCODE_HVC]			= kvm_handle_hypercall,
+};
+
+int kvm_handle_fault(struct kvm_vcpu *vcpu, int fault)
+{
+	return kvm_fault_tables[fault](vcpu);
 }

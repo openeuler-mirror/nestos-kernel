@@ -294,10 +294,10 @@ static void chip_fault_show(struct hinic3_hwdev *hwdev,
 	memset(level_str, 0, FAULT_SHOW_STR_LEN + 1);
 	level = event->event.chip.err_level;
 	if (level < FAULT_LEVEL_MAX)
-		strncpy(level_str, fault_level[level],
+		strscpy(level_str, fault_level[level],
 			FAULT_SHOW_STR_LEN);
 	else
-		strncpy(level_str, "Unknown", FAULT_SHOW_STR_LEN);
+		strscpy(level_str, "Unknown", FAULT_SHOW_STR_LEN);
 
 	if (level == FAULT_LEVEL_SERIOUS_FLR)
 		dev_err(hwdev->dev_hdl, "err_level: %u [%s], flr func_id: %u\n",
@@ -326,10 +326,10 @@ static void fault_report_show(struct hinic3_hwdev *hwdev,
 	fault = &hwdev->hw_stats.fault_event_stats;
 
 	if (event->type < FAULT_TYPE_MAX) {
-		strncpy(type_str, fault_type[event->type], sizeof(type_str));
+		strscpy(type_str, fault_type[event->type], sizeof(type_str));
 		atomic_inc(&fault->fault_type_stat[event->type]);
 	} else {
-		strncpy(type_str, "Unknown", sizeof(type_str));
+		strscpy(type_str, "Unknown", sizeof(type_str));
 	}
 
 	sdk_err(hwdev->dev_hdl, "Fault type: %u [%s]\n", event->type, type_str);

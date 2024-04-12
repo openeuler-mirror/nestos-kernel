@@ -37,6 +37,7 @@
  */
 #define elf_prstatus	compat_elf_prstatus
 #define elf_prpsinfo	compat_elf_prpsinfo
+#define elf_prstatus_common	compat_elf_prstatus_common
 
 /* AARCH64 ILP32 EABI. */
 #undef elf_check_arch

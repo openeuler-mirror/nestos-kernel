@@ -2,8 +2,11 @@
 /* Copyright (c) 2014 Mahesh Bandewar <maheshb@google.com>
  */
 
+#include <linux/ethtool.h>
+
 #include "ipvlan.h"
 
+#if IS_ENABLED(CONFIG_IPVLAN_L2E)
 static int one = 1;
 static int delay_max = 100;
 /* set loop queue length from 0 to 10 big packets(65536) */
@@ -14,27 +17,27 @@ int sysctl_ipvlan_loop_qlen = 131072;
 int sysctl_ipvlan_loop_delay = 10;
 static int ipvlan_default_mode = IPVLAN_MODE_L3;
 module_param(ipvlan_default_mode, int, 0400);
-MODULE_PARM_DESC(ipvlan_default_mode, "set ipvlan default mode: 0 for l2, 1 for l3, 2 for l3s, 3 for l2e, others invalid now");
+MODULE_PARM_DESC(ipvlan_default_mode, "set ipvlan default mode: 0 for l2, 1 for l3, 2 for l2e, 3 for l3s, others invalid now");
 
 static struct ctl_table_header *ipvlan_table_hrd;
 static struct ctl_table ipvlan_table[] = {
 	{
-		.procname       = "loop_delay",
-		.data           = &sysctl_ipvlan_loop_delay,
-		.maxlen         = sizeof(int),
-		.mode           = 0644,
-		.proc_handler   = proc_dointvec_minmax,
-		.extra1         = &one,
-		.extra2         = &delay_max,
+		.procname	= "loop_delay",
+		.data		= &sysctl_ipvlan_loop_delay,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &one,
+		.extra2		= &delay_max,
 	},
 	{
-		.procname       = "loop_qlen",
-		.data           = &sysctl_ipvlan_loop_qlen,
-		.maxlen         = sizeof(int),
-		.mode           = 0644,
-		.proc_handler   = proc_dointvec_minmax,
-		.extra1         = &qlen_min,
-		.extra2         = &qlen_max,
+		.procname	= "loop_qlen",
+		.data		= &sysctl_ipvlan_loop_qlen,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &qlen_min,
+		.extra2		= &qlen_max,
 	},
 	{ }
 };
@@ -50,6 +53,7 @@ static void ipvlan_sysctl_exit(void)
 {
 	unregister_net_sysctl_table(ipvlan_table_hrd);
 }
+#endif
 
 static int ipvlan_set_port_mode(struct ipvl_port *port, u16 nval,
 				struct netlink_ext_ack *extack)
@@ -128,6 +132,7 @@ static int ipvlan_port_create(struct net_device *dev)
 	if (err)
 		goto err;
 
+	netdev_hold(dev, &port->dev_tracker, GFP_KERNEL);
 	return 0;
 
 err:
@@ -140,13 +145,13 @@ static void ipvlan_port_destroy(struct net_device *dev)
 	struct ipvl_port *port = ipvlan_port_get_rtnl(dev);
 	struct sk_buff *skb;
 
+	netdev_put(dev, &port->dev_tracker);
 	if (port->mode == IPVLAN_MODE_L3S)
 		ipvlan_l3s_unregister(port);
 	netdev_rx_handler_unregister(dev);
 	cancel_work_sync(&port->wq);
 	while ((skb = __skb_dequeue(&port->backlog)) != NULL) {
-		if (skb->dev)
-			dev_put(skb->dev);
+		dev_put(skb->dev);
 		kfree_skb(skb);
 	}
 	ida_destroy(&port->ida);
@@ -185,8 +190,7 @@ static int ipvlan_init(struct net_device *dev)
 	dev->vlan_features = phy_dev->vlan_features & IPVLAN_FEATURES;
 	dev->vlan_features |= IPVLAN_ALWAYS_ON_OFLOADS;
 	dev->hw_enc_features |= dev->features;
-	dev->gso_max_size = phy_dev->gso_max_size;
-	dev->gso_max_segs = phy_dev->gso_max_segs;
+	netif_inherit_tso_max(dev, phy_dev);
 	dev->hard_header_len = phy_dev->hard_header_len;
 
 	netdev_lockdep_set_classes(dev);
@@ -207,6 +211,7 @@ static int ipvlan_init(struct net_device *dev)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_IPVLAN_L2E)
 static void ipvlan_local_free_handler(struct timer_list *t)
 {
 	struct ipvl_dev *ipvlan = from_timer(ipvlan, t, local_free_timer);
@@ -232,6 +237,7 @@ static inline void ipvlan_local_uninit(struct net_device *dev)
 	del_timer(&ipvlan->local_free_timer);
 	skb_queue_purge(&ipvlan->local_xmit_queue);
 }
+#endif
 
 static void ipvlan_uninit(struct net_device *dev)
 {
@@ -258,7 +264,9 @@ static int ipvlan_open(struct net_device *dev)
 	else
 		dev->flags &= ~IFF_NOARP;
 
+#if IS_ENABLED(CONFIG_IPVLAN_L2E)
 	ipvlan_local_init(dev);
+#endif
 	rcu_read_lock();
 	list_for_each_entry_rcu(addr, &ipvlan->addrs, anode)
 		ipvlan_ht_addr_add(ipvlan, addr);
@@ -275,8 +283,9 @@ static int ipvlan_stop(struct net_device *dev)
 
 	dev_uc_unsync(phy_dev, dev);
 	dev_mc_unsync(phy_dev, dev);
-
+#if IS_ENABLED(CONFIG_IPVLAN_L2E)
 	ipvlan_local_uninit(dev);
+#endif
 	rcu_read_lock();
 	list_for_each_entry_rcu(addr, &ipvlan->addrs, anode)
 		ipvlan_ht_addr_del(addr);
@@ -299,8 +308,8 @@ static netdev_tx_t ipvlan_start_xmit(struct sk_buff *skb,
 		pcptr = this_cpu_ptr(ipvlan->pcpu_stats);
 
 		u64_stats_update_begin(&pcptr->syncp);
-		pcptr->tx_pkts++;
-		pcptr->tx_bytes += skblen;
+		u64_stats_inc(&pcptr->tx_pkts);
+		u64_stats_add(&pcptr->tx_bytes, skblen);
 		u64_stats_update_end(&pcptr->syncp);
 	} else {
 		this_cpu_inc(ipvlan->pcpu_stats->tx_drps);
@@ -374,13 +383,13 @@ static void ipvlan_get_stats64(struct net_device *dev,
 		for_each_possible_cpu(idx) {
 			pcptr = per_cpu_ptr(ipvlan->pcpu_stats, idx);
 			do {
-				strt= u64_stats_fetch_begin_irq(&pcptr->syncp);
-				rx_pkts = pcptr->rx_pkts;
-				rx_bytes = pcptr->rx_bytes;
-				rx_mcast = pcptr->rx_mcast;
-				tx_pkts = pcptr->tx_pkts;
-				tx_bytes = pcptr->tx_bytes;
-			} while (u64_stats_fetch_retry_irq(&pcptr->syncp,
+				strt = u64_stats_fetch_begin(&pcptr->syncp);
+				rx_pkts = u64_stats_read(&pcptr->rx_pkts);
+				rx_bytes = u64_stats_read(&pcptr->rx_bytes);
+				rx_mcast = u64_stats_read(&pcptr->rx_mcast);
+				tx_pkts = u64_stats_read(&pcptr->tx_pkts);
+				tx_bytes = u64_stats_read(&pcptr->tx_bytes);
+			} while (u64_stats_fetch_retry(&pcptr->syncp,
 							   strt));
 
 			s->rx_packets += rx_pkts;
@@ -390,13 +399,14 @@ static void ipvlan_get_stats64(struct net_device *dev,
 			s->tx_bytes += tx_bytes;
 
 			/* u32 values are updated without syncp protection. */
-			rx_errs += pcptr->rx_errs;
-			tx_drps += pcptr->tx_drps;
+			rx_errs += READ_ONCE(pcptr->rx_errs);
+			tx_drps += READ_ONCE(pcptr->tx_drps);
 		}
 		s->rx_errors = rx_errs;
 		s->rx_dropped = rx_errs;
 		s->tx_dropped = tx_drps;
 	}
+	s->tx_errors = DEV_STATS_READ(dev, tx_errors);
 }
 
 static int ipvlan_vlan_rx_add_vid(struct net_device *dev, __be16 proto, u16 vid)
@@ -483,8 +493,8 @@ static int ipvlan_ethtool_get_link_ksettings(struct net_device *dev,
 static void ipvlan_ethtool_get_drvinfo(struct net_device *dev,
 				       struct ethtool_drvinfo *drvinfo)
 {
-	strlcpy(drvinfo->driver, IPVLAN_DRV, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, IPV_DRV_VER, sizeof(drvinfo->version));
+	strscpy(drvinfo->driver, IPVLAN_DRV, sizeof(drvinfo->driver));
+	strscpy(drvinfo->version, IPV_DRV_VER, sizeof(drvinfo->version));
 }
 
 static u32 ipvlan_ethtool_get_msglevel(struct net_device *dev)
@@ -610,7 +620,11 @@ int ipvlan_link_new(struct net *src_net, struct net_device *dev,
 	struct ipvl_port *port;
 	struct net_device *phy_dev;
 	int err;
+#if IS_ENABLED(CONFIG_IPVLAN_L2E)
 	u16 mode = ipvlan_default_mode;
+#else
+	u16 mode = IPVLAN_MODE_L3;
+#endif
 
 	if (!tb[IFLA_LINK])
 		return -EINVAL;
@@ -652,7 +666,7 @@ int ipvlan_link_new(struct net *src_net, struct net_device *dev,
 	 * world but keep using the physical-dev address for the outgoing
 	 * packets.
 	 */
-	memcpy(dev->dev_addr, phy_dev->dev_addr, ETH_ALEN);
+	eth_hw_addr_set(dev, phy_dev->dev_addr);
 
 	dev->priv_flags |= IFF_NO_RX_HANDLER;
 
@@ -821,7 +835,8 @@ static int ipvlan_device_event(struct notifier_block *unused,
 
 		write_pnet(&port->pnet, newnet);
 
-		ipvlan_migrate_l3s_hook(oldnet, newnet);
+		if (port->mode == IPVLAN_MODE_L3S)
+			ipvlan_migrate_l3s_hook(oldnet, newnet);
 		break;
 	}
 	case NETDEV_UNREGISTER:
@@ -836,8 +851,7 @@ static int ipvlan_device_event(struct notifier_block *unused,
 
 	case NETDEV_FEAT_CHANGE:
 		list_for_each_entry(ipvlan, &port->ipvlans, pnode) {
-			ipvlan->dev->gso_max_size = dev->gso_max_size;
-			ipvlan->dev->gso_max_segs = dev->gso_max_segs;
+			netif_inherit_tso_max(ipvlan->dev, dev);
 			netdev_update_features(ipvlan->dev);
 		}
 		break;
@@ -860,7 +874,7 @@ static int ipvlan_device_event(struct notifier_block *unused,
 
 	case NETDEV_CHANGEADDR:
 		list_for_each_entry(ipvlan, &port->ipvlans, pnode) {
-			ether_addr_copy(ipvlan->dev->dev_addr, dev->dev_addr);
+			eth_hw_addr_set(ipvlan->dev, dev->dev_addr);
 			call_netdevice_notifiers(NETDEV_CHANGEADDR, ipvlan->dev);
 		}
 		break;
@@ -1098,9 +1112,11 @@ static int __init ipvlan_init_module(void)
 {
 	int err;
 
+#if IS_ENABLED(CONFIG_IPVLAN_L2E)
 	if (ipvlan_default_mode >= IPVLAN_MODE_MAX ||
 	    ipvlan_default_mode < IPVLAN_MODE_L2)
 		return -EINVAL;
+#endif
 
 	ipvlan_init_secret();
 	register_netdevice_notifier(&ipvlan_notifier_block);
@@ -1121,10 +1137,11 @@ static int __init ipvlan_init_module(void)
 		ipvlan_l3s_cleanup();
 		goto error;
 	}
-
+#if IS_ENABLED(CONFIG_IPVLAN_L2E)
 	err = ipvlan_sysctl_init();
 	if (err < 0)
 		pr_err("ipvlan proc init failed, continue\n");
+#endif
 	return 0;
 error:
 	unregister_inetaddr_notifier(&ipvlan_addr4_notifier_block);
@@ -1152,7 +1169,9 @@ static void __exit ipvlan_cleanup_module(void)
 	unregister_inet6addr_validator_notifier(
 	    &ipvlan_addr6_vtor_notifier_block);
 #endif
+#if IS_ENABLED(CONFIG_IPVLAN_L2E)
 	ipvlan_sysctl_exit();
+#endif
 }
 
 module_init(ipvlan_init_module);

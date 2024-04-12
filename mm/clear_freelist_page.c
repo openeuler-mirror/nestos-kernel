@@ -72,15 +72,7 @@ static void clear_pgdat_freelist_pages(struct work_struct *work)
 					goto out;
 				}
 
-#ifdef CONFIG_KMAP_LOCAL
-				int i;
-
-				/* Clear highmem by clear_highpage() */
-				for (i = 0; i < (1 << order); i++)
-					clear_highpage(page + i);
-#else
 				memset(page_address(page), 0, (1 << order) * PAGE_SIZE);
-#endif
 				touch_nmi_watchdog();
 				atomic_add(1 << order, &clear_pages_num);
 			}
@@ -155,17 +147,7 @@ static struct ctl_table clear_freelist_table[] = {
 		.proc_handler   = &sysctl_clear_freelist_handler,
 		.extra1     = SYSCTL_ONE,
 		.extra2     = SYSCTL_ONE,
-	},
-	{ }
-};
-
-static struct ctl_table sys_ctl_table[] = {
-	{
-		.procname   = "vm",
-		.mode       = 0555,
-		.child      = clear_freelist_table,
-	},
-	{ }
+	}
 };
 
 static bool clear_freelist_enabled;
@@ -179,7 +161,7 @@ __setup("clear_freelist", setup_clear_freelist);
 static int __init clear_freelist_init(void)
 {
 	if (clear_freelist_enabled)
-		register_sysctl_table(sys_ctl_table);
+		register_sysctl_init("vm", clear_freelist_table);
 
 	return 0;
 }

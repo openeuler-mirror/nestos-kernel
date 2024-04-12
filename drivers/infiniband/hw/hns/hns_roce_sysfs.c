@@ -3,18 +3,11 @@
  * Copyright (c) 2023 Hisilicon Limited.
  */
 
+#include <rdma/ib_sysfs.h>
+
 #include "hnae3.h"
 #include "hns_roce_device.h"
 #include "hns_roce_hw_v2.h"
-
-struct hns_port_attribute {
-	struct attribute attr;
-	ssize_t (*show)(struct hns_roce_port *pdata,
-			struct hns_port_attribute *attr, char *buf);
-	ssize_t (*store)(struct hns_roce_port *pdata,
-			 struct hns_port_attribute *attr, const char *buf,
-			 size_t count);
-};
 
 static void scc_param_config_work(struct work_struct *work)
 {
@@ -22,36 +15,50 @@ static void scc_param_config_work(struct work_struct *work)
 			struct hns_roce_scc_param, scc_cfg_dwork.work);
 	struct hns_roce_dev *hr_dev = scc_param->hr_dev;
 
-	hr_dev->hw->config_scc_param(hr_dev, scc_param->port_num,
-				     scc_param->algo_type);
+	hr_dev->hw->config_scc_param(hr_dev, scc_param->algo_type);
 }
 
-static int alloc_scc_param(struct hns_roce_dev *hr_dev,
-			   struct hns_roce_port *pdata)
+static void get_default_scc_param(struct hns_roce_dev *hr_dev)
+{
+	int ret;
+	int i;
+
+	for (i = 0; i < HNS_ROCE_SCC_ALGO_TOTAL; i++) {
+		hr_dev->scc_param[i].timestamp = jiffies;
+		ret = hr_dev->hw->query_scc_param(hr_dev, i);
+		if (ret && ret != -EOPNOTSUPP)
+			ibdev_warn_ratelimited(&hr_dev->ib_dev,
+				"failed to get default parameters of scc algo %d, ret = %d.\n",
+				i, ret);
+	}
+}
+
+static int alloc_scc_param(struct hns_roce_dev *hr_dev)
 {
 	struct hns_roce_scc_param *scc_param;
 	int i;
 
-	scc_param = kcalloc(HNS_ROCE_SCC_ALGO_TOTAL, sizeof(*scc_param),
-			    GFP_KERNEL);
+	scc_param = kvcalloc(HNS_ROCE_SCC_ALGO_TOTAL, sizeof(*scc_param),
+			     GFP_KERNEL);
 	if (!scc_param)
 		return -ENOMEM;
 
 	for (i = 0; i < HNS_ROCE_SCC_ALGO_TOTAL; i++) {
 		scc_param[i].algo_type = i;
-		scc_param[i].timestamp = jiffies;
 		scc_param[i].hr_dev = hr_dev;
-		scc_param[i].port_num = pdata->port_num;
 		INIT_DELAYED_WORK(&scc_param[i].scc_cfg_dwork,
 				  scc_param_config_work);
 	}
 
-	pdata->scc_param = scc_param;
+	hr_dev->scc_param = scc_param;
+
+	get_default_scc_param(hr_dev);
+
 	return 0;
 }
 
 struct hns_port_cc_attr {
-	struct hns_port_attribute port_attr;
+	struct ib_port_attribute port_attr;
 	enum hns_roce_scc_algo algo_type;
 	u32 offset;
 	u32 size;
@@ -59,55 +66,49 @@ struct hns_port_cc_attr {
 	u32 min;
 };
 
-static int scc_attr_check(struct hns_port_cc_attr *scc_attr)
+static int scc_attr_check(struct hns_roce_dev *hr_dev,
+			  struct hns_port_cc_attr *scc_attr, u32 port_num)
 {
+	if (port_num > hr_dev->caps.num_ports)
+		return -ENODEV;
+
 	if (WARN_ON(scc_attr->size > sizeof(u32)))
 		return -EINVAL;
 
 	if (WARN_ON(scc_attr->algo_type >= HNS_ROCE_SCC_ALGO_TOTAL))
 		return -EINVAL;
+
 	return 0;
 }
 
-static ssize_t scc_attr_show(struct hns_roce_port *pdata,
-			     struct hns_port_attribute *attr, char *buf)
+static ssize_t scc_attr_show(struct ib_device *ibdev, u32 port_num,
+			     struct ib_port_attribute *attr, char *buf)
 {
 	struct hns_port_cc_attr *scc_attr =
 		container_of(attr, struct hns_port_cc_attr, port_attr);
+	struct hns_roce_dev *hr_dev = to_hr_dev(ibdev);
 	struct hns_roce_scc_param *scc_param;
-	unsigned long exp_time;
 	__le32 val = 0;
 	int ret;
 
-	ret = scc_attr_check(scc_attr);
+	ret = scc_attr_check(hr_dev, scc_attr, port_num);
 	if (ret)
 		return ret;
 
-	scc_param = &pdata->scc_param[scc_attr->algo_type];
-
-	/* Only HW param need be queried */
-	if (scc_attr->offset < offsetof(typeof(*scc_param), lifespan)) {
-		exp_time = scc_param->timestamp +
-			   msecs_to_jiffies(scc_param->lifespan);
-
-		if (time_is_before_eq_jiffies(exp_time)) {
-			scc_param->timestamp = jiffies;
-			pdata->hr_dev->hw->query_scc_param(pdata->hr_dev,
-					pdata->port_num, scc_attr->algo_type);
-		}
-	}
+	scc_param = &hr_dev->scc_param[scc_attr->algo_type];
 
 	memcpy(&val, (void *)scc_param + scc_attr->offset, scc_attr->size);
 
 	return sysfs_emit(buf, "%u\n", le32_to_cpu(val));
 }
 
-static ssize_t scc_attr_store(struct hns_roce_port *pdata,
-			      struct hns_port_attribute *attr,
-			      const char *buf, size_t count)
+static ssize_t scc_attr_store(struct ib_device *ibdev, u32 port_num,
+			      struct ib_port_attribute *attr, const char *buf,
+			      size_t count)
 {
 	struct hns_port_cc_attr *scc_attr =
 		container_of(attr, struct hns_port_cc_attr, port_attr);
+	struct hns_roce_dev *hr_dev = to_hr_dev(ibdev);
 	struct hns_roce_scc_param *scc_param;
 	unsigned long lifespan_jiffies;
 	unsigned long exp_time;
@@ -115,7 +116,7 @@ static ssize_t scc_attr_store(struct hns_roce_port *pdata,
 	u32 val;
 	int ret;
 
-	ret = scc_attr_check(scc_attr);
+	ret = scc_attr_check(hr_dev, scc_attr, port_num);
 	if (ret)
 		return ret;
 
@@ -126,7 +127,7 @@ static ssize_t scc_attr_store(struct hns_roce_port *pdata,
 		return -EINVAL;
 
 	attr_val = cpu_to_le32(val);
-	scc_param = &pdata->scc_param[scc_attr->algo_type];
+	scc_param = &hr_dev->scc_param[scc_attr->algo_type];
 	memcpy((void *)scc_param + scc_attr->offset, &attr_val,
 	       scc_attr->size);
 
@@ -139,8 +140,8 @@ static ssize_t scc_attr_store(struct hns_roce_port *pdata,
 
 	if (time_is_before_eq_jiffies(exp_time)) {
 		scc_param->timestamp = jiffies;
-		queue_delayed_work(pdata->hr_dev->irq_workq,
-				   &scc_param->scc_cfg_dwork, lifespan_jiffies);
+		queue_delayed_work(hr_dev->irq_workq, &scc_param->scc_cfg_dwork,
+				   lifespan_jiffies);
 	}
 
 	return count;
@@ -149,19 +150,19 @@ static ssize_t scc_attr_store(struct hns_roce_port *pdata,
 static umode_t scc_attr_is_visible(struct kobject *kobj,
 				   struct attribute *attr, int i)
 {
-	struct hns_port_attribute *port_attr =
-		container_of(attr, struct hns_port_attribute, attr);
+	struct ib_port_attribute *port_attr =
+		container_of(attr, struct ib_port_attribute, attr);
 	struct hns_port_cc_attr *scc_attr =
 		container_of(port_attr, struct hns_port_cc_attr, port_attr);
-	struct hns_roce_port *pdata =
-		container_of(kobj, struct hns_roce_port, kobj);
-	struct hns_roce_dev *hr_dev = pdata->hr_dev;
+	u32 port_num;
+	struct ib_device *ibdev = ib_port_sysfs_get_ibdev_kobj(kobj, &port_num);
+	struct hns_roce_dev *hr_dev = to_hr_dev(ibdev);
 
 	if (hr_dev->is_vf ||
 	    !(hr_dev->caps.flags & HNS_ROCE_CAP_FLAG_QP_FLOW_CTRL))
 		return 0;
 
-	if (!(hr_dev->caps.congest_type & (1 << scc_attr->algo_type)))
+	if (!(hr_dev->caps.default_cong_type & (1 << scc_attr->algo_type)))
 		return 0;
 
 	return 0644;
@@ -176,7 +177,7 @@ static umode_t scc_attr_is_visible(struct kobject *kobj,
 	.max = _max,								\
 }
 
-#define HNS_PORT_DCQCN_CC_ATTR_RW(_name, NAME)			\
+#define HNS_PORT_DCQCN_CC_ATTR_RW(_name, NAME)				\
 	struct hns_port_cc_attr hns_roce_port_attr_dcqcn_##_name =	\
 	__HNS_SCC_ATTR(_name, HNS_ROCE_SCC_ALGO_DCQCN,			\
 			HNS_ROCE_DCQCN_##NAME##_OFS,			\
@@ -328,118 +329,18 @@ const struct attribute_group *hns_attr_port_groups[] = {
 	NULL,
 };
 
-static ssize_t hns_roce_port_attr_show(struct kobject *kobj,
-				       struct attribute *attr, char *buf)
+void hns_roce_register_sysfs(struct hns_roce_dev *hr_dev)
 {
-	struct hns_port_attribute *port_attr =
-		container_of(attr, struct hns_port_attribute, attr);
-	struct hns_roce_port *p =
-		container_of(kobj, struct hns_roce_port, kobj);
-
-	if (!port_attr->show)
-		return -EIO;
-
-	return port_attr->show(p, port_attr, buf);
-}
-
-static ssize_t hns_roce_port_attr_store(struct kobject *kobj,
-					struct attribute *attr,
-					const char *buf, size_t count)
-{
-	struct hns_port_attribute *port_attr =
-		container_of(attr, struct hns_port_attribute, attr);
-	struct hns_roce_port *p =
-		container_of(kobj, struct hns_roce_port, kobj);
-
-	if (!port_attr->store)
-		return -EIO;
-
-	return port_attr->store(p, port_attr, buf, count);
-}
-
-static void hns_roce_port_release(struct kobject *kobj)
-{
-	struct hns_roce_port *pdata =
-		container_of(kobj, struct hns_roce_port, kobj);
-
-	kfree(pdata->scc_param);
-}
-
-static const struct sysfs_ops hns_roce_port_ops = {
-	.show = hns_roce_port_attr_show,
-	.store = hns_roce_port_attr_store,
-};
-
-static struct kobj_type hns_roce_port_ktype = {
-	.release = hns_roce_port_release,
-	.sysfs_ops = &hns_roce_port_ops,
-};
-
-int hns_roce_create_port_files(struct ib_device *ibdev, u8 port_num,
-			       struct kobject *kobj)
-{
-	struct hns_roce_dev *hr_dev = to_hr_dev(ibdev);
-	struct hns_roce_port *pdata;
 	int ret;
 
-	if (!port_num || port_num > hr_dev->caps.num_ports) {
-		ibdev_err(ibdev, "fail to create port sysfs for invalid port %u.\n",
-			  port_num);
-		return -ENODEV;
-	}
-
-	pdata = &hr_dev->port_data[port_num - 1];
-	pdata->hr_dev = hr_dev;
-	pdata->port_num = port_num;
-	ret = kobject_init_and_add(&pdata->kobj, &hns_roce_port_ktype,
-				   kobj, "cc_param");
-	if (ret) {
-		ibdev_err(ibdev, "fail to create port(%u) sysfs, ret = %d.\n",
-			  port_num, ret);
-		goto fail_kobj;
-	}
-	kobject_uevent(&pdata->kobj, KOBJ_ADD);
-
-	ret = sysfs_create_groups(&pdata->kobj, hns_attr_port_groups);
-	if (ret) {
-		ibdev_err(ibdev,
-			  "fail to create port(%u) cc param sysfs, ret = %d.\n",
-			  port_num, ret);
-		goto fail_kobj;
-	}
-
-	ret = alloc_scc_param(hr_dev, pdata);
-	if (ret) {
+	ret = alloc_scc_param(hr_dev);
+	if (ret)
 		dev_err(hr_dev->dev, "alloc scc param failed, ret = %d!\n",
 			ret);
-		goto fail_group;
-	}
-
-	return ret;
-
-fail_group:
-	sysfs_remove_groups(&pdata->kobj, hns_attr_port_groups);
-
-fail_kobj:
-	kobject_put(&pdata->kobj);
-
-	return ret;
-}
-
-static void hns_roce_unregister_port_sysfs(struct hns_roce_dev *hr_dev,
-					   u8 port_num)
-{
-	struct hns_roce_port *pdata;
-
-	pdata = &hr_dev->port_data[port_num];
-	sysfs_remove_groups(&pdata->kobj, hns_attr_port_groups);
-	kobject_put(&pdata->kobj);
 }
 
 void hns_roce_unregister_sysfs(struct hns_roce_dev *hr_dev)
 {
-	int i;
-
-	for (i = 0; i < hr_dev->caps.num_ports; i++)
-		hns_roce_unregister_port_sysfs(hr_dev, i);
+	if (hr_dev->scc_param)
+		kvfree(hr_dev->scc_param);
 }

@@ -7,31 +7,31 @@
 #include <linux/export.h>
 
 #define STT(reg, val)		\
-	asm volatile ("fimovd $f"#reg", %0" : "=r"(val));
+	asm volatile("fimovd $f"#reg", %0" : "=r"(val))
 #define STS(reg, val)		\
-	asm volatile ("fimovs $f"#reg", %0" : "=r"(val));
+	asm volatile("fimovs $f"#reg", %0" : "=r"(val))
 #define LDT(reg, val)		\
-	asm volatile ("ifmovd %0, $f"#reg : : "r"(val));
+	asm volatile("ifmovd %0, $f"#reg : : "r"(val))
 #define LDS(reg, val)		\
-	asm volatile ("ifmovs %0, $f"#reg : : "r"(val));
+	asm volatile("ifmovs %0, $f"#reg : : "r"(val))
 #define VLDD(reg, val)		\
-	asm volatile ("vldd $f"#reg", %0" : : "m"(val) : "memory");
+	asm volatile("vldd $f"#reg", %0" : : "m"(val) : "memory")
 #define VSTD(reg, val)		\
-	asm volatile ("vstd $f"#reg", %0" : "=m"(val) : : "memory");
+	asm volatile("vstd $f"#reg", %0" : "=m"(val) : : "memory")
 #define VLDS(reg, val)		\
-	asm volatile ("vlds $f"#reg", %0" : : "m"(val) : "memory");
+	asm volatile("vlds $f"#reg", %0" : : "m"(val) : "memory")
 #define LDWE(reg, val)		\
-	asm volatile ("ldwe $f"#reg", %0" : : "m"(val) : "memory");
+	asm volatile("ldwe $f"#reg", %0" : : "m"(val) : "memory")
 #define VSTS(reg, val)		\
-	asm volatile ("vsts $f"#reg", %0" : "=m"(val) : : "memory");
+	asm volatile("vsts $f"#reg", %0" : "=m"(val) : : "memory")
 #define STDH(reg, val)		\
-	asm volatile ("vstd $f"#reg", %0" : "=m"(val) : : "memory");
+	asm volatile("vstd $f"#reg", %0" : "=m"(val) : : "memory")
 
 void
 sw64_write_simd_fp_reg_s(unsigned long reg, unsigned long f0, unsigned long f1)
 {
 
-	unsigned long tmpa[4] __attribute__((aligned(16)));
+	unsigned long tmpa[4] __aligned(16);
 
 	tmpa[0] = f0;
 	tmpa[1] = f1;
@@ -140,7 +140,7 @@ sw64_write_simd_fp_reg_s(unsigned long reg, unsigned long f0, unsigned long f1)
 void sw64_write_simd_fp_reg_d(unsigned long reg, unsigned long f0,
 		unsigned long f1, unsigned long f2, unsigned long f3)
 {
-	unsigned long tmpa[4] __attribute__((aligned(32)));
+	unsigned long tmpa[4] __aligned(32);
 
 	tmpa[0] = f0;
 	tmpa[1] = f1;
@@ -353,7 +353,8 @@ void sw64_write_simd_fp_reg_ldwe(unsigned long reg, int a)
 
 void sw64_read_simd_fp_m_s(unsigned long reg, unsigned long *fp_value)
 {
-	volatile unsigned long tmpa[2] __attribute__((aligned(16)));
+	volatile unsigned long tmpa[2] __aligned(16);
+
 	switch (reg) {
 	case  0:
 		VSTS(0, *tmpa);
@@ -459,7 +460,8 @@ void sw64_read_simd_fp_m_s(unsigned long reg, unsigned long *fp_value)
 
 void sw64_read_simd_fp_m_d(unsigned long reg, unsigned long *fp_value)
 {
-	volatile unsigned long tmpa[4] __attribute__((aligned(32)));
+	volatile unsigned long tmpa[4] __aligned(32);
+
 	switch (reg) {
 	case  0:
 		VSTD(0, *tmpa);
@@ -563,8 +565,6 @@ void sw64_read_simd_fp_m_d(unsigned long reg, unsigned long *fp_value)
 	*(fp_value+1) = tmpa[1];
 	*(fp_value+2) = tmpa[2];
 	*(fp_value+3) = tmpa[3];
-
-	return;
 }
 
 unsigned long sw64_read_fp_reg(unsigned long reg)

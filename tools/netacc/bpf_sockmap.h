@@ -24,11 +24,13 @@
 #define net_err bpf_printk
 #endif
 
+/* Unless otherwise specified, change ipaddr to network byte order */
 struct sock_key {
 	__u32 sip4;
 	__u32 dip4;
 	__u32 sport;
 	__u32 dport;
+	__u64 netns_cookie;
 } __attribute__((packed));
 
 struct {
@@ -37,7 +39,7 @@ struct {
 	__type(value, int);
 	__uint(max_entries, SOCKMAP_SIZE);
 	__uint(map_flags, 0);
-} redissock_map SEC(".maps");
+} netaccsock_map SEC(".maps");
 
 struct sock_info {
 	__u64 redir_rx_cnt;
@@ -52,6 +54,18 @@ struct {
 	__uint(max_entries, SOCKMAP_SIZE);
 	__uint(map_flags, 0);
 } sockflag_map SEC(".maps");
+
+/* in network byte order */
+#define IS_LOOPBACK(a)		((((__u32) (a)) & 0x000000ff) == 0x0000007f)
+#define IS_NOT_LOOPBACK(a)	((((__u32) (a)) & 0x000000ff) != 0x0000007f)
+
+static inline void sock_key_add_netnsinfo(void *const ctx, struct sock_key *key)
+{
+	if (IS_NOT_LOOPBACK(key->sip4) || IS_NOT_LOOPBACK(key->dip4))
+		key->netns_cookie = 0;
+	else
+		key->netns_cookie = bpf_get_netns_cookie(ctx);
+}
 
 static inline void sock_key2peerkey(struct sock_key *key, struct sock_key *peer_key)
 {
@@ -77,7 +91,9 @@ static inline void bpf_sock_ops_ipv4(struct bpf_sock_ops *skops)
 	struct sock_key key = {};
 
 	extract_key4_from_ops(skops, &key);
-	bpf_sock_hash_update(skops, &redissock_map, &key, BPF_NOEXIST);
+	sock_key_add_netnsinfo(skops, &key);
+
+	bpf_sock_hash_update(skops, &netaccsock_map, &key, BPF_NOEXIST);
 }
 
 static inline void bpf_sockmap_ipv4_insert(struct bpf_sock_ops *skops)
@@ -94,6 +110,7 @@ static inline void bpf_sockmap_ipv4_cleanup(struct bpf_sock_ops *skops, __u64 *c
 	struct sock_key key = {};
 
 	extract_key4_from_ops(skops, &key);
+	sock_key_add_netnsinfo(skops, &key);
 	p_skinfo = bpf_map_lookup_elem(&sockflag_map, &key);
 	if (p_skinfo) {
 		if (cnt)
@@ -113,7 +130,7 @@ static inline void extract_key4_from_msg(struct sk_msg_md *msg, struct sock_key 
 	key->dport = bpf_ntohl(msg->remote_port);
 }
 
-SEC("sk_msg") int redis_redir(struct sk_msg_md *msg)
+SEC("sk_msg") int netacc_redir(struct sk_msg_md *msg)
 {
 	struct sock_info *p_skinfo = NULL;
 	struct sock_info skinfo = {0};
@@ -122,7 +139,9 @@ SEC("sk_msg") int redis_redir(struct sk_msg_md *msg)
 	int ret, addinfo = 0;
 
 	extract_key4_from_msg(msg, &key);
+	sock_key_add_netnsinfo(msg, &key);
 	sock_key2peerkey(&key, &peer_key);
+	sock_key_add_netnsinfo(msg, &peer_key);
 
 	p_skinfo = bpf_map_lookup_elem(&sockflag_map, &key);
 	if (p_skinfo != NULL && p_skinfo->sk_flags == 1)
@@ -133,7 +152,7 @@ SEC("sk_msg") int redis_redir(struct sk_msg_md *msg)
 		p_skinfo = &skinfo;
 	}
 
-	ret = bpf_msg_redirect_hash(msg, &redissock_map, &peer_key, BPF_F_INGRESS);
+	ret = bpf_msg_redirect_hash(msg, &netaccsock_map, &peer_key, BPF_F_INGRESS);
 	if (ret == SK_DROP) {
 		if (p_skinfo->sk_flags != 1)
 			p_skinfo->sk_flags = 1;

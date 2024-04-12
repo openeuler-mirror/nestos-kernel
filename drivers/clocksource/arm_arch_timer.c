@@ -16,7 +16,9 @@
 #include <linux/cpu_pm.h>
 #include <linux/clockchips.h>
 #include <linux/clocksource.h>
+#include <linux/clocksource_ids.h>
 #include <linux/interrupt.h>
+#include <linux/kstrtox.h>
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 #include <linux/io.h>
@@ -24,6 +26,8 @@
 #include <linux/sched/clock.h>
 #include <linux/sched_clock.h>
 #include <linux/acpi.h>
+#include <linux/arm-smccc.h>
+#include <linux/ptp_kvm.h>
 
 #include <asm/arch_timer.h>
 #include <asm/virt.h>
@@ -66,29 +70,39 @@ static struct arch_timer *arch_timer_mem __ro_after_init;
 
 #define to_arch_timer(e) container_of(e, struct arch_timer, evt)
 
-static u32 arch_timer_rate;
-static int arch_timer_ppi[ARCH_TIMER_MAX_TIMER_PPI];
+static u32 arch_timer_rate __ro_after_init;
+static int arch_timer_ppi[ARCH_TIMER_MAX_TIMER_PPI] __ro_after_init;
+
+static const char *arch_timer_ppi_names[ARCH_TIMER_MAX_TIMER_PPI] = {
+	[ARCH_TIMER_PHYS_SECURE_PPI]	= "sec-phys",
+	[ARCH_TIMER_PHYS_NONSECURE_PPI]	= "phys",
+	[ARCH_TIMER_VIRT_PPI]		= "virt",
+	[ARCH_TIMER_HYP_PPI]		= "hyp-phys",
+	[ARCH_TIMER_HYP_VIRT_PPI]	= "hyp-virt",
+};
 
 static struct clock_event_device __percpu *arch_timer_evt;
 
-static enum arch_timer_ppi_nr arch_timer_uses_ppi = ARCH_TIMER_VIRT_PPI;
-static bool arch_timer_c3stop;
-static bool arch_timer_mem_use_virtual;
-static bool arch_counter_suspend_stop;
+static enum arch_timer_ppi_nr arch_timer_uses_ppi __ro_after_init = ARCH_TIMER_VIRT_PPI;
+static bool arch_timer_c3stop __ro_after_init;
+static bool arch_timer_mem_use_virtual __ro_after_init;
+static bool arch_counter_suspend_stop __ro_after_init;
 #ifdef CONFIG_GENERIC_GETTIMEOFDAY
 static enum vdso_clock_mode vdso_default = VDSO_CLOCKMODE_ARCHTIMER;
 #else
 static enum vdso_clock_mode vdso_default = VDSO_CLOCKMODE_NONE;
 #endif /* CONFIG_GENERIC_GETTIMEOFDAY */
+#ifdef CONFIG_ARM_ARCH_TIMER_WORKAROUND_IN_USERSPACE
 static bool vdso_fix;
 static u16 vdso_shift;
+#endif
 
 static cpumask_t evtstrm_available = CPU_MASK_NONE;
-static bool evtstrm_enable = IS_ENABLED(CONFIG_ARM_ARCH_TIMER_EVTSTREAM);
+static bool evtstrm_enable __ro_after_init = IS_ENABLED(CONFIG_ARM_ARCH_TIMER_EVTSTREAM);
 
 static int __init early_evtstrm_cfg(char *buf)
 {
-	return strtobool(buf, &evtstrm_enable);
+	return kstrtobool(buf, &evtstrm_enable);
 }
 early_param("clocksource.arm_arch_timer.evtstrm", early_evtstrm_cfg);
 
@@ -181,22 +195,40 @@ u32 arch_timer_reg_read(int access, enum arch_timer_reg reg,
 	return val;
 }
 
-static notrace u64 arch_counter_get_cntpct_stable(void)
+static noinstr u64 raw_counter_get_cntpct_stable(void)
 {
 	return __arch_counter_get_cntpct_stable();
 }
 
-static notrace u64 arch_counter_get_cntpct(void)
+static notrace u64 arch_counter_get_cntpct_stable(void)
+{
+	u64 val;
+	preempt_disable_notrace();
+	val = __arch_counter_get_cntpct_stable();
+	preempt_enable_notrace();
+	return val;
+}
+
+static noinstr u64 arch_counter_get_cntpct(void)
 {
 	return __arch_counter_get_cntpct();
 }
 
-static notrace u64 arch_counter_get_cntvct_stable(void)
+static noinstr u64 raw_counter_get_cntvct_stable(void)
 {
 	return __arch_counter_get_cntvct_stable();
 }
 
-static notrace u64 arch_counter_get_cntvct(void)
+static notrace u64 arch_counter_get_cntvct_stable(void)
+{
+	u64 val;
+	preempt_disable_notrace();
+	val = __arch_counter_get_cntvct_stable();
+	preempt_enable_notrace();
+	return val;
+}
+
+static noinstr u64 arch_counter_get_cntvct(void)
 {
 	return __arch_counter_get_cntvct();
 }
@@ -207,7 +239,7 @@ static notrace u64 arch_counter_get_cntvct(void)
  * to exist on arm64. arm doesn't use this before DT is probed so even
  * if we don't have the cp15 accessors we won't have a problem.
  */
-u64 (*arch_timer_read_counter)(void) = arch_counter_get_cntvct;
+u64 (*arch_timer_read_counter)(void) __ro_after_init = arch_counter_get_cntvct;
 EXPORT_SYMBOL_GPL(arch_timer_read_counter);
 
 static u64 arch_counter_read(struct clocksource *cs)
@@ -222,6 +254,7 @@ static u64 arch_counter_read_cc(const struct cyclecounter *cc)
 
 static struct clocksource clocksource_counter = {
 	.name	= "arch_sys_counter",
+	.id	= CSID_ARM_ARCH_COUNTER,
 	.rating	= 400,
 	.read	= arch_counter_read,
 	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
@@ -384,8 +417,13 @@ EXPORT_SYMBOL_GPL(timer_unstable_counter_workaround);
 
 static atomic_t timer_unstable_counter_workaround_in_use = ATOMIC_INIT(0);
 
-static void erratum_set_next_event_generic(const int access, unsigned long evt,
-						struct clock_event_device *clk)
+/*
+ * Force the inlining of this function so that the register accesses
+ * can be themselves correctly inlined.
+ */
+static __always_inline
+void erratum_set_next_event_generic(const int access, unsigned long evt,
+				    struct clock_event_device *clk)
 {
 	unsigned long ctrl;
 	u64 cval;
@@ -458,6 +496,8 @@ static const struct arch_timer_erratum_workaround ool_workarounds[] = {
 		.desc = "ARM erratum 858921",
 		.read_cntpct_el0 = arm64_858921_read_cntpct_el0,
 		.read_cntvct_el0 = arm64_858921_read_cntvct_el0,
+		.set_next_event_phys = erratum_set_next_event_phys,
+		.set_next_event_virt = erratum_set_next_event_virt,
 	},
 #endif
 #ifdef CONFIG_SUN50I_ERRATUM_UNKNOWN1
@@ -563,17 +603,23 @@ void arch_timer_enable_workaround(const struct arch_timer_erratum_workaround *wa
 	 * change both the default value and the vdso itself.
 	 */
 	if (wa->read_cntvct_el0) {
+#ifdef CONFIG_ARM_ARCH_TIMER_WORKAROUND_IN_USERSPACE
 		if (!strncmp(wa->desc, "HiSilicon erratum 161010101",
-			    strlen("HiSilicon erratum 161010101"))) {
+			     strlen("HiSilicon erratum 161010101"))) {
 			vdso_fix = true;
 			vdso_shift = 5;
 		} else if (!strncmp(wa->desc, "Freescale erratum a005858",
-			    strlen("Freescale erratum a005858"))) {
+				    strlen("Freescale erratum a005858"))) {
 			vdso_fix = true;
+			vdso_shift = 0;
 		} else {
 			clocksource_counter.vdso_clock_mode = VDSO_CLOCKMODE_NONE;
 			vdso_default = VDSO_CLOCKMODE_NONE;
 		}
+#else
+		clocksource_counter.vdso_clock_mode = VDSO_CLOCKMODE_NONE;
+		vdso_default = VDSO_CLOCKMODE_NONE;
+#endif
 	} else if (wa->disable_compat_vdso && vdso_default != VDSO_CLOCKMODE_NONE) {
 		vdso_default = VDSO_CLOCKMODE_ARCHTIMER_NOCOMPAT;
 		clocksource_counter.vdso_clock_mode = vdso_default;
@@ -744,14 +790,14 @@ static int arch_timer_set_next_event_phys(unsigned long evt,
 	return 0;
 }
 
-static u64 arch_counter_get_cnt_mem(struct arch_timer *t, int offset_lo)
+static noinstr u64 arch_counter_get_cnt_mem(struct arch_timer *t, int offset_lo)
 {
 	u32 cnt_lo, cnt_hi, tmp_hi;
 
 	do {
-		cnt_hi = readl_relaxed(t->base + offset_lo + 4);
-		cnt_lo = readl_relaxed(t->base + offset_lo);
-		tmp_hi = readl_relaxed(t->base + offset_lo + 4);
+		cnt_hi = __le32_to_cpu((__le32 __force)__raw_readl(t->base + offset_lo + 4));
+		cnt_lo = __le32_to_cpu((__le32 __force)__raw_readl(t->base + offset_lo));
+		tmp_hi = __le32_to_cpu((__le32 __force)__raw_readl(t->base + offset_lo + 4));
 	} while (cnt_hi != tmp_hi);
 
 	return ((u64) cnt_hi << 32) | cnt_lo;
@@ -765,6 +811,13 @@ static __always_inline void set_next_event_mem(const int access, unsigned long e
 	u64 cnt;
 
 	ctrl = arch_timer_reg_read(access, ARCH_TIMER_REG_CTRL, clk);
+
+	/* Timer must be disabled before programming CVAL */
+	if (ctrl & ARCH_TIMER_CTRL_ENABLE) {
+		ctrl &= ~ARCH_TIMER_CTRL_ENABLE;
+		arch_timer_reg_write(access, ARCH_TIMER_REG_CTRL, ctrl, clk);
+	}
+
 	ctrl |= ARCH_TIMER_CTRL_ENABLE;
 	ctrl &= ~ARCH_TIMER_CTRL_IT_MASK;
 
@@ -798,15 +851,19 @@ static u64 __arch_timer_check_delta(void)
 		/*
 		 * XGene-1 implements CVAL in terms of TVAL, meaning
 		 * that the maximum timer range is 32bit. Shame on them.
+		 *
+		 * Note that TVAL is signed, thus has only 31 of its
+		 * 32 bits to express magnitude.
 		 */
-		MIDR_ALL_VERSIONS(MIDR_CPU_MODEL(ARM_CPU_IMP_APM,
-						 APM_CPU_PART_POTENZA)),
+		MIDR_REV_RANGE(MIDR_CPU_MODEL(ARM_CPU_IMP_APM,
+					      APM_CPU_PART_XGENE),
+			       APM_CPU_VAR_POTENZA, 0x0, 0xf),
 		{},
 	};
 
 	if (is_midr_in_range_list(read_cpuid_id(), broken_cval_midrs)) {
-		pr_warn_once("Broken CNTx_CVAL_EL1, limiting width to 32bits");
-		return CLOCKSOURCE_MASK(32);
+		pr_warn_once("Broken CNTx_CVAL_EL1, using 31 bit TVAL instead.\n");
+		return CLOCKSOURCE_MASK(31);
 	}
 #endif
 	return CLOCKSOURCE_MASK(arch_counter_get_width());
@@ -874,10 +931,19 @@ static void __arch_timer_setup(unsigned type,
 	clockevents_config_and_register(clk, arch_timer_rate, 0xf, max_delta);
 }
 
-static void arch_timer_evtstrm_enable(int divider)
+static void arch_timer_evtstrm_enable(unsigned int divider)
 {
 	u32 cntkctl = arch_timer_get_cntkctl();
 
+#ifdef CONFIG_ARM64
+	/* ECV is likely to require a large divider. Use the EVNTIS flag. */
+	if (cpus_have_const_cap(ARM64_HAS_ECV) && divider > 15) {
+		cntkctl |= ARCH_TIMER_EVT_INTERVAL_SCALE;
+		divider -= 8;
+	}
+#endif
+
+	divider = min(divider, 15U);
 	cntkctl &= ~ARCH_TIMER_EVT_TRIGGER_MASK;
 	/* Set the divider and enable virtual event stream */
 	cntkctl |= (divider << ARCH_TIMER_EVT_TRIGGER_SHIFT)
@@ -906,7 +972,7 @@ static void arch_timer_configure_evtstream(void)
 		lsb++;
 
 	/* enable event stream */
-	arch_timer_evtstrm_enable(max(0, min(lsb, 15)));
+	arch_timer_evtstrm_enable(max(0, lsb));
 }
 
 static void arch_counter_set_user_access(void)
@@ -926,7 +992,11 @@ static void arch_counter_set_user_access(void)
 	 * need to be workaround. The vdso may have been already
 	 * disabled though.
 	 */
+#ifdef CONFIG_ARM_ARCH_TIMER_WORKAROUND_IN_USERSPACE
 	if (arch_timer_this_cpu_has_cntvct_wa() && !vdso_fix)
+#else
+	if (arch_timer_this_cpu_has_cntvct_wa())
+#endif
 		pr_info("CPU%d: Trapping CNTVCT access\n", smp_processor_id());
 	else
 		cntkctl |= ARCH_TIMER_USR_VCT_ACCESS_EN;
@@ -992,7 +1062,7 @@ static int validate_timer_rate(void)
  * rate was probed first, and don't verify that others match. If the first node
  * probed has a clock-frequency property, this overrides the HW register.
  */
-static void arch_timer_of_configure_rate(u32 rate, struct device_node *np)
+static void __init arch_timer_of_configure_rate(u32 rate, struct device_node *np)
 {
 	/* Who has more than one independent system counter? */
 	if (arch_timer_rate)
@@ -1006,7 +1076,7 @@ static void arch_timer_of_configure_rate(u32 rate, struct device_node *np)
 		pr_warn("frequency not available\n");
 }
 
-static void arch_timer_banner(unsigned type)
+static void __init arch_timer_banner(unsigned type)
 {
 	pr_info("%s%s%s timer(s) running at %lu.%02luMHz (%s%s%s).\n",
 		type & ARCH_TIMER_TYPE_CP15 ? "cp15" : "",
@@ -1039,7 +1109,7 @@ bool arch_timer_evtstrm_available(void)
 	return cpumask_test_cpu(raw_smp_processor_id(), &evtstrm_available);
 }
 
-static u64 arch_counter_get_cntvct_mem(void)
+static noinstr u64 arch_counter_get_cntvct_mem(void)
 {
 	return arch_counter_get_cnt_mem(arch_timer_mem, CNTVCT_LO);
 }
@@ -1053,6 +1123,7 @@ struct arch_timer_kvm_info *arch_timer_get_kvm_info(void)
 
 static void __init arch_counter_register(unsigned type)
 {
+	u64 (*scr)(void);
 	u64 start_count;
 	int width;
 
@@ -1062,23 +1133,32 @@ static void __init arch_counter_register(unsigned type)
 
 		if ((IS_ENABLED(CONFIG_ARM64) && !is_hyp_mode_available()) ||
 		    arch_timer_uses_ppi == ARCH_TIMER_VIRT_PPI) {
-			if (arch_timer_counter_has_wa())
+			if (arch_timer_counter_has_wa()) {
 				rd = arch_counter_get_cntvct_stable;
-			else
+				scr = raw_counter_get_cntvct_stable;
+			} else {
 				rd = arch_counter_get_cntvct;
+				scr = arch_counter_get_cntvct;
+			}
 		} else {
-			if (arch_timer_counter_has_wa())
+			if (arch_timer_counter_has_wa()) {
 				rd = arch_counter_get_cntpct_stable;
-			else
+				scr = raw_counter_get_cntpct_stable;
+			} else {
 				rd = arch_counter_get_cntpct;
+				scr = arch_counter_get_cntpct;
+			}
 		}
 
 		arch_timer_read_counter = rd;
 		clocksource_counter.vdso_clock_mode = vdso_default;
+#ifdef CONFIG_ARM_ARCH_TIMER_WORKAROUND_IN_USERSPACE
 		clocksource_counter.vdso_fix = vdso_fix;
 		clocksource_counter.vdso_shift = vdso_shift;
+#endif
 	} else {
 		arch_timer_read_counter = arch_counter_get_cntvct_mem;
+		scr = arch_counter_get_cntvct_mem;
 	}
 
 	width = arch_counter_get_width();
@@ -1094,7 +1174,7 @@ static void __init arch_counter_register(unsigned type)
 	timecounter_init(&arch_timer_kvm_info.timecounter,
 			 &cyclecounter, start_count);
 
-	sched_clock_register(arch_timer_read_counter, width, arch_timer_rate);
+	sched_clock_register(scr, width, arch_timer_rate);
 }
 
 static void arch_timer_stop(struct clock_event_device *clk)
@@ -1345,8 +1425,9 @@ static void __init arch_timer_populate_kvm_info(void)
 
 static int __init arch_timer_of_init(struct device_node *np)
 {
-	int i, ret;
+	int i, irq, ret;
 	u32 rate;
+	bool has_names;
 
 	if (arch_timers_present & ARCH_TIMER_TYPE_CP15) {
 		pr_warn("multiple nodes in dt, skipping\n");
@@ -1354,8 +1435,17 @@ static int __init arch_timer_of_init(struct device_node *np)
 	}
 
 	arch_timers_present |= ARCH_TIMER_TYPE_CP15;
-	for (i = ARCH_TIMER_PHYS_SECURE_PPI; i < ARCH_TIMER_MAX_TIMER_PPI; i++)
-		arch_timer_ppi[i] = irq_of_parse_and_map(np, i);
+
+	has_names = of_property_read_bool(np, "interrupt-names");
+
+	for (i = ARCH_TIMER_PHYS_SECURE_PPI; i < ARCH_TIMER_MAX_TIMER_PPI; i++) {
+		if (has_names)
+			irq = of_irq_get_byname(np, arch_timer_ppi_names[i]);
+		else
+			irq = of_irq_get(np, i);
+		if (irq > 0)
+			arch_timer_ppi[i] = irq;
+	}
 
 	arch_timer_populate_kvm_info();
 
@@ -1721,3 +1811,35 @@ static int __init arch_timer_acpi_init(struct acpi_table_header *table)
 }
 TIMER_ACPI_DECLARE(arch_timer, ACPI_SIG_GTDT, arch_timer_acpi_init);
 #endif
+
+int kvm_arch_ptp_get_crosststamp(u64 *cycle, struct timespec64 *ts,
+				 struct clocksource **cs)
+{
+	struct arm_smccc_res hvc_res;
+	u32 ptp_counter;
+	ktime_t ktime;
+
+	if (!IS_ENABLED(CONFIG_HAVE_ARM_SMCCC_DISCOVERY))
+		return -EOPNOTSUPP;
+
+	if (arch_timer_uses_ppi == ARCH_TIMER_VIRT_PPI)
+		ptp_counter = KVM_PTP_VIRT_COUNTER;
+	else
+		ptp_counter = KVM_PTP_PHYS_COUNTER;
+
+	arm_smccc_1_1_invoke(ARM_SMCCC_VENDOR_HYP_KVM_PTP_FUNC_ID,
+			     ptp_counter, &hvc_res);
+
+	if ((int)(hvc_res.a0) < 0)
+		return -EOPNOTSUPP;
+
+	ktime = (u64)hvc_res.a0 << 32 | hvc_res.a1;
+	*ts = ktime_to_timespec64(ktime);
+	if (cycle)
+		*cycle = (u64)hvc_res.a2 << 32 | hvc_res.a3;
+	if (cs)
+		*cs = &clocksource_counter;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kvm_arch_ptp_get_crosststamp);

@@ -65,6 +65,7 @@ static void do_insert_old_idx(struct ubifs_info *c,
 		else {
 			ubifs_err(c, "old idx added twice!");
 			kfree(old_idx);
+			return;
 		}
 	}
 	rb_link_node(&old_idx->rb, parent, p);
@@ -414,7 +415,7 @@ static void lnc_free(struct ubifs_zbranch *zbr)
  *
  * This function reads a "hashed" node defined by @zbr from the leaf node cache
  * (in it is there) or from the hash media, in which case the node is also
- * added to LNC. Returns zero in case of success or a negative negative error
+ * added to LNC. Returns zero in case of success or a negative error
  * code in case of failure.
  */
 static int tnc_read_hashed_node(struct ubifs_info *c, struct ubifs_zbranch *zbr,

@@ -10,6 +10,7 @@
 
 #include <linux/atomic.h>
 #include <linux/static_key.h>
+#include <linux/kabi.h>
 
 struct static_call_key;
 
@@ -35,9 +36,12 @@ struct tracepoint {
 	struct static_call_key *static_call_key;
 	void *static_call_tramp;
 	void *iterator;
+	void *probestub;
 	int (*regfunc)(void);
 	void (*unregfunc)(void);
 	struct tracepoint_func __rcu *funcs;
+	KABI_RESERVE(1)
+	KABI_RESERVE(2)
 };
 
 #ifdef CONFIG_HAVE_ARCH_PREL32_RELOCATIONS

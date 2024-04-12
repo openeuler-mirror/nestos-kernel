@@ -212,7 +212,7 @@ int sss_nic_dettach_vf(struct sss_nic_io *nic_io, u16 vf_id)
 
 	vf_info->attach = false;
 
-	if ((!vf_info->specified_mac) && (vf_info->pf_vlan == 0)) {
+	if (!vf_info->specified_mac && vf_info->pf_vlan == 0) {
 		memset(vf_info->drv_mac, 0, ETH_ALEN);
 		return 0;
 	}
@@ -543,7 +543,7 @@ static int _sss_nic_event_handler(void *hwdev, u16 cmd, void *in_buf, u16 in_siz
 
 	((struct sss_mgmt_msg_head *)out_buf)->state = SSS_MGMT_CMD_UNSUPPORTED;
 	*out_size = sizeof(struct sss_mgmt_msg_head);
-	sdk_warn(nic_io->dev_hdl, "Unsupport nic event, cmd: %u\n", cmd);
+	nic_warn(nic_io->dev_hdl, "Unsupport nic event, cmd: %u\n", cmd);
 
 	return 0;
 }

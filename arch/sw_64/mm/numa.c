@@ -19,7 +19,7 @@ nodemask_t numa_nodes_parsed __initdata;
 
 static int numa_distance_cnt;
 static u8 *numa_distance;
-static bool numa_off;
+int numa_off;
 
 static __init int numa_setup(char *opt)
 {
@@ -125,7 +125,7 @@ void __init numa_free_distance(void)
 	size = numa_distance_cnt * numa_distance_cnt *
 		sizeof(numa_distance[0]);
 
-	memblock_free(__pa(numa_distance), size);
+	memblock_free(numa_distance, size);
 	numa_distance_cnt = 0;
 	numa_distance = NULL;
 }
@@ -138,16 +138,13 @@ void __init numa_free_distance(void)
 static int __init numa_alloc_distance(void)
 {
 	size_t size;
-	u64 phys;
+	phys_addr_t phys;
 	int i, j;
 
 	size = nr_node_ids * nr_node_ids * sizeof(numa_distance[0]);
-	phys = memblock_find_in_range(0, PFN_PHYS(max_pfn),
-				      size, PAGE_SIZE);
+	phys = memblock_phys_alloc(size, PAGE_SIZE);
 	if (WARN_ON(!phys))
 		return -ENOMEM;
-
-	memblock_reserve(phys, size);
 
 	numa_distance = __va(phys);
 	numa_distance_cnt = nr_node_ids;
@@ -331,7 +328,7 @@ static int __init manual_numa_init(void)
 			}
 
 			if (!node_size) {
-				memblock_add_node(node_base, node_size, nid);
+				memblock_add_node(node_base, node_size, nid, MEMBLOCK_NONE);
 				node_set(nid, numa_nodes_parsed);
 				pr_info("Setup empty node %d from %#llx\n", nid, node_base);
 			}
@@ -345,12 +342,6 @@ static int __init manual_numa_init(void)
 	}
 
 	return 0;
-}
-
-/* We do not have acpi support. */
-int acpi_numa_init(void)
-{
-	return -1;
 }
 
 void __init sw64_numa_init(void)
@@ -378,7 +369,7 @@ void cpu_set_node(void)
 		rr = first_node(node_online_map);
 		for (i = 0; i < nr_cpu_ids; i++) {
 			cid = cpu_to_rcid(i);
-			default_node = cid >> CORES_PER_NODE_SHIFT;
+			default_node = rcid_to_domain_id(cid);
 			if (node_online(default_node)) {
 				cpu_to_node_map[i] = default_node;
 			} else {
@@ -399,6 +390,23 @@ void cpu_set_node(void)
 void numa_store_cpu_info(unsigned int cpu)
 {
 	set_cpu_numa_node(cpu, cpu_to_node_map[cpu]);
+}
+
+void __init early_map_cpu_to_node(unsigned int cpu, int nid)
+{
+	/* fallback to node 0 */
+	if (nid < 0 || nid >= MAX_NUMNODES || numa_off)
+		nid = 0;
+
+	cpu_to_node_map[cpu] = nid;
+
+	/*
+	 * We should set the numa node of cpu0 as soon as possible, because it
+	 * has already been set up online before. cpu_to_node(0) will soon be
+	 * called.
+	 */
+	if (!cpu)
+		set_cpu_numa_node(cpu, nid);
 }
 
 #ifdef CONFIG_DEBUG_PER_CPU_MAPS
@@ -449,4 +457,10 @@ void numa_add_cpu(unsigned int cpu)
 void numa_remove_cpu(unsigned int cpu)
 {
 	numa_update_cpu(cpu, true);
+}
+
+void numa_clear_node(unsigned int cpu)
+{
+	numa_remove_cpu(cpu);
+	set_cpu_numa_node(cpu, NUMA_NO_NODE);
 }

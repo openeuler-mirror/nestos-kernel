@@ -94,6 +94,7 @@
 #include <linux/bitmap.h>
 #include <linux/minmax.h>
 #include <linux/numa.h>
+#include <linux/random.h>
 
 typedef struct { DECLARE_BITMAP(bits, MAX_NUMNODES); } nodemask_t;
 extern nodemask_t _unused_nodemask_arg_;
@@ -119,7 +120,7 @@ static inline const unsigned long *__nodemask_pr_bits(const nodemask_t *m)
  * The inline keyword gives the compiler room to decide to inline, or
  * not inline a function as it sees best.  However, as these functions
  * are called in both __init and non-__init functions, if they are not
- * inlined we will end up with a section mis-match error (of the type of
+ * inlined we will end up with a section mismatch error (of the type of
  * freeable items not being freed).  So we must use __always_inline here
  * to fix the problem.  If other functions in the future also end up in
  * this situation they will also need to be annotated as __always_inline
@@ -276,7 +277,14 @@ static inline unsigned int __next_node(int n, const nodemask_t *srcp)
  * the first node in src if needed.  Returns MAX_NUMNODES if src is empty.
  */
 #define next_node_in(n, src) __next_node_in((n), &(src))
-unsigned int __next_node_in(int node, const nodemask_t *srcp);
+static inline unsigned int __next_node_in(int node, const nodemask_t *srcp)
+{
+	unsigned int ret = __next_node(node, srcp);
+
+	if (ret == MAX_NUMNODES)
+		ret = __first_node(srcp);
+	return ret;
+}
 
 static inline void init_nodemask_of_node(nodemask_t *mask, int node)
 {
@@ -377,7 +385,7 @@ static inline void __nodes_fold(nodemask_t *dstp, const nodemask_t *origp,
 #if MAX_NUMNODES > 1
 #define for_each_node_mask(node, mask)				    \
 	for ((node) = first_node(mask);				    \
-	     (node >= 0) && (node) < MAX_NUMNODES;		    \
+	     (node) < MAX_NUMNODES;				    \
 	     (node) = next_node((node), (mask)))
 #else /* MAX_NUMNODES == 1 */
 #define for_each_node_mask(node, mask)                                  \
@@ -396,12 +404,9 @@ enum node_states {
 #else
 	N_HIGH_MEMORY = N_NORMAL_MEMORY,
 #endif
-	N_MEMORY,	/* The node has memory(regular, high, movable, cdm) */
+	N_MEMORY,		/* The node has memory(regular, high, movable) */
 	N_CPU,		/* The node has one or more cpus */
 	N_GENERIC_INITIATOR,	/* The node has one or more Generic Initiators */
-#ifdef CONFIG_COHERENT_DEVICE
-	N_COHERENT_DEVICE,	/* The node has CDM memory */
-#endif
 	NR_NODE_STATES
 };
 
@@ -488,6 +493,7 @@ static inline int num_node_state(enum node_states state)
 #define first_online_node	0
 #define first_memory_node	0
 #define next_online_node(nid)	(MAX_NUMNODES)
+#define next_memory_node(nid)	(MAX_NUMNODES)
 #define nr_node_ids		1U
 #define nr_online_nodes		1U
 
@@ -496,92 +502,28 @@ static inline int num_node_state(enum node_states state)
 
 #endif
 
+static inline int node_random(const nodemask_t *maskp)
+{
 #if defined(CONFIG_NUMA) && (MAX_NUMNODES > 1)
-extern int node_random(const nodemask_t *maskp);
-#else
-static inline int node_random(const nodemask_t *mask)
-{
-	return 0;
-}
-#endif
+	int w, bit;
 
-#ifdef CONFIG_COHERENT_DEVICE
-extern int arch_check_node_cdm(int nid);
-
-#ifdef CONFIG_ASCEND_CLEAN_CDM
-extern int cdm_node_to_ddr_node(int nid);
-#else
-static inline int cdm_node_to_ddr_node(int nid) { return nid; }
-#endif
-
-static inline nodemask_t system_mem_nodemask(void)
-{
-	nodemask_t system_mem;
-
-	nodes_clear(system_mem);
-	nodes_andnot(system_mem, node_states[N_MEMORY],
-			node_states[N_COHERENT_DEVICE]);
-	return system_mem;
-}
-
-static inline bool is_cdm_node(int node)
-{
-	return node_isset(node, node_states[N_COHERENT_DEVICE]);
-}
-
-static inline bool nodemask_has_cdm(nodemask_t mask)
-{
-	int node, i;
-
-	node = first_node(mask);
-	for (i = 0; i < nodes_weight(mask); i++) {
-		if (is_cdm_node(node))
-			return true;
-		node = next_node(node, mask);
+	w = nodes_weight(*maskp);
+	switch (w) {
+	case 0:
+		bit = NUMA_NO_NODE;
+		break;
+	case 1:
+		bit = first_node(*maskp);
+		break;
+	default:
+		bit = find_nth_bit(maskp->bits, MAX_NUMNODES, get_random_u32_below(w));
+		break;
 	}
-	return false;
-}
-
-static inline void node_set_state_cdm(int node)
-{
-	if (arch_check_node_cdm(node))
-		node_set_state(node, N_COHERENT_DEVICE);
-}
-
-static inline void node_clear_state_cdm(int node)
-{
-	if (arch_check_node_cdm(node))
-		node_clear_state(node, N_COHERENT_DEVICE);
-}
-
+	return bit;
 #else
-
-static inline int arch_check_node_cdm(int nid) { return 0; }
-static inline int cdm_node_to_ddr_node(int nid) { return nid; }
-
-static inline nodemask_t system_mem_nodemask(void)
-{
-	return node_states[N_MEMORY];
+	return 0;
+#endif
 }
-
-static inline bool is_cdm_node(int node)
-{
-	return false;
-}
-
-static inline bool nodemask_has_cdm(nodemask_t mask)
-{
-	return false;
-}
-
-static inline void node_set_state_cdm(int node)
-{
-}
-
-static inline void node_clear_state_cdm(int node)
-{
-}
-#endif	/* CONFIG_COHERENT_DEVICE */
 
 #define node_online_map 	node_states[N_ONLINE]
 #define node_possible_map 	node_states[N_POSSIBLE]
@@ -595,7 +537,7 @@ static inline void node_clear_state_cdm(int node)
 #define for_each_online_node(node) for_each_node_state(node, N_ONLINE)
 
 /*
- * For nodemask scrach area.
+ * For nodemask scratch area.
  * NODEMASK_ALLOC(type, name) allocates an object with a specified type and
  * name.
  */
@@ -608,7 +550,7 @@ static inline void node_clear_state_cdm(int node)
 #define NODEMASK_FREE(m)			do {} while (0)
 #endif
 
-/* A example struture for using NODEMASK_ALLOC, used in mempolicy. */
+/* Example structure for using NODEMASK_ALLOC, used in mempolicy. */
 struct nodemask_scratch {
 	nodemask_t	mask1;
 	nodemask_t	mask2;

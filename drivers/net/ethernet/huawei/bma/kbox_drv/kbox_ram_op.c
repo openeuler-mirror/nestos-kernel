@@ -30,7 +30,7 @@
 #endif
 
 static DEFINE_SPINLOCK(g_kbox_super_block_lock);
-static DEFINE_SEMAPHORE(user_sem);
+static DEFINE_SEMAPHORE(user_sem, 1);
 
 union char_int_transfer_u {
 	int data_int;
@@ -620,7 +620,7 @@ int kbox_write_panic_info(const char *input_data, unsigned int data_len)
 	int write_len = 0;
 	unsigned int offset = 0;
 	struct panic_ctrl_block_s *panic_ctrl_block = NULL;
-	unsigned long time = get_seconds();
+	unsigned long time = ktime_get_seconds();
 	unsigned char slot_num = 0;
 	unsigned long flags = 0;
 
@@ -969,8 +969,8 @@ int kbox_mmap_ram(struct file *pfile, struct vm_area_struct *vma,
 		return -ENOSPC;
 	}
 
-	vma->vm_flags |= VM_RESERVED;
-	vma->vm_flags |= VM_IO;
+	vm_flags_set(vma, VM_RESERVED);
+	vm_flags_set(vma, VM_IO);
 
 	ret = remap_pfn_range(vma,
 			      vma->vm_start,

@@ -10,6 +10,8 @@
  * 2 of the Licence, or (at your option) any later version.
  */
 
+#ifdef CONFIG_PGP_LIBRARY
+
 #include <linux/pgp.h>
 
 #define kenter(FMT, ...) \
@@ -21,3 +23,6 @@
  * pgp_library.c
  */
 extern const char *pgp_to_public_key_algo[PGP_PUBKEY__LAST];
+
+#endif /* CONFIG_PGP_LIBRARY */
+

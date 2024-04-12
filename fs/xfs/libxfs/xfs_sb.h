@@ -13,15 +13,6 @@ struct xfs_trans;
 struct xfs_fsop_geom;
 struct xfs_perag;
 
-/*
- * perag get/put wrappers for ref counting
- */
-extern struct xfs_perag *xfs_perag_get(struct xfs_mount *, xfs_agnumber_t);
-struct xfs_perag *xfs_perag_get_tag(struct xfs_mount *mp, xfs_agnumber_t agno,
-		unsigned int tag);
-extern void	xfs_perag_put(struct xfs_perag *pag);
-extern int	xfs_initialize_perag_data(struct xfs_mount *, xfs_agnumber_t);
-
 extern void	xfs_log_sb(struct xfs_trans *tp);
 extern int	xfs_sync_sb(struct xfs_mount *mp, bool wait);
 extern int	xfs_sync_sb_buf(struct xfs_mount *mp);
@@ -34,7 +25,7 @@ extern uint64_t	xfs_sb_version_to_features(struct xfs_sb *sbp);
 
 extern int	xfs_update_secondary_sbs(struct xfs_mount *mp);
 
-#define XFS_FS_GEOM_MAX_STRUCT_VER	(4)
+#define XFS_FS_GEOM_MAX_STRUCT_VER	(5)
 extern void	xfs_fs_geometry(struct xfs_mount *mp, struct xfs_fsop_geom *geo,
 				int struct_version);
 extern int	xfs_sb_read_secondary(struct xfs_mount *mp,
@@ -43,5 +34,8 @@ extern int	xfs_sb_read_secondary(struct xfs_mount *mp,
 extern int	xfs_sb_get_secondary(struct xfs_mount *mp,
 				struct xfs_trans *tp, xfs_agnumber_t agno,
 				struct xfs_buf **bpp);
+
+extern bool	xfs_validate_stripe_geometry(struct xfs_mount *mp,
+		__s64 sunit, __s64 swidth, int sectorsize, bool silent);
 
 #endif	/* __XFS_SB_H__ */

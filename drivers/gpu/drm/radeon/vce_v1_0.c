@@ -30,6 +30,7 @@
 #include "radeon.h"
 #include "radeon_asic.h"
 #include "sid.h"
+#include "vce.h"
 
 #define VCE_V1_0_FW_SIZE	(256 * 1024)
 #define VCE_V1_0_STACK_SIZE	(64 * 1024)
@@ -168,7 +169,6 @@ int vce_v1_0_load_fw(struct radeon_device *rdev, uint32_t *data)
 		chip_id = 0x01000015;
 		break;
 	case CHIP_PITCAIRN:
-	case CHIP_OLAND:
 		chip_id = 0x01000016;
 		break;
 	case CHIP_ARUBA:
@@ -193,13 +193,8 @@ int vce_v1_0_load_fw(struct radeon_device *rdev, uint32_t *data)
 	data[3] = sign->val[i].nonce[3];
 	data[4] = cpu_to_le32(le32_to_cpu(sign->len) + 64);
 
-#if IS_ENABLED(CONFIG_SW64)
-	memset_io(&data[5], 0, 44);
-	memcpy_toio(&data[16], &sign[1], rdev->vce_fw->size - sizeof(*sign));
-#else
 	memset(&data[5], 0, 44);
 	memcpy(&data[16], &sign[1], rdev->vce_fw->size - sizeof(*sign));
-#endif
 
 	data += (le32_to_cpu(sign->len) + 64) / 4;
 	data[0] = sign->val[i].sigval[0];

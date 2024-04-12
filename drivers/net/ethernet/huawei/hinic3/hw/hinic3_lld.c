@@ -49,13 +49,6 @@ MODULE_DESCRIPTION(HINIC3_DRV_DESC);
 MODULE_VERSION(HINIC3_DRV_VERSION);
 MODULE_LICENSE("GPL");
 
-#if !(defined(HAVE_SRIOV_CONFIGURE) || defined(HAVE_RHEL6_SRIOV_CONFIGURE))
-static DEVICE_ATTR(sriov_numvfs, 0664,
-			hinic3_sriov_numvfs_show, hinic3_sriov_numvfs_store);
-static DEVICE_ATTR(sriov_totalvfs, 0444,
-			hinic3_sriov_totalvfs_show, NULL);
-#endif /* !(HAVE_SRIOV_CONFIGURE || HAVE_RHEL6_SRIOV_CONFIGURE) */
-
 static struct attribute *hinic3_attributes[] = {
 #if !(defined(HAVE_SRIOV_CONFIGURE) || defined(HAVE_RHEL6_SRIOV_CONFIGURE))
 	&dev_attr_sriov_numvfs.attr,
@@ -71,7 +64,7 @@ static const struct attribute_group hinic3_attr_group = {
 struct hinic3_uld_info g_uld_info[SERVICE_T_MAX] = { {0} };
 
 #define HINIC3_EVENT_PROCESS_TIMEOUT	10000
-struct mutex		g_uld_mutex;
+struct mutex		g_uld_mutex;   /* g_uld_info lock */
 
 void hinic3_uld_lock_init(void)
 {
@@ -553,11 +546,9 @@ static int hinic3_pci_init(struct pci_dev *pdev)
 	int err;
 
 	pci_adapter = kzalloc(sizeof(*pci_adapter), GFP_KERNEL);
-	if (!pci_adapter) {
-		sdk_err(&pdev->dev,
-			"Failed to alloc pci device adapter\n");
+	if (!pci_adapter)
 		return -ENOMEM;
-	}
+
 	pci_adapter->pcidev = pdev;
 	mutex_init(&pci_adapter->pdev_mutex);
 
@@ -575,38 +566,22 @@ static int hinic3_pci_init(struct pci_dev *pdev)
 		goto pci_regions_err;
 	}
 
-	pci_enable_pcie_error_reporting(pdev);
-
 	pci_set_master(pdev);
 
-	err = pci_set_dma_mask(pdev, DMA_BIT_MASK(64)); /* 64 bit DMA mask */
+	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (err) {
 		sdk_warn(&pdev->dev, "Couldn't set 64-bit DMA mask\n");
-		err = pci_set_dma_mask(pdev, DMA_BIT_MASK(32)); /* 32 bit DMA mask */
+		err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32)); /* 32 bit DMA mask */
 		if (err) {
 			sdk_err(&pdev->dev, "Failed to set DMA mask\n");
 			goto dma_mask_err;
 		}
 	}
 
-	err = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64)); /* 64 bit DMA mask */
-	if (err) {
-		sdk_warn(&pdev->dev,
-			 "Couldn't set 64-bit coherent DMA mask\n");
-		err = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32)); /* 32 bit DMA mask */
-		if (err) {
-			sdk_err(&pdev->dev,
-				"Failed to set coherent DMA mask\n");
-			goto dma_consistnet_mask_err;
-		}
-	}
-
 	return 0;
 
-dma_consistnet_mask_err:
 dma_mask_err:
 	pci_clear_master(pdev);
-	pci_disable_pcie_error_reporting(pdev);
 	pci_release_regions(pdev);
 
 pci_regions_err:
@@ -625,7 +600,6 @@ static void hinic3_pci_deinit(struct pci_dev *pdev)
 
 	pci_clear_master(pdev);
 	pci_release_regions(pdev);
-	pci_disable_pcie_error_reporting(pdev);
 	pci_disable_device(pdev);
 	pci_set_drvdata(pdev, NULL);
 	kfree(pci_adapter);
@@ -1130,7 +1104,7 @@ static int hinic3_get_pf_info(struct pci_dev *pdev, u16 service,
 		return -EFAULT;
 	}
 
-	*pf_infos = kzalloc(sizeof(struct hinic3_hw_pf_infos), GFP_KERNEL);
+	*pf_infos = kzalloc(sizeof(*pf_infos), GFP_KERNEL);
 	err = hinic3_get_hw_pf_infos(dev->hwdev, *pf_infos, HINIC3_CHANNEL_COMM);
 	if (err) {
 		kfree(*pf_infos);
@@ -1195,13 +1169,13 @@ static int hinic3_dst_pdev_valid(struct hinic3_pcidev *dst_dev,  struct pci_dev 
 
 	bus = dst_dev->pcidev->bus->number + vf_devfn / BUS_MAX_DEV_NUM;
 	*des_pdev_ptr = pci_get_domain_bus_and_slot(pci_domain_nr(dst_dev->pcidev->bus),
-					       bus, vf_devfn % BUS_MAX_DEV_NUM);
+						    bus, vf_devfn % BUS_MAX_DEV_NUM);
 	if (!(*des_pdev_ptr)) {
 		pr_err("des_pdev is NULL\n");
 		return -EFAULT;
 	}
 
-	if ((*des_pdev_ptr)->driver == NULL) {
+	if (!(*des_pdev_ptr)->driver) {
 		pr_err("des_pdev_ptr->driver is NULL\n");
 		return -EFAULT;
 	}
@@ -1253,7 +1227,7 @@ int hinic3_set_vf_service_state(struct pci_dev *pdev, u16 vf_func_id, u16 servic
 		err = hinic3_dst_pdev_valid(dst_dev, &des_pdev, vf_devfn, en);
 		if (err) {
 			sdk_err(&pdev->dev, "Can not get vf func_id %u from pf %u\n",
-				 vf_func_id, func_id);
+				vf_func_id, func_id);
 			lld_put();
 			goto free_pf_info;
 		}
@@ -1277,7 +1251,7 @@ int hinic3_set_vf_service_state(struct pci_dev *pdev, u16 vf_func_id, u16 servic
 
 	if (!find_dst_dev) {
 		err = -EFAULT;
-		sdk_err(&pdev->dev, "Invalid parameter vf_id %u \n", vf_func_id);
+		sdk_err(&pdev->dev, "Invalid parameter vf_id %u\n", vf_func_id);
 		goto free_pf_info;
 	}
 
@@ -1291,10 +1265,10 @@ EXPORT_SYMBOL(hinic3_set_vf_service_state);
 
 /*lint -save -e133 -e10*/
 static const struct pci_device_id hinic3_pci_table[] = {
-	{PCI_VDEVICE(HUAWEI, HINIC3_DEV_ID_SPU), 0},
 	{PCI_VDEVICE(HUAWEI, HINIC3_DEV_ID_STANDARD), 0},
-	{PCI_VDEVICE(HUAWEI, HINIC3_DEV_ID_SDI_5_1_PF), 0},
+	{PCI_VDEVICE(HUAWEI, HINIC3_DEV_ID_DPU_PF), 0},
 	{PCI_VDEVICE(HUAWEI, HINIC3_DEV_ID_SDI_5_0_PF), 0},
+	{PCI_VDEVICE(HUAWEI, HINIC3_DEV_ID_SDI_5_1_PF), 0},
 	{PCI_VDEVICE(HUAWEI, HINIC3_DEV_ID_VF), 0},
 	{0, 0}
 

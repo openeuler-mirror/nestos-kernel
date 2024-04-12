@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * include/linux/initramfs.h
- *
  * Include file for file metadata in the initial ram disk.
  */
 #ifndef _LINUX_INITRAMFS_H

@@ -286,4 +286,3 @@ void sss_nic_reset_rx_rss(struct net_device *netdev)
 	if (test_bit(SSSNIC_RSS_ENABLE, &nic_dev->flags) != 0)
 		sss_nic_reset_rss_cfg(nic_dev);
 }
-

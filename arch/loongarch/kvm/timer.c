@@ -1,274 +1,197 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
+ * Copyright (C) 2020-2023 Loongson Technology Corporation Limited
  */
 
-#include <linux/errno.h>
-#include <linux/err.h>
-#include <linux/ktime.h>
 #include <linux/kvm_host.h>
-#include <linux/vmalloc.h>
-#include <linux/fs.h>
-#include <linux/random.h>
-#include <asm/page.h>
-#include <asm/cacheflush.h>
-#include <asm/cacheops.h>
-#include <asm/cpu-info.h>
-#include <asm/mmu_context.h>
-#include <asm/tlbflush.h>
-#include <asm/inst.h>
-#include "kvmcpu.h"
-#include "trace.h"
-#include "kvm_compat.h"
+#include <asm/kvm_csr.h>
+#include <asm/kvm_vcpu.h>
 
 /*
- * ktime_to_tick() - Scale ktime_t to a 64-bit stable timer.
- *
- * Caches the dynamic nanosecond bias in vcpu->arch.timer_dyn_bias.
+ * ktime_to_tick() - Scale ktime_t to timer tick value.
  */
-static u64 ktime_to_tick(struct kvm_vcpu *vcpu, ktime_t now)
+static inline u64 ktime_to_tick(struct kvm_vcpu *vcpu, ktime_t now)
 {
-	s64 now_ns, periods;
 	u64 delta;
 
-	now_ns = ktime_to_ns(now);
-	delta = now_ns + vcpu->arch.timer_dyn_bias;
-
-	if (delta >= vcpu->arch.timer_period) {
-		/* If delta is out of safe range the bias needs adjusting */
-		periods = div64_s64(now_ns, vcpu->arch.timer_period);
-		vcpu->arch.timer_dyn_bias = -periods * vcpu->arch.timer_period;
-		/* Recalculate delta with new bias */
-		delta = now_ns + vcpu->arch.timer_dyn_bias;
-	}
-
-	/*
-	 * We've ensured that:
-	 *   delta < timer_period
-	 */
+	delta = ktime_to_ns(now);
 	return div_u64(delta * vcpu->arch.timer_mhz, MNSEC_PER_SEC);
 }
 
-/**
- * kvm_resume_hrtimer() - Resume hrtimer, updating expiry.
- * @vcpu:	Virtual CPU.
- * @now:	ktime at point of resume.
- * @stable_timer:	stable timer at point of resume.
- *
- * Resumes the timer and updates the timer expiry based on @now and @count.
- */
-static void kvm_resume_hrtimer(struct kvm_vcpu *vcpu, ktime_t now, u64 stable_timer)
+static inline u64 tick_to_ns(struct kvm_vcpu *vcpu, u64 tick)
 {
-	u64 delta;
-	ktime_t expire;
-
-	/* Stable timer decreased to zero or
-	 * initialize to zero, set 4 second timer
-	*/
-	delta = div_u64(stable_timer * MNSEC_PER_SEC, vcpu->arch.timer_mhz);
-	expire = ktime_add_ns(now, delta);
-
-	/* Update hrtimer to use new timeout */
-	hrtimer_cancel(&vcpu->arch.swtimer);
-	hrtimer_start(&vcpu->arch.swtimer, expire, HRTIMER_MODE_ABS_PINNED);
+	return div_u64(tick * MNSEC_PER_SEC, vcpu->arch.timer_mhz);
 }
 
-/**
- * kvm_init_timer() - Initialise stable timer.
- * @vcpu:	Virtual CPU.
- * @timer_hz:	Frequency of timer.
- *
- * Initialise the timer to the specified frequency, zero it, and set it going if
- * it's enabled.
- */
-void kvm_init_timer(struct kvm_vcpu *vcpu, unsigned long timer_hz)
+/* Low level hrtimer wake routine */
+enum hrtimer_restart kvm_swtimer_wakeup(struct hrtimer *timer)
 {
-	ktime_t now;
-	unsigned long ticks;
-	struct loongarch_csrs *csr = vcpu->arch.csr;
+	struct kvm_vcpu *vcpu;
 
-	vcpu->arch.timer_mhz = timer_hz >> 20;
-	vcpu->arch.timer_period = div_u64((u64)MNSEC_PER_SEC * IOCSR_TIMER_MASK, vcpu->arch.timer_mhz);
-	vcpu->arch.timer_dyn_bias = 0;
+	vcpu = container_of(timer, struct kvm_vcpu, arch.swtimer);
+	kvm_queue_irq(vcpu, INT_TI);
+	rcuwait_wake_up(&vcpu->wait);
 
-	/* Starting at 0 */
-	ticks = 0;
-	now = ktime_get();
-	vcpu->arch.timer_bias = ticks - ktime_to_tick(vcpu, now);
-	vcpu->arch.timer_bias &= IOCSR_TIMER_MASK;
-
-	kvm_write_sw_gcsr(csr, KVM_CSR_TVAL, ticks);
-}
-
-/**
- * kvm_count_timeout() - Push timer forward on timeout.
- * @vcpu:	Virtual CPU.
- *
- * Handle an hrtimer event by push the hrtimer forward a period.
- *
- * Returns:	The hrtimer_restart value to return to the hrtimer subsystem.
- */
-enum hrtimer_restart kvm_count_timeout(struct kvm_vcpu *vcpu)
-{
-	unsigned long timer_cfg;
-
-	/* Add the Count period to the current expiry time */
-	timer_cfg = kvm_read_sw_gcsr(vcpu->arch.csr, KVM_CSR_TCFG);
-	if (timer_cfg & KVM_TCFG_PERIOD) {
-		hrtimer_add_expires_ns(&vcpu->arch.swtimer, timer_cfg & KVM_TCFG_VAL);
-		return HRTIMER_RESTART;
-	} else
-		return HRTIMER_NORESTART;
+	return HRTIMER_NORESTART;
 }
 
 /*
- * kvm_restore_timer() - Restore timer state.
- * @vcpu:       Virtual CPU.
- *
+ * Initialise the timer to the specified frequency, zero it
+ */
+void kvm_init_timer(struct kvm_vcpu *vcpu, unsigned long timer_hz)
+{
+	vcpu->arch.timer_mhz = timer_hz >> 20;
+
+	/* Starting at 0 */
+	kvm_write_sw_gcsr(vcpu->arch.csr, LOONGARCH_CSR_TVAL, 0);
+}
+
+/*
  * Restore soft timer state from saved context.
  */
 void kvm_restore_timer(struct kvm_vcpu *vcpu)
 {
+	unsigned long cfg, estat;
+	unsigned long ticks, delta, period;
+	ktime_t expire, now;
 	struct loongarch_csrs *csr = vcpu->arch.csr;
-	ktime_t saved_ktime, now;
-	u64 stable_timer, new_timertick = 0;
-	u64 delta = 0;
-	int expired = 0;
-	unsigned long timer_cfg;
 
 	/*
 	 * Set guest stable timer cfg csr
+	 * Disable timer before restore estat CSR register, avoid to
+	 * get invalid timer interrupt for old timer cfg
 	 */
-	timer_cfg = kvm_read_sw_gcsr(csr, KVM_CSR_TCFG);
-	kvm_restore_hw_gcsr(csr, KVM_CSR_ESTAT);
-	if (!(timer_cfg & KVM_TCFG_EN)) {
-		kvm_restore_hw_gcsr(csr, KVM_CSR_TCFG);
-		kvm_restore_hw_gcsr(csr, KVM_CSR_TVAL);
+	cfg = kvm_read_sw_gcsr(csr, LOONGARCH_CSR_TCFG);
+
+	write_gcsr_timercfg(0);
+	kvm_restore_hw_gcsr(csr, LOONGARCH_CSR_ESTAT);
+	kvm_restore_hw_gcsr(csr, LOONGARCH_CSR_TCFG);
+	if (!(cfg & CSR_TCFG_EN)) {
+		/* Guest timer is disabled, just restore timer registers */
+		kvm_restore_hw_gcsr(csr, LOONGARCH_CSR_TVAL);
 		return;
 	}
-
-	now = ktime_get();
-	saved_ktime = vcpu->arch.stable_ktime_saved;
-	stable_timer = kvm_read_sw_gcsr(csr, KVM_CSR_TVAL);
-
-	/*hrtimer not expire */
-	delta = ktime_to_tick(vcpu, ktime_sub(now, saved_ktime));
-	if (delta >= stable_timer)
-		expired = 1;
-
-	if (expired) {
-		if (timer_cfg & KVM_TCFG_PERIOD) {
-			new_timertick = (delta - stable_timer) % (timer_cfg & KVM_TCFG_VAL);
-		} else {
-			new_timertick = 1;
-		}
-	} else {
-		new_timertick = stable_timer - delta;
-	}
-
-	new_timertick &= KVM_TCFG_VAL;
-	kvm_write_gcsr_timercfg(timer_cfg);
-	kvm_write_gcsr_timertick(new_timertick);
-	if (expired)
-		_kvm_queue_irq(vcpu, LARCH_INT_TIMER);
-}
-
-/*
- * kvm_acquire_timer() - Switch to hard timer state.
- * @vcpu:       Virtual CPU.
- *
- * Restore hard timer state on top of existing soft timer state if possible.
- *
- * Since hard timer won't remain active over preemption, preemption should be
- * disabled by the caller.
- */
-void kvm_acquire_timer(struct kvm_vcpu *vcpu)
-{
-	unsigned long flags, guestcfg;
-
-	guestcfg = kvm_read_csr_gcfg();
-	if (!(guestcfg & KVM_GCFG_TIT))
-		return;
-
-	/* enable guest access to hard timer */
-	kvm_write_csr_gcfg(guestcfg & ~KVM_GCFG_TIT);
 
 	/*
-	 * Freeze the soft-timer and sync the guest stable timer with it. We do
-	 * this with interrupts disabled to avoid latency.
+	 * Freeze the soft-timer and sync the guest stable timer with it.
 	 */
-	local_irq_save(flags);
-	hrtimer_cancel(&vcpu->arch.swtimer);
-	local_irq_restore(flags);
+	if (kvm_vcpu_is_blocking(vcpu))
+		hrtimer_cancel(&vcpu->arch.swtimer);
+
+	/*
+	 * From LoongArch Reference Manual Volume 1 Chapter 7.6.2
+	 * If oneshot timer is fired, CSR TVAL will be -1, there are two
+	 * conditions:
+	 *  1) timer is fired during exiting to host
+	 *  2) timer is fired and vm is doing timer irq, and then exiting to
+	 *     host. Host should not inject timer irq to avoid spurious
+	 *     timer interrupt again
+	 */
+	ticks = kvm_read_sw_gcsr(csr, LOONGARCH_CSR_TVAL);
+	estat = kvm_read_sw_gcsr(csr, LOONGARCH_CSR_ESTAT);
+	if (!(cfg & CSR_TCFG_PERIOD) && (ticks > cfg)) {
+		/*
+		 * Writing 0 to LOONGARCH_CSR_TVAL will inject timer irq
+		 * and set CSR TVAL with -1
+		 */
+		write_gcsr_timertick(0);
+
+		/*
+		 * Writing CSR_TINTCLR_TI to LOONGARCH_CSR_TINTCLR will clear
+		 * timer interrupt, and CSR TVAL keeps unchanged with -1, it
+		 * avoids spurious timer interrupt
+		 */
+		if (!(estat & CPU_TIMER))
+			gcsr_write(CSR_TINTCLR_TI, LOONGARCH_CSR_TINTCLR);
+		return;
+	}
+
+	/*
+	 * Set remainder tick value if not expired
+	 */
+	delta = 0;
+	now = ktime_get();
+	expire = vcpu->arch.expire;
+	if (ktime_before(now, expire))
+		delta = ktime_to_tick(vcpu, ktime_sub(expire, now));
+	else if (cfg & CSR_TCFG_PERIOD) {
+		period = cfg & CSR_TCFG_VAL;
+		delta = ktime_to_tick(vcpu, ktime_sub(now, expire));
+		delta = period - (delta % period);
+
+		/*
+		 * Inject timer here though sw timer should inject timer
+		 * interrupt async already, since sw timer may be cancelled
+		 * during injecting intr async
+		 */
+		kvm_queue_irq(vcpu, INT_TI);
+	}
+
+	write_gcsr_timertick(delta);
 }
 
-
 /*
- * _kvm_save_timer() - Switch to software emulation of guest timer.
- * @vcpu:       Virtual CPU.
- *
  * Save guest timer state and switch to software emulation of guest
  * timer. The hard timer must already be in use, so preemption should be
  * disabled.
  */
-static ktime_t _kvm_save_timer(struct kvm_vcpu *vcpu, u64 *stable_timer)
+static void _kvm_save_timer(struct kvm_vcpu *vcpu)
 {
-	u64 end_stable_timer;
-	ktime_t before_time;
+	unsigned long ticks, delta, cfg;
+	ktime_t expire;
+	struct loongarch_csrs *csr = vcpu->arch.csr;
 
-	before_time = ktime_get();
+	cfg = kvm_read_sw_gcsr(csr, LOONGARCH_CSR_TCFG);
+	ticks = kvm_read_sw_gcsr(csr, LOONGARCH_CSR_TVAL);
 
 	/*
-	 * Record a final stable timer which we will transfer to the soft-timer.
+	 * From LoongArch Reference Manual Volume 1 Chapter 7.6.2
+	 * If period timer is fired, CSR TVAL will be reloaded from CSR TCFG
+	 * If oneshot timer is fired, CSR TVAL will be -1
+	 * Here judge one-shot timer fired by checking whether TVAL is larger
+	 * than TCFG
 	 */
-	end_stable_timer = kvm_read_gcsr_timertick();
-	*stable_timer = end_stable_timer;
+	if (ticks < cfg)
+		delta = tick_to_ns(vcpu, ticks);
+	else
+		delta = 0;
 
-	kvm_resume_hrtimer(vcpu, before_time, end_stable_timer);
-	return before_time;
+	expire = ktime_add_ns(ktime_get(), delta);
+	vcpu->arch.expire = expire;
+	if (kvm_vcpu_is_blocking(vcpu)) {
+
+		/*
+		 * HRTIMER_MODE_PINNED is suggested since vcpu may run in
+		 * the same physical cpu in next time
+		 */
+		hrtimer_start(&vcpu->arch.swtimer, expire, HRTIMER_MODE_ABS_PINNED);
+	}
 }
 
 /*
- * kvm_save_timer() - Save guest timer state.
- * @vcpu:       Virtual CPU.
- *
  * Save guest timer state and switch to soft guest timer if hard timer was in
  * use.
  */
 void kvm_save_timer(struct kvm_vcpu *vcpu)
 {
 	struct loongarch_csrs *csr = vcpu->arch.csr;
-	unsigned long guestcfg;
-	u64 stable_timer = 0;
-	ktime_t save_ktime;
 
 	preempt_disable();
-	guestcfg = kvm_read_csr_gcfg();
-	if (!(guestcfg & KVM_GCFG_TIT)) {
-		/* disable guest use of hard timer */
-		kvm_write_csr_gcfg(guestcfg | KVM_GCFG_TIT);
 
-		/* save hard timer state */
-		kvm_save_hw_gcsr(csr, KVM_CSR_TCFG);
-		if (kvm_read_sw_gcsr(csr, KVM_CSR_TCFG) & KVM_TCFG_EN) {
-			save_ktime = _kvm_save_timer(vcpu, &stable_timer);
-			kvm_write_sw_gcsr(csr, KVM_CSR_TVAL, stable_timer);
-			vcpu->arch.stable_ktime_saved = save_ktime;
-			if (stable_timer == IOCSR_TIMER_MASK)
-				_kvm_queue_irq(vcpu, LARCH_INT_TIMER);
-		} else {
-			kvm_save_hw_gcsr(csr, KVM_CSR_TVAL);
-		}
-	}
+	/* Save hard timer state */
+	kvm_save_hw_gcsr(csr, LOONGARCH_CSR_TCFG);
+	kvm_save_hw_gcsr(csr, LOONGARCH_CSR_TVAL);
+	if (kvm_read_sw_gcsr(csr, LOONGARCH_CSR_TCFG) & CSR_TCFG_EN)
+		_kvm_save_timer(vcpu);
 
-	/* save timer-related state to VCPU context */
-	kvm_save_hw_gcsr(csr, KVM_CSR_ESTAT);
+	/* Save timer-related state to vCPU context */
+	kvm_save_hw_gcsr(csr, LOONGARCH_CSR_ESTAT);
 	preempt_enable();
 }
 
 void kvm_reset_timer(struct kvm_vcpu *vcpu)
 {
-	kvm_write_gcsr_timercfg(0);
-	kvm_write_sw_gcsr(vcpu->arch.csr, KVM_CSR_TCFG, 0);
+	write_gcsr_timercfg(0);
+	kvm_write_sw_gcsr(vcpu->arch.csr, LOONGARCH_CSR_TCFG, 0);
 	hrtimer_cancel(&vcpu->arch.swtimer);
 }

@@ -37,7 +37,7 @@ struct boot_params {
 	void	*systemtable;
 	struct  _extention_list_hdr *extlist;
 	u64		flags;
-} __attribute__((packed));
+} __packed;
 
 struct _extention_list_hdr {
 	u64	signature;
@@ -45,7 +45,7 @@ struct _extention_list_hdr {
 	u8	revision;
 	u8	checksum;
 	struct  _extention_list_hdr *next;
-} __attribute__((packed));
+} __packed;
 
 struct loongsonlist_mem_map {
 	struct	_extention_list_hdr header;	/*{"M", "E", "M"}*/
@@ -54,15 +54,15 @@ struct loongsonlist_mem_map {
 		u32 mem_type;
 		u64 mem_start;
 		u64 mem_size;
-	} __attribute__((packed))map[LOONGSON3_BOOT_MEM_MAP_MAX];
-} __attribute__((packed));
+	} __packed map[LOONGSON3_BOOT_MEM_MAP_MAX];
+} __packed;
 
 struct loongsonlist_vbios {
 	struct	_extention_list_hdr header;	/* {VBIOS} */
 	u64	vbios_addr;
-} __attribute__((packed));
+} __packed;
 
-struct loongsonlist_screeninfo{
+struct loongsonlist_screeninfo {
 	struct  _extention_list_hdr header;
 	struct  screen_info si;
 };
@@ -87,6 +87,4 @@ extern int __init
 pch_msi_parse_madt(union acpi_subtable_headers *header,
 		const unsigned long end);
 extern struct irq_domain *get_pchpic_irq_domain(void);
-
-extern void __init loongarch_reserve_initrd_mem(void);
 #endif

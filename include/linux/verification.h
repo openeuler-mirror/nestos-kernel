@@ -8,7 +8,11 @@
 #ifndef _LINUX_VERIFICATION_H
 #define _LINUX_VERIFICATION_H
 
+#include <linux/errno.h>
+#include <linux/types.h>
+#ifdef CONFIG_IMA_DIGEST_LIST
 #include <linux/key.h>
+#endif
 
 /*
  * Indicate that both builtin trusted keys and secondary trusted keys
@@ -16,6 +20,14 @@
  */
 #define VERIFY_USE_SECONDARY_KEYRING ((struct key *)1UL)
 #define VERIFY_USE_PLATFORM_KEYRING  ((struct key *)2UL)
+
+static inline int system_keyring_id_check(u64 id)
+{
+	if (id > (unsigned long)VERIFY_USE_PLATFORM_KEYRING)
+		return -EINVAL;
+
+	return 0;
+}
 
 /*
  * The use to which an asymmetric key is being put.
@@ -60,8 +72,9 @@ extern int verify_pefile_signature(const void *pebuf, unsigned pelen,
 				   enum key_being_used_for usage);
 #endif
 
+#ifdef CONFIG_IMA_DIGEST_LIST
 struct key *search_trusted_key(struct key *trusted_keys, struct key_type *type,
 			       char *name);
-
+#endif /* CONFIG_IMA_DIGEST_LIST */
 #endif /* CONFIG_SYSTEM_DATA_VERIFICATION */
 #endif /* _LINUX_VERIFY_PEFILE_H */

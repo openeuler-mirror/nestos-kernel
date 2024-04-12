@@ -11,6 +11,8 @@
 
 #include "capabilities.h"
 
+#define ROL16(val, n) ((u16)(((u16)(val) << (n)) | ((u16)(val) >> (16 - (n)))))
+
 struct vmcs_hdr {
 	u32 revision_id:31;
 	u32 shadow_vmcs:1;
@@ -73,7 +75,7 @@ struct loaded_vmcs {
 	struct vmcs_controls_shadow controls_shadow;
 };
 
-static inline bool is_intr_type(u32 intr_info, u32 type)
+static __always_inline bool is_intr_type(u32 intr_info, u32 type)
 {
 	const u32 mask = INTR_INFO_VALID_MASK | INTR_INFO_INTR_TYPE_MASK;
 
@@ -144,7 +146,7 @@ static inline bool is_icebp(u32 intr_info)
 	return is_intr_type(intr_info, INTR_TYPE_PRIV_SW_EXCEPTION);
 }
 
-static inline bool is_nmi(u32 intr_info)
+static __always_inline bool is_nmi(u32 intr_info)
 {
 	return is_intr_type(intr_info, INTR_TYPE_NMI_INTR);
 }
@@ -178,6 +180,14 @@ static inline int vmcs_field_width(unsigned long field)
 static inline int vmcs_field_readonly(unsigned long field)
 {
 	return (((field >> 10) & 0x3) == 1);
+}
+
+#define VMCS_FIELD_INDEX_SHIFT		(1)
+#define VMCS_FIELD_INDEX_MASK		GENMASK(9, 1)
+
+static inline unsigned int vmcs_field_index(unsigned long field)
+{
+	return (field & VMCS_FIELD_INDEX_MASK) >> VMCS_FIELD_INDEX_SHIFT;
 }
 
 #endif /* __KVM_X86_VMX_VMCS_H */

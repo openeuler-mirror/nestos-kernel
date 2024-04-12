@@ -40,6 +40,7 @@
 #include "sss_nic_netdev_ops_api.h"
 #include "sss_nic_ntuple.h"
 #include "sss_nic_event.h"
+#include "sss_tool_nic_func.h"
 
 #define DEFAULT_POLL_BUDGET	64
 static u32 poll_budget = DEFAULT_POLL_BUDGET;
@@ -153,6 +154,7 @@ static void sss_nic_unregister_notifier(struct sss_nic_dev *nic_dev)
 	mutex_unlock(&g_netdev_notifier_mutex);
 }
 
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
 static u16 sss_nic_get_vlan_depth(struct net_device *dev)
 {
 	u16 vlan_depth = 0;
@@ -177,11 +179,14 @@ static void sss_nic_clear_netdev_vlan_offload(struct net_device *dev, u16 vlan_d
 		dev->features &= SSSNIC_VLAN_CLEAR_OFFLOAD;
 	}
 }
+#endif
 
 static int sss_nic_netdev_event_handler(struct notifier_block *notifier,
 					unsigned long event, void *ptr)
 {
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
 	u16 vlan_depth;
+#endif
 	struct net_device *real_dev = NULL;
 	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 
@@ -197,8 +202,10 @@ static int sss_nic_netdev_event_handler(struct notifier_block *notifier,
 	if (!sss_nic_is_netdev_ops_match(real_dev))
 		goto out;
 
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
 	vlan_depth = sss_nic_get_vlan_depth(dev);
 	sss_nic_clear_netdev_vlan_offload(dev, vlan_depth);
+#endif
 out:
 	dev_put(dev);
 
@@ -415,7 +422,7 @@ static int sss_nic_init_mac_addr(struct sss_nic_dev *nic_dev)
 	int ret;
 	struct net_device *netdev = nic_dev->netdev;
 
-	ret = sss_nic_get_default_mac(nic_dev, netdev->dev_addr);
+	ret = sss_nic_get_default_mac(nic_dev, (u8 *)(netdev->dev_addr));
 	if (ret != 0) {
 		nic_err(nic_dev->dev_hdl, "Fail to get MAC address\n");
 		return ret;
@@ -1021,6 +1028,7 @@ struct sss_uld_info g_nic_uld_info = {
 	.suspend = NULL,
 	.resume = NULL,
 	.event = sss_nic_event,
+	.ioctl = sss_tool_ioctl,
 };
 
 struct sss_uld_info *get_nic_uld_info(void)

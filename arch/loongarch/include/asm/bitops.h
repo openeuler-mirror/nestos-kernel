@@ -13,7 +13,6 @@
 
 #include <asm/barrier.h>
 
-#include <asm-generic/bitops/find.h>
 #include <asm-generic/bitops/builtin-ffs.h>
 #include <asm-generic/bitops/builtin-fls.h>
 #include <asm-generic/bitops/builtin-__ffs.h>

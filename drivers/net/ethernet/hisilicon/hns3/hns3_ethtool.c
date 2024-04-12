@@ -5,6 +5,7 @@
 #include <linux/string.h>
 #include <linux/phy.h>
 #include <linux/sfp.h>
+#include <net/page_pool/helpers.h>
 
 #include "hns3_enet.h"
 #include "hns3_ethtool.h"
@@ -228,7 +229,7 @@ static u32 hns3_lb_check_rx_ring(struct hns3_nic_priv *priv, u32 budget)
 }
 
 static void hns3_lb_clear_tx_ring(struct hns3_nic_priv *priv, u32 start_ringid,
-				  u32 end_ringid, u32 budget)
+				  u32 end_ringid)
 {
 	u32 i;
 
@@ -295,8 +296,7 @@ static int hns3_lp_run_test(struct net_device *ndev, enum hnae3_loop mode)
 
 out:
 	hns3_lb_clear_tx_ring(priv, HNS3_NIC_LB_TEST_RING_ID,
-			      HNS3_NIC_LB_TEST_RING_ID,
-			      HNS3_NIC_LB_TEST_PKT_NUM);
+			      HNS3_NIC_LB_TEST_RING_ID);
 
 	kfree_skb(skb);
 	return ret_val;
@@ -477,40 +477,36 @@ static void hns3_update_fd_qb_state(struct net_device *netdev, bool enable)
 	handle->ae_algo->ops->request_flush_qb_config(handle);
 }
 
-static void hns3_update_state(struct net_device *netdev,
-			      enum hns3_nic_state state, bool enable)
+static void hns3_update_roh_arp_proxy_enable(struct net_device *netdev,
+					     bool enable)
 {
-	struct hns3_nic_priv *priv = netdev_priv(netdev);
-
-	if (enable)
-		set_bit(state, &priv->state);
-	else
-		clear_bit(state, &priv->state);
-}
-
-static void hns3_update_push_state(struct net_device *netdev, bool enable)
-{
-	hns3_update_state(netdev, HNS3_NIC_STATE_TX_PUSH_ENABLE, enable);
+	netdev_info(netdev, "%s roh arp proxy\n",
+		    enable ? "enable" : "disable");
 }
 
 static const struct hns3_pflag_desc hns3_priv_flags[HNAE3_PFLAG_MAX] = {
 	{ "limit_promisc",	hns3_update_limit_promisc_mode },
-	{ "tx_push_enable",	hns3_update_push_state },
 	{ "qb_enable",		hns3_update_fd_qb_state },
+	{ "roh_arp_proxy_enable",	hns3_update_roh_arp_proxy_enable },
 };
 
 static int hns3_get_sset_count(struct net_device *netdev, int stringset)
 {
 	struct hnae3_handle *h = hns3_get_handle(netdev);
 	const struct hnae3_ae_ops *ops = h->ae_algo->ops;
+	int pp_stats_count = 0;
 
 	if (!ops->get_sset_count)
 		return -EOPNOTSUPP;
 
 	switch (stringset) {
 	case ETH_SS_STATS:
+#ifdef CONFIG_PAGE_POOL_STATS
+		if (hns3_is_page_pool_enabled())
+			pp_stats_count = page_pool_ethtool_stats_get_count();
+#endif
 		return ((HNS3_TQP_STATS_COUNT * h->kinfo.num_tqps) +
-			ops->get_sset_count(h, stringset));
+			ops->get_sset_count(h, stringset) + pp_stats_count);
 
 	case ETH_SS_TEST:
 		return ops->get_sset_count(h, stringset);
@@ -578,6 +574,10 @@ static void hns3_get_strings(struct net_device *netdev, u32 stringset, u8 *data)
 
 	switch (stringset) {
 	case ETH_SS_STATS:
+#ifdef CONFIG_PAGE_POOL_STATS
+		if (hns3_is_page_pool_enabled())
+			buff = page_pool_ethtool_stats_get_strings(buff);
+#endif
 		buff = hns3_get_strings_tqps(h, buff);
 		ops->get_strings(h, stringset, (u8 *)buff);
 		break;
@@ -598,8 +598,8 @@ static void hns3_get_strings(struct net_device *netdev, u32 stringset, u8 *data)
 
 static u64 *hns3_get_stats_tqps(struct hnae3_handle *handle, u64 *data)
 {
-	struct hns3_nic_priv *nic_priv = (struct hns3_nic_priv *)handle->priv;
 	struct hnae3_knic_private_info *kinfo = &handle->kinfo;
+	struct hns3_nic_priv *nic_priv = handle->priv;
 	struct hns3_enet_ring *ring;
 	u8 *stat;
 	int i, j;
@@ -625,6 +625,28 @@ static u64 *hns3_get_stats_tqps(struct hnae3_handle *handle, u64 *data)
 	return data;
 }
 
+#ifdef CONFIG_PAGE_POOL_STATS
+static u64 *hns3_ethtool_pp_stats(struct hnae3_handle *handle, u64 *data)
+{
+	struct hns3_nic_priv *priv = handle->priv;
+	int ring_num = handle->kinfo.num_tqps;
+	struct page_pool_stats stats = {0};
+	struct page_pool *page_pool;
+	int i;
+
+	if (!hns3_is_page_pool_enabled())
+		return data;
+
+	for (i = 0; i < ring_num; i++) {
+		page_pool = priv->ring[i + ring_num].page_pool;
+		if (page_pool)
+			page_pool_get_stats(page_pool, &stats);
+	}
+
+	return page_pool_ethtool_stats_get(data, &stats);
+}
+#endif
+
 /* hns3_get_stats - get detail statistics.
  * @netdev: net device
  * @stats: statistics info.
@@ -646,7 +668,11 @@ static void hns3_get_stats(struct net_device *netdev,
 		return;
 	}
 
-	h->ae_algo->ops->update_stats(h, &netdev->stats);
+#ifdef CONFIG_PAGE_POOL_STATS
+	p = hns3_ethtool_pp_stats(h, p);
+#endif
+
+	h->ae_algo->ops->update_stats(h);
 
 	/* get per-queue stats */
 	p = hns3_get_stats_tqps(h, p);
@@ -667,13 +693,11 @@ static void hns3_get_drvinfo(struct net_device *netdev,
 		return;
 	}
 
-	strncpy(drvinfo->driver, dev_driver_string(&h->pdev->dev),
+	strscpy(drvinfo->driver, dev_driver_string(&h->pdev->dev),
 		sizeof(drvinfo->driver));
-	drvinfo->driver[sizeof(drvinfo->driver) - 1] = '\0';
 
-	strncpy(drvinfo->bus_info, pci_name(h->pdev),
+	strscpy(drvinfo->bus_info, pci_name(h->pdev),
 		sizeof(drvinfo->bus_info));
-	drvinfo->bus_info[ETHTOOL_BUSINFO_LEN - 1] = '\0';
 
 	fw_version = priv->ae_handle->ae_algo->ops->get_fw_version(h);
 
@@ -719,6 +743,8 @@ static void hns3_get_ringparam(struct net_device *netdev,
 	param->tx_pending = priv->ring[0].desc_num;
 	param->rx_pending = priv->ring[rx_queue_index].desc_num;
 	kernel_param->rx_buf_len = priv->ring[rx_queue_index].buf_size;
+	kernel_param->tx_push = test_bit(HNS3_NIC_STATE_TX_PUSH_ENABLE,
+					 &priv->state);
 }
 
 static void hns3_get_pauseparam(struct net_device *netdev,
@@ -765,7 +791,8 @@ static void hns3_get_ksettings(struct hnae3_handle *h,
 		ops->get_ksettings_an_result(h,
 					     &cmd->base.autoneg,
 					     &cmd->base.speed,
-					     &cmd->base.duplex);
+					     &cmd->base.duplex,
+					     &cmd->lanes);
 
 	/* 2.get link mode */
 	if (ops->get_link_mode)
@@ -801,7 +828,9 @@ static int hns3_get_link_ksettings(struct net_device *netdev,
 		hns3_get_ksettings(h, cmd);
 		break;
 	case HNAE3_MEDIA_TYPE_FIBER:
-		if (module_type == HNAE3_MODULE_TYPE_CR)
+		if (module_type == HNAE3_MODULE_TYPE_UNKNOWN)
+			cmd->base.port = PORT_OTHER;
+		else if (module_type == HNAE3_MODULE_TYPE_CR)
 			cmd->base.port = PORT_DA;
 		else
 			cmd->base.port = PORT_FIBRE;
@@ -847,6 +876,7 @@ static int hns3_check_ksettings_param(const struct net_device *netdev,
 	const struct hnae3_ae_ops *ops = handle->ae_algo->ops;
 	u8 module_type = HNAE3_MODULE_TYPE_UNKNOWN;
 	u8 media_type = HNAE3_MEDIA_TYPE_UNKNOWN;
+	u32 lane_num;
 	u8 autoneg;
 	u32 speed;
 	u8 duplex;
@@ -859,9 +889,9 @@ static int hns3_check_ksettings_param(const struct net_device *netdev,
 		return 0;
 
 	if (ops->get_ksettings_an_result) {
-		ops->get_ksettings_an_result(handle, &autoneg, &speed, &duplex);
+		ops->get_ksettings_an_result(handle, &autoneg, &speed, &duplex, &lane_num);
 		if (cmd->base.autoneg == autoneg && cmd->base.speed == speed &&
-		    cmd->base.duplex == duplex)
+		    cmd->base.duplex == duplex && cmd->lanes == lane_num)
 			return 0;
 	}
 
@@ -898,10 +928,14 @@ static int hns3_set_link_ksettings(struct net_device *netdev,
 	if (cmd->base.speed == SPEED_1000 && cmd->base.duplex == DUPLEX_HALF)
 		return -EINVAL;
 
+	if (cmd->lanes && !hnae3_ae_dev_lane_num_supported(ae_dev))
+		return -EOPNOTSUPP;
+
 	netif_dbg(handle, drv, netdev,
-		  "set link(%s): autoneg=%u, speed=%u, duplex=%u\n",
+		  "set link(%s): autoneg=%u, speed=%u, duplex=%u, lanes=%u\n",
 		  netdev->phydev ? "phy" : "mac",
-		  cmd->base.autoneg, cmd->base.speed, cmd->base.duplex);
+		  cmd->base.autoneg, cmd->base.speed, cmd->base.duplex,
+		  cmd->lanes);
 
 	/* Only support ksettings_set for netdev with phy attached for now */
 	if (netdev->phydev) {
@@ -939,7 +973,7 @@ static int hns3_set_link_ksettings(struct net_device *netdev,
 
 	if (ops->cfg_mac_speed_dup_h)
 		ret = ops->cfg_mac_speed_dup_h(handle, cmd->base.speed,
-					       cmd->base.duplex);
+					       cmd->base.duplex, (u8)(cmd->lanes));
 
 	return ret;
 }
@@ -1205,6 +1239,30 @@ static int hns3_change_rx_buf_len(struct net_device *ndev, u32 rx_buf_len)
 	return 0;
 }
 
+static int hns3_set_tx_push(struct net_device *netdev, u32 tx_push)
+{
+	struct hns3_nic_priv *priv = netdev_priv(netdev);
+	struct hnae3_handle *h = hns3_get_handle(netdev);
+	struct hnae3_ae_dev *ae_dev = pci_get_drvdata(h->pdev);
+	u32 old_state = test_bit(HNS3_NIC_STATE_TX_PUSH_ENABLE, &priv->state);
+
+	if (!test_bit(HNAE3_DEV_SUPPORT_TX_PUSH_B, ae_dev->caps) && tx_push)
+		return -EOPNOTSUPP;
+
+	if (tx_push == old_state)
+		return 0;
+
+	netdev_dbg(netdev, "Changing tx push from %s to %s\n",
+		   old_state ? "on" : "off", tx_push ? "on" : "off");
+
+	if (tx_push)
+		set_bit(HNS3_NIC_STATE_TX_PUSH_ENABLE, &priv->state);
+	else
+		clear_bit(HNS3_NIC_STATE_TX_PUSH_ENABLE, &priv->state);
+
+	return 0;
+}
+
 static int hns3_set_ringparam(struct net_device *ndev,
 			      struct ethtool_ringparam *param,
 			      struct kernel_ethtool_ringparam *kernel_param,
@@ -1218,6 +1276,10 @@ static int hns3_set_ringparam(struct net_device *ndev,
 	int ret, i;
 
 	ret = hns3_check_ringparam(ndev, param, kernel_param);
+	if (ret)
+		return ret;
+
+	ret = hns3_set_tx_push(ndev, kernel_param->tx_push);
 	if (ret)
 		return ret;
 
@@ -1637,6 +1699,19 @@ static void hns3_set_msglevel(struct net_device *netdev, u32 msg_level)
 	h->msg_enable = msg_level;
 }
 
+static void hns3_get_fec_stats(struct net_device *netdev,
+			       struct ethtool_fec_stats *fec_stats)
+{
+	struct hnae3_handle *handle = hns3_get_handle(netdev);
+	struct hnae3_ae_dev *ae_dev = pci_get_drvdata(handle->pdev);
+	const struct hnae3_ae_ops *ops = handle->ae_algo->ops;
+
+	if (!hnae3_ae_dev_fec_stats_supported(ae_dev) || !ops->get_fec_stats)
+		return;
+
+	ops->get_fec_stats(handle, fec_stats);
+}
+
 /* Translate local fec value into ethtool value. */
 static unsigned int loc_to_eth_fec(u8 loc_fec)
 {
@@ -1762,6 +1837,14 @@ static int hns3_get_module_info(struct net_device *netdev,
 	case SFF8024_ID_QSFP28_8636:
 		modinfo->type = ETH_MODULE_SFF_8636;
 		modinfo->eeprom_len = ETH_MODULE_SFF_8636_MAX_LEN;
+		break;
+	case SFF8024_ID_QSFP_DD:
+	case SFF8024_ID_QSFP_PLUS_CMIS:
+		modinfo->type = ETH_MODULE_SFF_8636;
+		if (sfp_type.flat_mem & HNS3_CMIS_FLAT_MEMORY)
+			modinfo->eeprom_len = ETH_MODULE_SFF_8636_LEN;
+		else
+			modinfo->eeprom_len = ETH_MODULE_SFF_8472_LEN;
 		break;
 	default:
 		netdev_err(netdev, "Optical module unknown: %#x\n",
@@ -1965,7 +2048,8 @@ static int hns3_set_tunable(struct net_device *netdev,
 				 ETHTOOL_COALESCE_MAX_FRAMES |		\
 				 ETHTOOL_COALESCE_USE_CQE)
 
-#define HNS3_ETHTOOL_RING	ETHTOOL_RING_USE_RX_BUF_LEN
+#define HNS3_ETHTOOL_RING	(ETHTOOL_RING_USE_RX_BUF_LEN |		\
+				 ETHTOOL_RING_USE_TX_PUSH)
 
 static int hns3_get_ts_info(struct net_device *netdev,
 			    struct ethtool_ts_info *info)
@@ -2103,6 +2187,7 @@ static const struct ethtool_ops hns3vf_ethtool_ops = {
 static const struct ethtool_ops hns3_ethtool_ops = {
 	.supported_coalesce_params = HNS3_ETHTOOL_COALESCE,
 	.supported_ring_params = HNS3_ETHTOOL_RING,
+	.cap_link_lanes_supported = true,
 	.self_test = hns3_self_test,
 	.get_drvinfo = hns3_get_drvinfo,
 	.get_link = hns3_get_link,
@@ -2133,6 +2218,7 @@ static const struct ethtool_ops hns3_ethtool_ops = {
 	.set_msglevel = hns3_set_msglevel,
 	.get_fecparam = hns3_get_fecparam,
 	.set_fecparam = hns3_set_fecparam,
+	.get_fec_stats = hns3_get_fec_stats,
 	.get_module_info = hns3_get_module_info,
 	.get_module_eeprom = hns3_get_module_eeprom,
 	.get_priv_flags = hns3_get_priv_flags,

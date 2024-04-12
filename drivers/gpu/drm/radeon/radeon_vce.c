@@ -68,7 +68,6 @@ int radeon_vce_init(struct radeon_device *rdev)
 	case CHIP_TAHITI:
 	case CHIP_PITCAIRN:
 	case CHIP_VERDE:
-	case CHIP_OLAND:
 	case CHIP_ARUBA:
 		fw_name = FIRMWARE_TAHITI;
 		break;
@@ -96,7 +95,7 @@ int radeon_vce_init(struct radeon_device *rdev)
 
 	size = rdev->vce_fw->size - strlen(fw_version) - 9;
 	c = rdev->vce_fw->data;
-	for (;size > 0; --size, ++c)
+	for (; size > 0; --size, ++c)
 		if (strncmp(c, fw_version, strlen(fw_version)) == 0)
 			break;
 
@@ -111,7 +110,7 @@ int radeon_vce_init(struct radeon_device *rdev)
 
 	size = rdev->vce_fw->size - strlen(fb_version) - 3;
 	c = rdev->vce_fw->data;
-	for (;size > 0; --size, ++c)
+	for (; size > 0; --size, ++c)
 		if (strncmp(c, fb_version, strlen(fb_version)) == 0)
 			break;
 
@@ -122,7 +121,7 @@ int radeon_vce_init(struct radeon_device *rdev)
 	if (sscanf(c, "%2u]", &rdev->vce.fb_version) != 1)
 		return -EINVAL;
 
-	DRM_INFO("Found VCE firmware/feedback version %hhd.%hhd.%hhd / %d!\n",
+	DRM_INFO("Found VCE firmware/feedback version %d.%d.%d / %d!\n",
 		 start, mid, end, rdev->vce.fb_version);
 
 	rdev->vce.fw_version = (start << 24) | (mid << 16) | (end << 8);
@@ -239,19 +238,11 @@ int radeon_vce_resume(struct radeon_device *rdev)
 		return r;
 	}
 
-#ifdef __sw_64__
-	memset_io(cpu_addr, 0, radeon_bo_size(rdev->vce.vcpu_bo));
-#else
 	memset(cpu_addr, 0, radeon_bo_size(rdev->vce.vcpu_bo));
-#endif
 	if (rdev->family < CHIP_BONAIRE)
 		r = vce_v1_0_load_fw(rdev, cpu_addr);
-	else {
-		if (IS_ENABLED(CONFIG_SW64))
-			memcpy_toio(cpu_addr, rdev->vce_fw->data, rdev->vce_fw->size);
-		else
-			memcpy(cpu_addr, rdev->vce_fw->data, rdev->vce_fw->size);
-	}
+	else
+		memcpy(cpu_addr, rdev->vce_fw->data, rdev->vce_fw->size);
 
 	radeon_bo_kunmap(rdev->vce.vcpu_bo);
 
@@ -522,7 +513,7 @@ int radeon_vce_cs_reloc(struct radeon_cs_parser *p, int lo, int hi,
  * @allocated: allocated a new handle?
  *
  * Validates the handle and return the found session index or -EINVAL
- * we we don't have another free session index.
+ * we don't have another free session index.
  */
 static int radeon_vce_validate_handle(struct radeon_cs_parser *p,
 				      uint32_t handle, bool *allocated)

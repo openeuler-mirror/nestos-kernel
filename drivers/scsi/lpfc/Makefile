@@ -21,11 +21,7 @@
 # *******************************************************************/
 ######################################################################
 
-ifeq ($(CONFIG_PGO_KERNEL),y)
-ccflags-$(GCOV) := -fprofile-generate -ftest-coverage
-else
 ccflags-$(GCOV) := -fprofile-arcs -ftest-coverage
-endif
 ccflags-$(GCOV) += -O0
 
 ifdef WARNINGS_BECOME_ERRORS
@@ -37,4 +33,4 @@ obj-$(CONFIG_SCSI_LPFC) := lpfc.o
 lpfc-objs := lpfc_mem.o lpfc_sli.o lpfc_ct.o lpfc_els.o \
 	lpfc_hbadisc.o	lpfc_init.o lpfc_mbox.o lpfc_nportdisc.o   \
 	lpfc_scsi.o lpfc_attr.o lpfc_vport.o lpfc_debugfs.o lpfc_bsg.o \
-	lpfc_nvme.o lpfc_nvmet.o
+	lpfc_nvme.o lpfc_nvmet.o lpfc_vmid.o

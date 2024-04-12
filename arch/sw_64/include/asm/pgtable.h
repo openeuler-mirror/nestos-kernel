@@ -15,27 +15,13 @@
 #include <linux/mmzone.h>
 #include <linux/mm_types.h>
 
+#include <asm/memory.h>
 #include <asm/page.h>
 #include <asm/processor.h>	/* For TASK_SIZE */
 #include <asm/setup.h>
 
 struct mm_struct;
 struct vm_area_struct;
-
-/* Certain architectures need to do special things when PTEs
- * within a page table are directly modified.  Thus, the following
- * hook is made available.
- */
-static inline void set_pte(pte_t *ptep, pte_t pteval)
-{
-	*ptep = pteval;
-}
-
-static inline void set_pte_at(struct mm_struct *mm, unsigned long addr,
-			      pte_t *ptep, pte_t pteval)
-{
-	set_pte(ptep, pteval);
-}
 
 static inline void set_pmd(pmd_t *pmdp, pmd_t pmd)
 {
@@ -72,6 +58,11 @@ static inline void set_p4d(p4d_t *p4dp, p4d_t p4d)
 #define PMD_SIZE	(1UL << PMD_SHIFT)
 #define PMD_MASK	(~(PMD_SIZE - 1))
 
+#define CONT_PMD_SHIFT		6
+#define CONT_PMDS		(1 << CONT_PMD_SHIFT)
+#define CONT_PMD_SIZE		(CONT_PMDS * PMD_SIZE)
+#define CONT_PMD_MASK		(~(CONT_PMD_SIZE - 1))
+
 /*
  * Entries per page directory level:  the sw64 is three-level, with
  * all levels having a one-page page table.
@@ -92,20 +83,23 @@ static inline void set_p4d(p4d_t *p4dp, p4d_t p4d)
 #define VMALLOC_END	(-PGDIR_SIZE)
 #else
 #define VMEMMAP_END	(-PGDIR_SIZE)
-#define vmemmap		((struct page *)VMEMMAP_END - (1UL << (3 * (PAGE_SHIFT - 3))))
+#define vmemmap		((struct page *)VMEMMAP_END - (1UL << (MAX_PHYSMEM_BITS - PAGE_SHIFT)))
 #define VMALLOC_END	((unsigned long)vmemmap)
 #endif
 
 /*
  * HMcode-imposed page table bits
  */
+#if defined(CONFIG_SUBARCH_C3B)
+
 #define _PAGE_VALID	0x0001
+#define _PAGE_PRESENT	_PAGE_VALID
 #define _PAGE_FOR	0x0002	/* used for page protection (fault on read) */
 #define _PAGE_FOW	0x0004	/* used for page protection (fault on write) */
 #define _PAGE_FOE	0x0008	/* used for page protection (fault on exec) */
 #define _PAGE_ASM	0x0010
-#define _PAGE_PHU	0x0020  /* used for 256M page size bit */
-#define _PAGE_PSE	0x0040  /* used for 8M page size bit */
+#define _PAGE_CONT	0x0020  /* used for 256M page size bit */
+#define _PAGE_LEAF	0x0040  /* used for 8M page size bit */
 #define _PAGE_PROTNONE	0x0080  /* used for numa page balancing */
 #define _PAGE_SPECIAL	0x0100
 #define _PAGE_KRE	0x0400	/* xxx - see below on the "accessed" bit */
@@ -117,12 +111,13 @@ static inline void set_p4d(p4d_t *p4dp, p4d_t p4d)
 #define _PAGE_DIRTY	0x20000
 #define _PAGE_ACCESSED	0x40000
 
-#define _PAGE_BIT_ACCESSED	18		/* bit of _PAGE_ACCESSED */
-#define _PAGE_BIT_FOW		2		/* bit of _PAGE_FOW */
 #define _PAGE_SPLITTING		0x200000	/* For Transparent Huge Page */
+#define _PAGE_DEVMAP		0x400000	/* For ZONE DEVICE page */
+
+#define _PAGE_BIT_FOW		2		/* bit of _PAGE_FOW */
+#define _PAGE_BIT_ACCESSED	18		/* bit of _PAGE_ACCESSED */
 #define _PAGE_BIT_SPLITTING	21		/* bit of _PAGE_SPLITTING */
 #define _PAGE_BIT_DEVMAP	22		/* bit of _PAGE_DEVMAP */
-
 /*
  * NOTE! The "accessed" bit isn't necessarily exact:  it can be kept exactly
  * by software (use the KRE/URE/KWE/UWE bits appropriately), but I'll fake it.
@@ -134,16 +129,13 @@ static inline void set_p4d(p4d_t *p4dp, p4d_t p4d)
  * out a page or not, so it doesn't have to be exact anyway.
  */
 
+/* Used for swap PTEs only. */
+#define _PAGE_SWP_EXCLUSIVE	_BITUL(5)
+
 #define __DIRTY_BITS	(_PAGE_DIRTY | _PAGE_KWE | _PAGE_UWE)
 #define __ACCESS_BITS	(_PAGE_ACCESSED | _PAGE_KRE | _PAGE_URE)
 
-
 #define _PFN_SHIFT	28
-#define _PFN_MASK	((-1UL) << _PFN_SHIFT)
-
-#define _PAGE_TABLE	(_PAGE_VALID | __DIRTY_BITS | __ACCESS_BITS)
-#define _PAGE_CHG_MASK	(_PFN_MASK | __DIRTY_BITS | __ACCESS_BITS | _PAGE_SPECIAL)
-#define _HPAGE_CHG_MASK (_PAGE_CHG_MASK | _PAGE_PSE | _PAGE_PHU)
 
 /*
  * All the normal masks have the "page accessed" bits on, as any time they are used,
@@ -156,34 +148,66 @@ static inline void set_p4d(p4d_t *p4dp, p4d_t p4d)
 #define PAGE_KERNEL	__pgprot(_PAGE_VALID | _PAGE_ASM | _PAGE_KRE | _PAGE_KWE)
 #define _PAGE_NORMAL(x)	__pgprot(_PAGE_VALID | __ACCESS_BITS | (x))
 
-#define _PAGE_P(x)	_PAGE_NORMAL((x) | _PAGE_FOW)
-#define _PAGE_S(x)	_PAGE_NORMAL(x)
+#define page_valid_kern(x)	(0)
+
+#elif defined(CONFIG_SUBARCH_C4)
+
+#define _PAGE_VALID	0x0001
+#define _PAGE_PRESENT	_PAGE_VALID
+#define _PAGE_FOR	0x0002	/* used for page protection (fault on read) */
+#define _PAGE_FOW	0x0004	/* used for page protection (fault on write) */
+#define _PAGE_FOE	0x0008	/* used for page protection (fault on exec) */
+#define _PAGE_FIXED	0x0010
+#define _PAGE_CONT	0x0020	/* used for 512M page size bit*/
+#define _PAGE_LEAF	0x0040	/* used for huge page bit */
+#define _PAGE_PCD	0x0080	/* used for page cache disabled */
+
+/* and these are sw definition */
+#define _PAGE_WCD	0x0100
+#define _PAGE_ACCESSED	0x0200
+#define _PAGE_SPLITTING	0x0400	/* For Transparent Huge Page */
+#define _PAGE_SPECIAL	0x0800
+#define _PAGE_DEVMAP	0x1000	/* For ZONE DEVICE page */
+#define _PAGE_KERN	0x2000
+#define _PAGE_DIRTY	_BITUL(62)
+#define _PAGE_PROTNONE	_BITUL(63)
+#define _PAGE_BIT_FOW		2	/* bit of _PAGE_FOW */
+#define _PAGE_BIT_ACCESSED	9	/* bit of _PAGE_ACCESSED */
+#define _PAGE_BIT_SPLITTING	10	/* bit of _PAGE_SPLITTING */
+#define _PAGE_BIT_DEVMAP	12	/* bit of _PAGE_DEVMAP */
+
+/* Used for swap PTEs only. */
+#define _PAGE_SWP_EXCLUSIVE	_BITUL(5)
+
+#define __DIRTY_BITS		_PAGE_DIRTY
+#define __ACCESS_BITS		_PAGE_ACCESSED
+
+#define _PFN_SHIFT	24
 
 /*
- * The hardware can handle write-only mappings, but as the sw64
- * architecture does byte-wide writes with a read-modify-write
- * sequence, it's not practical to have write-without-read privs.
- * Thus the "-w- -> rw-" and "-wx -> rwx" mapping here (and in
- * arch/sw_64/mm/fault.c)
+ * All the normal masks have the "page accessed" bits on, as any time they are used,
+ * the page is accessed. They are cleared only by the page-out routines
  */
-	/* xwr */
-#define __P000		_PAGE_P(_PAGE_FOE | _PAGE_FOW | _PAGE_FOR)
-#define __P001		_PAGE_P(_PAGE_FOE | _PAGE_FOW)
-#define __P010		_PAGE_P(_PAGE_FOE)
-#define __P011		_PAGE_P(_PAGE_FOE)
-#define __P100		_PAGE_P(_PAGE_FOW | _PAGE_FOR)
-#define __P101		_PAGE_P(_PAGE_FOW)
-#define __P110		_PAGE_P(0)
-#define __P111		_PAGE_P(0)
+#define PAGE_NONE		__pgprot(__ACCESS_BITS | _PAGE_FOR | _PAGE_FOW | _PAGE_FOE | _PAGE_LEAF | _PAGE_PROTNONE)
+#define PAGE_SHARED		__pgprot(_PAGE_VALID | __ACCESS_BITS | _PAGE_LEAF)
+#define PAGE_COPY		__pgprot(_PAGE_VALID | __ACCESS_BITS | _PAGE_FOW | _PAGE_LEAF)
+#define PAGE_READONLY		__pgprot(_PAGE_VALID | __ACCESS_BITS | _PAGE_FOW | _PAGE_LEAF)
+#define PAGE_KERNEL		__pgprot(_PAGE_VALID | _PAGE_KERN | _PAGE_LEAF)
+#define _PAGE_NORMAL(x)		__pgprot(_PAGE_VALID | __ACCESS_BITS | _PAGE_LEAF | (x))
 
-#define __S000		_PAGE_S(_PAGE_FOE | _PAGE_FOW | _PAGE_FOR)
-#define __S001		_PAGE_S(_PAGE_FOE | _PAGE_FOW)
-#define __S010		_PAGE_S(_PAGE_FOE)
-#define __S011		_PAGE_S(_PAGE_FOE)
-#define __S100		_PAGE_S(_PAGE_FOW | _PAGE_FOR)
-#define __S101		_PAGE_S(_PAGE_FOW)
-#define __S110		_PAGE_S(0)
-#define __S111		_PAGE_S(0)
+#define page_valid_kern(x)	((x & (_PAGE_VALID | _PAGE_KERN)) == (_PAGE_VALID | _PAGE_KERN))
+#endif
+
+#define PFN_PTE_SHIFT	_PFN_SHIFT
+
+#define _PFN_BITS	(MAX_PHYSMEM_BITS - PAGE_SHIFT)
+#define _PFN_MASK	(GENMASK(_PFN_BITS - 1, 0) << _PFN_SHIFT)
+
+#define _PAGE_TABLE	(_PAGE_VALID | __DIRTY_BITS | __ACCESS_BITS)
+#define _PAGE_CHG_MASK	(_PFN_MASK | __DIRTY_BITS | __ACCESS_BITS | _PAGE_SPECIAL | _PAGE_LEAF | _PAGE_CONT)
+
+#define _PAGE_P(x)	_PAGE_NORMAL((x) | _PAGE_FOW)
+#define _PAGE_S(x)	_PAGE_NORMAL(x)
 
 /*
  * pgprot_noncached() is only for infiniband pci support, and a real
@@ -195,9 +219,19 @@ static inline void set_p4d(p4d_t *p4dp, p4d_t p4d)
  * ZERO_PAGE is a global shared page that is always zero:  used
  * for zero-mapped memory areas etc..
  */
+extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+#define ZERO_PAGE(vaddr)	(virt_to_page(empty_zero_page))
 
-extern struct page *empty_zero_page;
-#define ZERO_PAGE(vaddr)		(empty_zero_page)
+static inline void set_pte(pte_t *ptep, pte_t pteval)
+{
+	*ptep = pteval;
+
+	if (page_valid_kern(pte_val(pteval))) {
+		mb();
+		if ((pte_val(pteval) & _PAGE_FOE) == 0)
+			imemb();
+	}
+}
 
 static inline pte_t pfn_pte(unsigned long pfn, pgprot_t prot)
 {
@@ -214,6 +248,13 @@ static inline pmd_t pfn_pmd(unsigned long pfn, pgprot_t prot)
 	pmd_val(pmd) = (pfn << _PFN_SHIFT) | pgprot_val(prot);
 	return pmd;
 }
+static inline pud_t pfn_pud(unsigned long pfn, pgprot_t pgprot)
+{
+	pud_t pud;
+
+	pud_val(pud) = (pfn << _PFN_SHIFT) | pgprot_val(pgprot);
+	return pud;
+}
 
 static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 {
@@ -223,13 +264,8 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 
 static inline pmd_t pmd_modify(pmd_t pmd, pgprot_t newprot)
 {
-	pmd_val(pmd) = (pmd_val(pmd) & _HPAGE_CHG_MASK) | pgprot_val(newprot);
+	pmd_val(pmd) = (pmd_val(pmd) & _PAGE_CHG_MASK) | pgprot_val(newprot);
 	return pmd;
-}
-
-static inline unsigned long pmd_page_vaddr(pmd_t pmd)
-{
-	return (unsigned long)pfn_to_virt(pmd_val(pmd) >> _PFN_SHIFT);
 }
 
 /*
@@ -238,25 +274,41 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
  */
 #define page_to_pa(page)	(page_to_pfn(page) << PAGE_SHIFT)
 
-#define pud_pfn(pud)		(pud_val(pud) >> _PFN_SHIFT)
-#define pmd_pfn(pmd)		(pmd_val(pmd) >> _PFN_SHIFT)
-#define pte_pfn(pte)		(pte_val(pte) >> _PFN_SHIFT)
+#define p4d_pfn(p4d)		((p4d_val(p4d) & _PFN_MASK) >> _PFN_SHIFT)
+#define pud_pfn(pud)		((pud_val(pud) & _PFN_MASK) >> _PFN_SHIFT)
+#define pmd_pfn(pmd)		((pmd_val(pmd) & _PFN_MASK) >> _PFN_SHIFT)
+#define pte_pfn(pte)		((pte_val(pte) & _PFN_MASK) >> _PFN_SHIFT)
 
+#define p4d_page(p4d)		pfn_to_page(p4d_pfn(p4d))
+#define pud_page(pud)		pfn_to_page(pud_pfn(pud))
+#define pmd_page(pmd)		pfn_to_page(pmd_pfn(pmd))
 #define pte_page(pte)		pfn_to_page(pte_pfn(pte))
+
 #define mk_pte(page, prot)	pfn_pte(page_to_pfn(page), prot)
-
-#define pmd_page(pmd)		(pfn_to_page(pmd_val(pmd) >> _PFN_SHIFT))
-#define pud_page(pud)		(pfn_to_page(pud_val(pud) >> _PFN_SHIFT))
-#define p4d_page(p4d)		(pfn_to_page(p4d_val(p4d) >> _PFN_SHIFT))
-
-static inline pud_t *p4d_pgtable(p4d_t p4d)
-{
-	return (pud_t *)pfn_to_virt(p4d_val(p4d) >> _PFN_SHIFT);
-}
 
 static inline pmd_t *pud_pgtable(pud_t pud)
 {
-	return (pmd_t *)pfn_to_virt(pud_val(pud) >> _PFN_SHIFT);
+	return (pmd_t *)pfn_to_virt(pud_pfn(pud));
+}
+
+static inline pud_t *p4d_pgtable(p4d_t p4d)
+{
+	return (pud_t *)pfn_to_virt(p4d_pfn(p4d));
+}
+
+static inline unsigned long p4d_page_vaddr(p4d_t p4d)
+{
+	return (unsigned long)pfn_to_virt(p4d_pfn(p4d));
+}
+
+static inline unsigned long pud_page_vaddr(pud_t pud)
+{
+	return (unsigned long)pfn_to_virt(pud_pfn(pud));
+}
+
+static inline unsigned long pmd_page_vaddr(pmd_t pmd)
+{
+	return (unsigned long)pfn_to_virt(pmd_pfn(pmd));
 }
 
 static inline int pte_none(pte_t pte)
@@ -264,14 +316,19 @@ static inline int pte_none(pte_t pte)
 	return !pte_val(pte);
 }
 
+static inline int pte_valid(pte_t pte)
+{
+	return !!(pte_val(pte) & _PAGE_VALID);
+}
+
 static inline int pte_present(pte_t pte)
 {
-	return pte_val(pte) & (_PAGE_VALID | _PAGE_PROTNONE);
+	return !!(pte_val(pte) & (_PAGE_VALID | _PAGE_PROTNONE));
 }
 
 static inline int pte_huge(pte_t pte)
 {
-	return pte_val(pte) & _PAGE_PSE;
+	return !!(pte_val(pte) & _PAGE_LEAF);
 }
 
 static inline void pte_clear(struct mm_struct *mm,
@@ -280,18 +337,8 @@ static inline void pte_clear(struct mm_struct *mm,
 	pte_val(*ptep) = 0;
 }
 
-#define pte_accessible pte_accessible
-static inline bool pte_accessible(struct mm_struct *mm, pte_t a)
-{
-	if (pte_val(a) & _PAGE_VALID)
-		return true;
-
-	if ((pte_val(a) & _PAGE_PROTNONE) &&
-			mm_tlb_flush_pending(mm))
-		return true;
-
-	return false;
-}
+#define pte_accessible(mm, pte)	\
+	(mm_tlb_flush_pending(mm) ? pte_present(pte) : pte_valid(pte))
 
 static inline int pmd_none(pmd_t pmd)
 {
@@ -306,12 +353,12 @@ static inline int pmd_bad(pmd_t pmd)
 static inline int pmd_present(pmd_t pmd)
 {
 	/*
-	 * Checking for _PAGE_PSE is needed too because
+	 * Checking for _PAGE_LEAF is needed too because
 	 * split_huge_page will temporarily clear the valid bit (but
-	 * the _PAGE_PSE flag will remain set at all times while the
+	 * the _PAGE_LEAF flag will remain set at all times while the
 	 * _PAGE_VALID bit is clear).
 	 */
-	return pmd_val(pmd) & (_PAGE_VALID | _PAGE_PROTNONE | _PAGE_PSE);
+	return !!(pmd_val(pmd) & (_PAGE_VALID | _PAGE_PROTNONE | _PAGE_LEAF));
 }
 
 static inline void pmd_clear(pmd_t *pmdp)
@@ -321,12 +368,13 @@ static inline void pmd_clear(pmd_t *pmdp)
 
 static inline int pmd_dirty(pmd_t pmd)
 {
-	return pmd_val(pmd) & _PAGE_DIRTY;
+	return !!(pmd_val(pmd) & _PAGE_DIRTY);
 }
 
+#define pmd_young pmd_young
 static inline int pmd_young(pmd_t pmd)
 {
-	return pmd_val(pmd) & _PAGE_ACCESSED;
+	return !!(pmd_val(pmd) & _PAGE_ACCESSED);
 }
 
 #define __HAVE_ARCH_PMD_WRITE
@@ -361,7 +409,7 @@ static inline pmd_t pmd_mkold(pmd_t pmd)
 	return pmd;
 }
 
-static inline pmd_t pmd_mkwrite(pmd_t pmd)
+static inline pmd_t pmd_mkwrite_novma(pmd_t pmd)
 {
 	pmd_val(pmd) &= ~_PAGE_FOW;
 	return pmd;
@@ -373,6 +421,12 @@ static inline pmd_t pmd_mkdirty(pmd_t pmd)
 	return pmd;
 }
 
+static inline pmd_t pmd_mkdevmap(pmd_t pmd)
+{
+	pmd_val(pmd) |= _PAGE_DEVMAP;
+	return pmd;
+}
+
 static inline pmd_t pmd_mkyoung(pmd_t pmd)
 {
 	pmd_val(pmd) |= __ACCESS_BITS;
@@ -381,7 +435,13 @@ static inline pmd_t pmd_mkyoung(pmd_t pmd)
 
 static inline pmd_t pmd_mkhuge(pmd_t pmd)
 {
-	pmd_val(pmd) |= _PAGE_PSE;
+	pmd_val(pmd) |= _PAGE_LEAF;
+	return pmd;
+}
+
+static inline pmd_t pmd_mkcont(pmd_t pmd)
+{
+	pmd_val(pmd) |= _PAGE_CONT;
 	return pmd;
 }
 
@@ -397,12 +457,18 @@ static inline int pud_bad(pud_t pud)
 
 static inline int pud_present(pud_t pud)
 {
-	return pud_val(pud) & _PAGE_VALID;
+	return !!(pud_val(pud) & _PAGE_VALID);
 }
 
 static inline void pud_clear(pud_t *pudp)
 {
 	pud_val(*pudp) = 0;
+}
+
+static inline pud_t pud_mkhuge(pud_t pud)
+{
+	pud_val(pud) |= _PAGE_LEAF;
+	return pud;
 }
 
 static inline int p4d_none(p4d_t p4d)
@@ -417,12 +483,22 @@ static inline int p4d_bad(p4d_t p4d)
 
 static inline int p4d_present(p4d_t p4d)
 {
-	return p4d_val(p4d) & _PAGE_VALID;
+	return !!(p4d_val(p4d) & _PAGE_VALID);
 }
 
 static inline void p4d_clear(p4d_t *p4dp)
 {
 	p4d_val(*p4dp) = 0;
+}
+
+static inline pte_t pmd_pte(pmd_t pmd)
+{
+	return __pte(pmd_val(pmd));
+}
+
+static inline pmd_t pte_pmd(pte_t pte)
+{
+	return __pmd(pte_val(pte));
 }
 
 /*
@@ -436,17 +512,22 @@ static inline int pte_write(pte_t pte)
 
 static inline int pte_dirty(pte_t pte)
 {
-	return pte_val(pte) & _PAGE_DIRTY;
+	return !!(pte_val(pte) & _PAGE_DIRTY);
 }
 
 static inline int pte_young(pte_t pte)
 {
-	return pte_val(pte) & _PAGE_ACCESSED;
+	return !!(pte_val(pte) & _PAGE_ACCESSED);
 }
 
 static inline int pte_special(pte_t pte)
 {
-	return pte_val(pte) & _PAGE_SPECIAL;
+	return !!(pte_val(pte) & _PAGE_SPECIAL);
+}
+
+static inline int pte_cont(pte_t pte)
+{
+	return !!(pte_val(pte) & _PAGE_CONT);
 }
 
 static inline pte_t pte_wrprotect(pte_t pte)
@@ -468,7 +549,7 @@ static inline pte_t pte_mkold(pte_t pte)
 	return pte;
 }
 
-static inline pte_t pte_mkwrite(pte_t pte)
+static inline pte_t pte_mkwrite_novma(pte_t pte)
 {
 	pte_val(pte) &= ~_PAGE_FOW;
 	return pte;
@@ -488,7 +569,7 @@ static inline pte_t pte_mkyoung(pte_t pte)
 
 static inline pte_t pte_mkhuge(pte_t pte)
 {
-	pte_val(pte) |= _PAGE_PSE;
+	pte_val(pte) |= _PAGE_LEAF;
 	return pte;
 }
 
@@ -521,6 +602,12 @@ static inline int pmd_protnone(pmd_t pmd)
 }
 #endif
 
+#ifdef CONFIG_ARCH_HAS_PTE_DEVMAP
+static inline int pte_devmap(pte_t a)
+{
+	return (pte_val(a) & _PAGE_DEVMAP) == _PAGE_DEVMAP;
+}
+#endif
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 
@@ -529,12 +616,17 @@ static inline int pmd_protnone(pmd_t pmd)
 
 static inline int pmd_trans_splitting(pmd_t pmd)
 {
-	return pmd_val(pmd) & _PAGE_SPLITTING;
+	return !!(pmd_val(pmd) & _PAGE_SPLITTING);
+}
+
+static inline int pmd_trans_cont(pmd_t pmd)
+{
+	return !!(pmd_val(pmd) & _PAGE_CONT);
 }
 
 static inline int pmd_trans_huge(pmd_t pmd)
 {
-	return pmd_val(pmd) & _PAGE_PSE;
+	return !!(pmd_val(pmd) & _PAGE_LEAF);
 }
 
 static inline int has_transparent_hugepage(void)
@@ -543,12 +635,6 @@ static inline int has_transparent_hugepage(void)
 }
 
 #ifdef CONFIG_ARCH_HAS_PTE_DEVMAP
-#define _PAGE_DEVMAP	(_AT(u64, 1) << _PAGE_BIT_DEVMAP)
-static inline int pte_devmap(pte_t a)
-{
-	return (pte_val(a) & _PAGE_DEVMAP) == _PAGE_DEVMAP;
-}
-
 static inline int pmd_devmap(pmd_t pmd)
 {
 	return !!(pmd_val(pmd) & _PAGE_DEVMAP);
@@ -572,12 +658,6 @@ static inline int pgd_devmap(pgd_t pgd)
 }
 #endif
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
-
-static inline pmd_t pmd_mkdevmap(pmd_t pmd)
-{
-	pmd_val(pmd) |= _PAGE_DEVMAP;
-	return pmd;
-}
 
 #define __HAVE_ARCH_PMDP_GET_AND_CLEAR
 static inline pmd_t pmdp_get_and_clear(struct mm_struct *mm,
@@ -610,7 +690,6 @@ extern int pmdp_test_and_clear_young(struct vm_area_struct *vma,
 extern int pmdp_clear_flush_young(struct vm_area_struct *vma,
 				  unsigned long address, pmd_t *pmdp);
 
-
 #define __HAVE_ARCH_PMDP_SPLITTING_FLUSH
 extern void pmdp_splitting_flush(struct vm_area_struct *vma,
 				 unsigned long addr, pmd_t *pmdp);
@@ -624,19 +703,45 @@ extern pgd_t swapper_pg_dir[1024];
 #define update_mmu_cache(vma, address, ptep) do { } while (0)
 #define update_mmu_cache_pmd(vma, address, pmd) do { } while (0)
 
+static inline void update_mmu_cache_range(struct vm_fault *vmf,
+		struct vm_area_struct *vma, unsigned long address,
+		pte_t *ptep, unsigned int nr)
+{
+}
+
+#if defined(CONFIG_SUBARCH_C3B)
+
 /*
  * Encode and decode a swap entry:
  *
  * Format of swap PTE:
  *	bit  0:		_PAGE_VALID (must be zero)
- *	bit  6:		_PAGE_PSE (must be zero)
+ *	bit  6:		_PAGE_LEAF (must be zero)
  *	bit  7:		_PAGE_PROTNONE (must be zero)
  *	bits 8-15:	swap type
  *	bits 16-63:	swap offset
  */
 #define __SWP_TYPE_SHIFT	8
 #define __SWP_TYPE_BITS		8
-#define __SWP_OFFSET_BITS	48
+
+#elif defined(CONFIG_SUBARCH_C4)
+
+/*
+ * Encode and decode a swap entry:
+ *
+ * Format of swap PTE:
+ *	bit  0:		_PAGE_VALID (must be zero)
+ *	bit  6:		_PAGE_LEAF (must be zero)
+ *	bits 7-11:	swap type
+ *	bits 12-58:	swap offset
+ *	bit  63:	_PAGE_PROTNONE (must be zero)
+ */
+#define __SWP_TYPE_SHIFT	7
+#define __SWP_TYPE_BITS		5
+
+#endif
+
+#define __SWP_OFFSET_BITS	47
 #define __SWP_TYPE_MASK		((1UL << __SWP_TYPE_BITS) - 1)
 #define __SWP_OFFSET_SHIFT	(__SWP_TYPE_BITS + __SWP_TYPE_SHIFT)
 #define __SWP_OFFSET_MASK	((1UL << __SWP_OFFSET_BITS) - 1)
@@ -648,6 +753,23 @@ extern pgd_t swapper_pg_dir[1024];
 
 #define __pte_to_swp_entry(pte)	((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)	((pte_t) { (x).val })
+
+static inline int pte_swp_exclusive(pte_t pte)
+{
+	return !!(pte_val(pte) & _PAGE_SWP_EXCLUSIVE);
+}
+
+static inline pte_t pte_swp_mkexclusive(pte_t pte)
+{
+	pte_val(pte) |= _PAGE_SWP_EXCLUSIVE;
+	return pte;
+}
+
+static inline pte_t pte_swp_clear_exclusive(pte_t pte)
+{
+	pte_val(pte) &= ~_PAGE_SWP_EXCLUSIVE;
+	return pte;
+}
 
 #define kern_addr_valid(addr)	(1)
 

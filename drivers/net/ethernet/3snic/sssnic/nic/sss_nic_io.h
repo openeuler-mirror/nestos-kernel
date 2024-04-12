@@ -40,13 +40,13 @@
 #define DB_PI_LOW(pi)			((pi) & DB_PI_LOW_MASK)
 #define DB_ADDR(queue, pi)	((u64 *)((queue)->db_addr) + DB_PI_LOW(pi))
 
-#define sss_nic_get_sq_local_pi(sq) SSS_WQ_MASK_ID(&sq->wq, sq->wq.pi)
-#define sss_nic_get_sq_local_ci(sq) SSS_WQ_MASK_ID(&sq->wq, sq->wq.ci)
+#define sss_nic_get_sq_local_pi(sq) SSS_WQ_MASK_ID(&(sq)->wq, (sq)->wq.pi)
+#define sss_nic_get_sq_local_ci(sq) SSS_WQ_MASK_ID(&(sq)->wq, (sq)->wq.ci)
 #define sss_nic_get_sq_hw_ci(sq)                                               \
-	SSS_WQ_MASK_ID(&sq->wq, sss_hw_cpu16(*(u16 *)sq->tx.ci_addr))
+	SSS_WQ_MASK_ID(&(sq)->wq, sss_hw_cpu16(*(u16 *)(sq)->tx.ci_addr))
 
-#define sss_nic_get_rq_local_pi(rq) SSS_WQ_MASK_ID(&rq->wq, rq->wq.pi)
-#define sss_nic_get_rq_local_ci(rq) SSS_WQ_MASK_ID(&rq->wq, rq->wq.ci)
+#define sss_nic_get_rq_local_pi(rq) SSS_WQ_MASK_ID(&(rq)->wq, (rq)->wq.pi)
+#define sss_nic_get_rq_local_ci(rq) SSS_WQ_MASK_ID(&(rq)->wq, (rq)->wq.ci)
 
 /* CFLAG_DATA_PATH */
 #define RQ_CFLAG_DP			1

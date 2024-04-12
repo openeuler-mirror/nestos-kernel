@@ -106,12 +106,9 @@ properties:
     maxItems: 3
 
   dma-coherent: true
-
-  ats-supported:
-    description:
-      Indicates that a PCIe host controller supports ATS, and can handle Memory
-      Requests with Address Type (AT).
-    type: boolean
+  iommu-map: true
+  iommu-map-mask: true
+  msi-parent: true
 
 required:
   - compatible

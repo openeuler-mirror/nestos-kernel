@@ -19,8 +19,12 @@
 
 extern unsigned long kfence_sample_interval;
 
+#if IS_ENABLED(CONFIG_KFENCE_MUST_EARLY_INIT)
+extern bool __ro_after_init kfence_must_early_init;
+#endif
+
 #ifdef CONFIG_KFENCE_DYNAMIC_OBJECTS
-extern unsigned long kfence_num_objects;
+extern int kfence_num_objects;
 #define KFENCE_NR_OBJECTS kfence_num_objects
 #else
 #define KFENCE_NR_OBJECTS CONFIG_KFENCE_NUM_OBJECTS
@@ -65,17 +69,17 @@ static __always_inline bool is_kfence_address(const void *addr)
 	return unlikely((unsigned long)((char *)addr - __kfence_pool) < KFENCE_POOL_SIZE && __kfence_pool);
 }
 
-void __init kfence_early_alloc_pool(void);
 /**
- * kfence_alloc_pool() - allocate the KFENCE pool via memblock
+ * kfence_alloc_pool_and_metadata() - allocate the KFENCE pool and KFENCE
+ * metadata via memblock
  */
-void __init kfence_alloc_pool(void);
+void __init kfence_alloc_pool_and_metadata(void);
 
 /**
  * kfence_init() - perform KFENCE initialization at boot time
  *
- * Requires that kfence_alloc_pool() was called before. This sets up the
- * allocation gate timer, and requires that workqueues are available.
+ * Requires that kfence_alloc_pool_and_metadata() was called before. This sets
+ * up the allocation gate timer, and requires that workqueues are available.
  */
 void __init kfence_init(void);
 
@@ -212,11 +216,26 @@ static __always_inline __must_check bool kfence_free(void *addr)
  */
 bool __must_check kfence_handle_page_fault(unsigned long addr, bool is_write, struct pt_regs *regs);
 
+#ifdef CONFIG_PRINTK
+struct kmem_obj_info;
+/**
+ * __kfence_obj_info() - fill kmem_obj_info struct
+ * @kpp: kmem_obj_info to be filled
+ * @object: the object
+ *
+ * Return:
+ * * false - not a KFENCE object
+ * * true - a KFENCE object, filled @kpp
+ *
+ * Copies information to @kpp for KFENCE objects.
+ */
+bool __kfence_obj_info(struct kmem_obj_info *kpp, void *object, struct slab *slab);
+#endif
+
 #else /* CONFIG_KFENCE */
 
 static inline bool is_kfence_address(const void *addr) { return false; }
-static inline void kfence_early_alloc_pool(void) { }
-static inline void kfence_alloc_pool(void) { }
+static inline void kfence_alloc_pool_and_metadata(void) { }
 static inline void kfence_init(void) { }
 static inline void kfence_shutdown_cache(struct kmem_cache *s) { }
 static inline void *kfence_alloc(struct kmem_cache *s, size_t size, gfp_t flags) { return NULL; }
@@ -229,6 +248,14 @@ static inline bool __must_check kfence_handle_page_fault(unsigned long addr, boo
 {
 	return false;
 }
+
+#ifdef CONFIG_PRINTK
+struct kmem_obj_info;
+static inline bool __kfence_obj_info(struct kmem_obj_info *kpp, void *object, struct slab *slab)
+{
+	return false;
+}
+#endif
 
 #endif
 

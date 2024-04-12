@@ -4,8 +4,7 @@
 
 #include <asm/tc.h>
 
-/*
- * With only one or two oddballs, we use the RTC as the ticker, selecting
+/* With only one or two oddballs, we use the RTC as the ticker, selecting
  * the 32.768kHz reference clock, which nicely divides down to our HZ.
  */
 #define CLOCK_TICK_RATE	32768

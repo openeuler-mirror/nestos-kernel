@@ -1,5 +1,5 @@
-/*
- *  Authors: Wang Yinfeng <wangyinfenng@phytium.com.cn>
+/* SPDX-License-Identifier: GPL-2.0
+ *  Authors: Wang Yinfeng <wangyinfenng@phytium.com.
  *
  *  Copyright (C) 2021, PHYTIUM Information Technology Co., Ltd.
  *
@@ -17,8 +17,8 @@
  *  License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __PHYTIUM_MACHINE_TYPE_H__
-#define __PHYTIUM_MACHINE_TYPE_H__
+#ifndef _MACHINE_TYPE_H_
+#define _MACHINE_TYPE_H_
 
 #include <asm/cputype.h>
 #include <linux/types.h>
@@ -31,7 +31,7 @@ static inline bool phytium_part(u32 cpuid)
 #define typeof_ft1500a()	phytium_part(MIDR_FT_1500A)
 #define typeof_ft2000ahk()	phytium_part(MIDR_FT_2000AHK)
 #define typeof_ft2000plus()	phytium_part(MIDR_FT_2000PLUS)
-#define typeof_ft2004()	        phytium_part(MIDR_FT_2004)
-#define typeof_s2500()		phytium_part(MIDR_FT_2500)
+#define typeof_ft2004()	phytium_part(MIDR_FT_2004)
+#define typeof_s2500()	phytium_part(MIDR_FT_2500)
 
 #endif

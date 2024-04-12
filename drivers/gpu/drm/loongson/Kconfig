@@ -1,26 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0
 
 config DRM_LOONGSON
-	tristate "DRM Support for loongson's display controller"
-	depends on DRM && PCI
-	depends on MACH_LOONGSON64 || LOONGARCH || MIPS || COMPILE_TEST
-	select OF
-	select CMA if HAVE_DMA_CONTIGUOUS
-	select DMA_CMA if HAVE_DMA_CONTIGUOUS
+	tristate "DRM support for Loongson Graphics"
+	depends on DRM && PCI && MMU
 	select DRM_KMS_HELPER
-	select DRM_KMS_FB_HELPER
-	select DRM_KMS_CMA_HELPER
-	select DRM_GEM_CMA_HELPER
 	select DRM_TTM
-	select DRM_TTM_HELPER
-	select DRM_VRAM_HELPER
-	select VIDEOMODE_HELPERS
-	select DRM_BRIDGE
-	select DRM_PANEL_BRIDGE
-	default y
+	select I2C
+	select I2C_ALGOBIT
 	help
-	  This is a KMS driver for the display controller in the LS7A1000
-	  bridge chip and LS2K1000/LS2K0500 SoC.
+	  This is a DRM driver for Loongson Graphics, it may including
+	  LS7A2000, LS7A1000, LS2K2000 and LS2K1000 etc. Loongson LS7A
+	  series are bridge chipset, while Loongson LS2K series are SoC.
+
 	  If "M" is selected, the module will be called loongson.
 
-	  If in doubt, say "Y".
+	  If in doubt, say "N".

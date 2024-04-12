@@ -17,6 +17,7 @@
 #define HMC_wrktp		0x0A
 #define HMC_rdptbr		0x0B
 #define HMC_wrptbr		0x0C
+#define HMC_rdhtctl		0x0D
 #define HMC_wrksp		0x0E
 #define HMC_mtinten		0x0F
 #define HMC_load_mm		0x11
@@ -57,13 +58,13 @@
 #include <linux/init.h>
 extern void __init fixup_hmcall(void);
 
-extern void halt(void) __attribute__((noreturn));
+extern void halt(void) __noreturn;
 
 #define __CALL_HMC_VOID(NAME)					\
 static inline void NAME(void)					\
 {								\
 	__asm__ __volatile__(					\
-		"sys_call %0 ": : "i" (HMC_ ## NAME));		\
+		"sys_call %0 " : : "i" (HMC_ ## NAME));		\
 }
 
 #define __CALL_HMC_R0(NAME, TYPE)				\
@@ -164,6 +165,7 @@ __CALL_HMC_W1(wrusp, unsigned long);
 
 __CALL_HMC_R0(rdksp, unsigned long);
 __CALL_HMC_W1(wrksp, unsigned long);
+__CALL_HMC_R0(rdhtctl, unsigned long);
 
 /*
  * Load a mm context. This is needed when we change the page

@@ -2,10 +2,12 @@
 /* Copyright (c) 2018-2019 Hisilicon Limited. */
 
 #include <linux/device.h>
+#include <linux/sched/clock.h>
 
 #include "hclge_debugfs.h"
 #include "hclge_err.h"
 #include "hclge_main.h"
+#include "hclge_regs.h"
 #include "hclge_tm.h"
 #include "hnae3.h"
 
@@ -159,10 +161,8 @@ static int hclge_dbg_get_dfx_bd_num(struct hclge_dev *hdev, int offset,
 	return 0;
 }
 
-static int hclge_dbg_cmd_send(struct hclge_dev *hdev,
-			      struct hclge_desc *desc_src,
-			      int index, int bd_num,
-			      enum hclge_opcode_type cmd)
+int hclge_dbg_cmd_send(struct hclge_dev *hdev, struct hclge_desc *desc_src,
+		       int index, int bd_num, enum hclge_opcode_type cmd)
 {
 	struct hclge_desc *desc = desc_src;
 	int ret, i;
@@ -708,8 +708,7 @@ static int hclge_dbg_dump_tc(struct hclge_dev *hdev, char *buf, int len)
 	for (i = 0; i < HNAE3_MAX_TC; i++) {
 		sch_mode_str = ets_weight->tc_weight[i] ? "dwrr" : "sp";
 		pos += scnprintf(buf + pos, len - pos, "%u     %4s    %3u\n",
-				 i, sch_mode_str,
-				 hdev->tm_info.pg_info[0].tc_dwrr[i]);
+				 i, sch_mode_str, ets_weight->tc_weight[i]);
 	}
 
 	return 0;
@@ -1533,7 +1532,7 @@ static int hclge_dbg_fd_tcam_read(struct hclge_dev *hdev, bool sel_x,
 	struct hclge_desc desc[3];
 	int pos = 0;
 	int ret, i;
-	u32 *req;
+	__le32 *req;
 
 	hclge_cmd_setup_basic_desc(&desc[0], HCLGE_OPC_FD_TCAM_OP, true);
 	desc[0].flag |= cpu_to_le16(HCLGE_COMM_CMD_FLAG_NEXT);
@@ -1558,22 +1557,22 @@ static int hclge_dbg_fd_tcam_read(struct hclge_dev *hdev, bool sel_x,
 			 loc);
 
 	/* tcam_data0 ~ tcam_data1 */
-	req = (u32 *)req1->tcam_data;
+	req = (__le32 *)req1->tcam_data;
 	for (i = 0; i < 2; i++)
 		pos += scnprintf(tcam_buf + pos, HCLGE_DBG_TCAM_BUF_SIZE - pos,
-				 "%08x\n", *req++);
+				 "%08x\n", le32_to_cpu(*req++));
 
 	/* tcam_data2 ~ tcam_data7 */
-	req = (u32 *)req2->tcam_data;
+	req = (__le32 *)req2->tcam_data;
 	for (i = 0; i < 6; i++)
 		pos += scnprintf(tcam_buf + pos, HCLGE_DBG_TCAM_BUF_SIZE - pos,
-				 "%08x\n", *req++);
+				 "%08x\n", le32_to_cpu(*req++));
 
 	/* tcam_data8 ~ tcam_data12 */
-	req = (u32 *)req3->tcam_data;
+	req = (__le32 *)req3->tcam_data;
 	for (i = 0; i < 5; i++)
 		pos += scnprintf(tcam_buf + pos, HCLGE_DBG_TCAM_BUF_SIZE - pos,
-				 "%08x\n", *req++);
+				 "%08x\n", le32_to_cpu(*req++));
 
 	return ret;
 }
@@ -1697,7 +1696,7 @@ static int hclge_dbg_dump_qb_tcam(struct hclge_dev *hdev, char *buf, int len)
 	char *tcam_buf;
 	int pos = 0;
 	int ret = 0;
-	int i;
+	u32 i;
 
 	if (!hnae3_ae_dev_fd_supported(hdev->ae_dev)) {
 		dev_err(&hdev->pdev->dev,
@@ -2514,64 +2513,6 @@ static int hclge_dbg_dump_mac_mc(struct hclge_dev *hdev, char *buf, int len)
 	return 0;
 }
 
-static void hclge_dump_wol_mode(u32 mode, char *buf, int len, int *pos)
-{
-	if (mode & WAKE_PHY)
-		*pos += scnprintf(buf + *pos, len - *pos, "  [p]phy\n");
-
-	if (mode & WAKE_UCAST)
-		*pos += scnprintf(buf + *pos, len - *pos, "  [u]unicast\n");
-
-	if (mode & WAKE_MCAST)
-		*pos += scnprintf(buf + *pos, len - *pos, "  [m]multicast\n");
-
-	if (mode & WAKE_BCAST)
-		*pos += scnprintf(buf + *pos, len - *pos, "  [b]broadcast\n");
-
-	if (mode & WAKE_ARP)
-		*pos += scnprintf(buf + *pos, len - *pos, "  [a]arp\n");
-
-	if (mode & WAKE_MAGIC)
-		*pos += scnprintf(buf + *pos, len - *pos, "  [g]magic\n");
-
-	if (mode & WAKE_MAGICSECURE)
-		*pos += scnprintf(buf + *pos, len - *pos,
-				 "  [s]magic secured\n");
-
-	if (mode & WAKE_FILTER)
-		*pos += scnprintf(buf + *pos, len - *pos, "  [f]filter\n");
-}
-
-static int hclge_dbg_dump_wol_info(struct hclge_dev *hdev, char *buf, int len)
-{
-	u32 wol_supported;
-	int pos = 0;
-	u32 mode;
-
-	if (!hnae3_ae_dev_wol_supported(hdev->ae_dev)) {
-		pos += scnprintf(buf + pos, len - pos,
-				 "wake-on-lan is unsupported\n");
-		return 0;
-	}
-
-	pos += scnprintf(buf + pos, len - pos, "wake-on-lan mode:\n");
-	pos += scnprintf(buf + pos, len - pos, " supported:\n");
-	if (hclge_get_wol_supported_mode(hdev, &wol_supported))
-		return -EINVAL;
-
-	hclge_dump_wol_mode(wol_supported, buf, len, &pos);
-
-	pos += scnprintf(buf + pos, len - pos, " current:\n");
-	if (hclge_get_wol_cfg(hdev, &mode))
-		return -EINVAL;
-	if (mode)
-		hclge_dump_wol_mode(mode, buf, len, &pos);
-	else
-		pos += scnprintf(buf + pos, len - pos, "  [d]disabled\n");
-
-	return 0;
-}
-
 static const struct hclge_dbg_func hclge_dbg_cmd_func[] = {
 	{
 		.cmd = HNAE3_DBG_CMD_TM_NODES,
@@ -2720,10 +2661,6 @@ static const struct hclge_dbg_func hclge_dbg_cmd_func[] = {
 	{
 		.cmd = HNAE3_DBG_CMD_UMV_INFO,
 		.dbg_dump = hclge_dbg_dump_umv_info,
-	},
-	{
-		.cmd = HNAE3_DBG_CMD_WOL_INFO,
-		.dbg_dump = hclge_dbg_dump_wol_info,
 	},
 };
 

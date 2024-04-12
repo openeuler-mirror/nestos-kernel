@@ -46,18 +46,21 @@ enum tpm_pcrs { TPM_PCR0 = 0, TPM_PCR8 = 8, TPM_PCR10 = 10 };
 /* current content of the policy */
 extern int ima_policy_flag;
 
+/* bitset of digests algorithms allowed in the setxattr hook */
+extern atomic_t ima_setxattr_allowed_hash_algorithms;
+
 /* set during initialization */
-extern int ima_hash_algo;
+extern int ima_hash_algo __ro_after_init;
 extern int ima_sha1_idx __ro_after_init;
 extern int ima_hash_algo_idx __ro_after_init;
 extern int ima_extra_slots __ro_after_init;
 extern int ima_appraise;
 extern struct tpm_chip *ima_tpm_chip;
+extern const char boot_aggregate_name[];
+#ifdef CONFIG_IMA_DIGEST_LIST
 extern int ima_digest_list_pcr;
 extern bool ima_plus_standard_pcr;
-extern const char boot_aggregate_name[];
 extern int ima_digest_list_actions;
-#ifdef CONFIG_IMA_DIGEST_LIST
 extern int ima_digest_db_max_size __ro_after_init;
 extern int ima_digest_db_size;
 #endif
@@ -159,6 +162,7 @@ int template_desc_init_fields(const char *template_fmt,
 			      const struct ima_template_field ***fields,
 			      int *num_fields);
 struct ima_template_desc *ima_template_desc_current(void);
+struct ima_template_desc *ima_template_desc_buf(void);
 struct ima_template_desc *lookup_template_desc(const char *name);
 bool ima_template_has_modsig(const struct ima_template_desc *ima_template);
 int ima_restore_measurement_entry(struct ima_template_entry *entry);
@@ -189,10 +193,12 @@ static inline unsigned int ima_hash_key(u8 *digest)
 	return (digest[0] | digest[1] << 8) % IMA_MEASURE_HTABLE_SIZE;
 }
 
+#ifdef CONFIG_IMA_DIGEST_LIST
 #define __ima_hooks(hook)				\
 	hook(NONE, none)				\
 	hook(FILE_CHECK, file)				\
 	hook(MMAP_CHECK, mmap)				\
+	hook(MMAP_CHECK_REQPROT, mmap_reqprot)		\
 	hook(BPRM_CHECK, bprm)				\
 	hook(CREDS_CHECK, creds)			\
 	hook(POST_SETATTR, post_setattr)		\
@@ -203,8 +209,30 @@ static inline unsigned int ima_hash_key(u8 *digest)
 	hook(POLICY_CHECK, policy)			\
 	hook(KEXEC_CMDLINE, kexec_cmdline)		\
 	hook(KEY_CHECK, key)				\
+	hook(CRITICAL_DATA, critical_data)		\
+	hook(SETXATTR_CHECK, setxattr_check)		\
 	hook(DIGEST_LIST_CHECK, digest_list)		\
 	hook(MAX_CHECK, none)
+#else
+#define __ima_hooks(hook)				\
+	hook(NONE, none)				\
+	hook(FILE_CHECK, file)				\
+	hook(MMAP_CHECK, mmap)				\
+	hook(MMAP_CHECK_REQPROT, mmap_reqprot)		\
+	hook(BPRM_CHECK, bprm)				\
+	hook(CREDS_CHECK, creds)			\
+	hook(POST_SETATTR, post_setattr)		\
+	hook(MODULE_CHECK, module)			\
+	hook(FIRMWARE_CHECK, firmware)			\
+	hook(KEXEC_KERNEL_CHECK, kexec_kernel)		\
+	hook(KEXEC_INITRAMFS_CHECK, kexec_initramfs)	\
+	hook(POLICY_CHECK, policy)			\
+	hook(KEXEC_CMDLINE, kexec_cmdline)		\
+	hook(KEY_CHECK, key)				\
+	hook(CRITICAL_DATA, critical_data)		\
+	hook(SETXATTR_CHECK, setxattr_check)		\
+	hook(MAX_CHECK, none)
+#endif
 
 #define __ima_hook_enumify(ENUM, str)	ENUM,
 #define __ima_stringify(arg) (#arg)
@@ -256,10 +284,11 @@ static inline void ima_process_queued_keys(void) {}
 #endif /* CONFIG_IMA_QUEUE_EARLY_BOOT_KEYS */
 
 /* LIM API function definitions */
-int ima_get_action(struct inode *inode, const struct cred *cred, u32 secid,
-		   int mask, enum ima_hooks func, int *pcr,
+int ima_get_action(struct mnt_idmap *idmap, struct inode *inode,
+		   const struct cred *cred, u32 secid, int mask,
+		   enum ima_hooks func, int *pcr,
 		   struct ima_template_desc **template_desc,
-		   const char *keyring);
+		   const char *func_data, unsigned int *allowed_algos);
 int ima_must_measure(struct inode *inode, int mask, enum ima_hooks func);
 int ima_collect_measurement(struct integrity_iint_cache *iint,
 			    struct file *file, void *buf, loff_t size,
@@ -268,30 +297,42 @@ void ima_store_measurement(struct integrity_iint_cache *iint, struct file *file,
 			   const unsigned char *filename,
 			   struct evm_ima_xattr_data *xattr_value,
 			   int xattr_len, const struct modsig *modsig, int pcr,
+#ifdef CONFIG_IMA_DIGEST_LIST
 			   struct ima_template_desc *template_desc,
 			   struct ima_digest *digest);
-void process_buffer_measurement(struct inode *inode, const void *buf, int size,
-				const char *eventname, enum ima_hooks func,
-				int pcr, const char *keyring);
+#else
+			   struct ima_template_desc *template_desc);
+#endif
+int process_buffer_measurement(struct mnt_idmap *idmap,
+			       struct inode *inode, const void *buf, int size,
+			       const char *eventname, enum ima_hooks func,
+			       int pcr, const char *func_data,
+			       bool buf_hash, u8 *digest, size_t digest_len);
 void ima_audit_measurement(struct integrity_iint_cache *iint,
 			   const unsigned char *filename);
 int ima_alloc_init_template(struct ima_event_data *event_data,
 			    struct ima_template_entry **entry,
 			    struct ima_template_desc *template_desc);
 int ima_store_template(struct ima_template_entry *entry, int violation,
+#ifdef CONFIG_IMA_DIGEST_LIST
 		       struct inode *inode, const unsigned char *filename,
 		       int pcr, struct ima_digest *digest);
+#else
+		       struct inode *inode,
+		       const unsigned char *filename, int pcr);
+#endif
 void ima_free_template_entry(struct ima_template_entry *entry);
 const char *ima_d_path(const struct path *path, char **pathbuf, char *filename);
 
 /* IMA policy related functions */
-int ima_match_policy(struct inode *inode, const struct cred *cred, u32 secid,
-		     enum ima_hooks func, int mask, int flags, int *pcr,
+int ima_match_policy(struct mnt_idmap *idmap, struct inode *inode,
+		     const struct cred *cred, u32 secid, enum ima_hooks func,
+		     int mask, int flags, int *pcr,
 		     struct ima_template_desc **template_desc,
-		     const char *keyring);
+		     const char *func_data, unsigned int *allowed_algos);
 void ima_init_policy(void);
 void ima_update_policy(void);
-void ima_update_policy_flag(void);
+void ima_update_policy_flags(void);
 ssize_t ima_parse_add_rule(char *);
 void ima_delete_rules(void);
 int ima_check_policy(void);
@@ -308,7 +349,9 @@ int ima_policy_show(struct seq_file *m, void *v);
 #define IMA_APPRAISE_FIRMWARE	0x10
 #define IMA_APPRAISE_POLICY	0x20
 #define IMA_APPRAISE_KEXEC	0x40
+#ifdef CONFIG_IMA_DIGEST_LIST
 #define IMA_APPRAISE_DIGEST_LIST	0x80
+#endif
 
 #ifdef CONFIG_IMA_APPRAISE
 int ima_check_blacklist(struct integrity_iint_cache *iint,
@@ -317,12 +360,24 @@ int ima_appraise_measurement(enum ima_hooks func,
 			     struct integrity_iint_cache *iint,
 			     struct file *file, const unsigned char *filename,
 			     struct evm_ima_xattr_data *xattr_value,
+#ifdef CONFIG_IMA_DIGEST_LIST
 			     int xattr_len, const struct modsig *modsig,
-			     struct ima_digest *found_digest);
-int ima_must_appraise(struct inode *inode, int mask, enum ima_hooks func);
+				 struct ima_digest *found_digest);
+#else
+			     int xattr_len, const struct modsig *modsig);
+#endif
+int ima_must_appraise(struct mnt_idmap *idmap, struct inode *inode,
+		      int mask, enum ima_hooks func);
 void ima_update_xattr(struct integrity_iint_cache *iint, struct file *file);
 enum integrity_status ima_get_cache_status(struct integrity_iint_cache *iint,
 					   enum ima_hooks func);
+#ifndef CONFIG_IMA_DIGEST_LIST
+enum hash_algo ima_get_hash_algo(const struct evm_ima_xattr_data *xattr_value,
+				 int xattr_len);
+int ima_read_xattr(struct dentry *dentry,
+		   struct evm_ima_xattr_data **xattr_value, int xattr_len);
+#endif /* CONFIG_IMA_DIGEST_LIST */
+
 #else
 static inline int ima_check_blacklist(struct integrity_iint_cache *iint,
 				      const struct modsig *modsig, int pcr)
@@ -336,13 +391,18 @@ static inline int ima_appraise_measurement(enum ima_hooks func,
 					   const unsigned char *filename,
 					   struct evm_ima_xattr_data *xattr_value,
 					   int xattr_len,
+#ifdef CONFIG_IMA_DIGEST_LIST
 					   const struct modsig *modsig,
 					   struct ima_digest *found_digest)
+#else
+					   const struct modsig *modsig)
+#endif
 {
 	return INTEGRITY_UNKNOWN;
 }
 
-static inline int ima_must_appraise(struct inode *inode, int mask,
+static inline int ima_must_appraise(struct mnt_idmap *idmap,
+				    struct inode *inode, int mask,
 				    enum ima_hooks func)
 {
 	return 0;
@@ -359,6 +419,21 @@ static inline enum integrity_status ima_get_cache_status(struct integrity_iint_c
 {
 	return INTEGRITY_UNKNOWN;
 }
+
+#ifndef CONFIG_IMA_DIGEST_LIST
+static inline enum hash_algo
+ima_get_hash_algo(struct evm_ima_xattr_data *xattr_value, int xattr_len)
+{
+	return ima_hash_algo;
+}
+
+static inline int ima_read_xattr(struct dentry *dentry,
+				 struct evm_ima_xattr_data **xattr_value,
+				 int xattr_len)
+{
+	return 0;
+}
+#endif
 
 #endif /* CONFIG_IMA_APPRAISE */
 

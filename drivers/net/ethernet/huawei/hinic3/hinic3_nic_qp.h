@@ -204,7 +204,7 @@ struct hinic3_sq_compact_wqe {
 struct hinic3_sq_extend_wqe {
 	struct hinic3_sq_wqe_desc wqe_desc;
 	struct hinic3_sq_task task;
-	struct hinic3_sq_bufdesc buf_desc[0];
+	struct hinic3_sq_bufdesc buf_desc[];
 };
 
 struct hinic3_sq_wqe {

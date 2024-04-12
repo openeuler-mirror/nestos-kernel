@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Header file for SCSI device handler infrastruture.
+ * Header file for SCSI device handler infrastructure.
  *
  * Modified version of patches posted by Mike Christie <michaelc@cs.wisc.edu>
  *
@@ -11,6 +11,7 @@
  */
 
 #include <scsi/scsi_device.h>
+#include <linux/kabi.h>
 
 enum {
 	SCSI_DH_OK = 0,
@@ -52,13 +53,17 @@ struct scsi_device_handler {
 	/* Filled by the hardware handler */
 	struct module *module;
 	const char *name;
-	int (*check_sense)(struct scsi_device *, struct scsi_sense_hdr *);
+	enum scsi_disposition (*check_sense)(struct scsi_device *,
+					     struct scsi_sense_hdr *);
 	int (*attach)(struct scsi_device *);
 	void (*detach)(struct scsi_device *);
 	int (*activate)(struct scsi_device *, activate_complete, void *);
 	blk_status_t (*prep_fn)(struct scsi_device *, struct request *);
 	int (*set_params)(struct scsi_device *, const char *);
 	void (*rescan)(struct scsi_device *);
+
+	KABI_RESERVE(1)
+	KABI_RESERVE(2)
 };
 
 #ifdef CONFIG_SCSI_DH

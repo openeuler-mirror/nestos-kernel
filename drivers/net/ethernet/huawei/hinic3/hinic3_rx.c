@@ -11,6 +11,7 @@
 #include <linux/etherdevice.h>
 #include <linux/netdevice.h>
 #include <linux/device.h>
+#include <net/xdp.h>
 #include <linux/pci.h>
 #include <linux/u64_stats_sync.h>
 #include <linux/ip.h>
@@ -165,7 +166,7 @@ static u32 hinic3_rx_fill_buffers(struct hinic3_rxq *rxq)
 	if (likely(i)) {
 		if (!rq_pi_rd_en) {
 			hinic3_write_db(rxq->rq,
-					rxq->q_id & (NIC_DCB_COS_MAX - 1),
+					rxq->q_id & 3,
 					RQ_CFLAG_DP,
 					(u16)((u32)rxq->next_to_update <<
 					rxq->rq->wqe_type));
@@ -785,7 +786,7 @@ int hinic3_run_xdp(struct hinic3_rxq *rxq, u32 pkt_len)
 		break;
 	default:
 		result = HINIC3_XDP_PKT_DROP;
-		bpf_warn_invalid_xdp_action(act);
+		bpf_warn_invalid_xdp_action(rxq->netdev, xdp_prog, act);
 	}
 
 xdp_out:
@@ -1102,10 +1103,8 @@ int hinic3_alloc_rxqs(struct net_device *netdev)
 	}
 
 	nic_dev->rxqs = kzalloc(rxq_size, GFP_KERNEL);
-	if (!nic_dev->rxqs) {
-		nic_err(&pdev->dev, "Failed to allocate rxqs\n");
+	if (!nic_dev->rxqs)
 		return -ENOMEM;
-	}
 
 	for (q_id = 0; q_id < num_rxqs; q_id++) {
 		rxq = &nic_dev->rxqs[q_id];

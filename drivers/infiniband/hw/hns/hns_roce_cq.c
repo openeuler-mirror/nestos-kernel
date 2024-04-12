@@ -133,14 +133,12 @@ static int alloc_cqc(struct hns_roce_dev *hr_dev, struct hns_roce_cq *hr_cq)
 	struct hns_roce_cq_table *cq_table = &hr_dev->cq_table;
 	struct ib_device *ibdev = &hr_dev->ib_dev;
 	u64 mtts[MTT_MIN_COUNT] = {};
-	dma_addr_t dma_handle;
 	int ret;
 
-	ret = hns_roce_mtr_find(hr_dev, &hr_cq->mtr, 0, mtts, ARRAY_SIZE(mtts),
-				&dma_handle);
-	if (!ret) {
+	ret = hns_roce_mtr_find(hr_dev, &hr_cq->mtr, 0, mtts, ARRAY_SIZE(mtts));
+	if (ret) {
 		ibdev_err(ibdev, "failed to find CQ mtr, ret = %d.\n", ret);
-		return -EINVAL;
+		return ret;
 	}
 
 	/* Get CQC memory HEM(Hardware Entry Memory) table */
@@ -157,7 +155,8 @@ static int alloc_cqc(struct hns_roce_dev *hr_dev, struct hns_roce_cq *hr_cq)
 		goto err_put;
 	}
 
-	ret = hns_roce_create_cqc(hr_dev, hr_cq, mtts, dma_handle);
+	ret = hns_roce_create_cqc(hr_dev, hr_cq, mtts,
+				  hns_roce_get_mtr_ba(&hr_cq->mtr));
 	if (ret)
 		goto err_xa;
 
@@ -212,7 +211,7 @@ static int alloc_cq_buf(struct hns_roce_dev *hr_dev, struct hns_roce_cq *hr_cq,
 				  hr_dev->caps.cqe_ba_pg_sz + PAGE_SHIFT,
 				  udata, addr);
 	if (ret)
-		ibdev_err(ibdev, "Failed to alloc CQ mtr, ret = %d\n", ret);
+		ibdev_err(ibdev, "failed to alloc CQ mtr, ret = %d.\n", ret);
 
 	return ret;
 }
@@ -376,7 +375,6 @@ int hns_roce_create_cq(struct ib_cq *ib_cq, const struct ib_cq_init_attr *attr,
 		ret = get_cq_ucmd(hr_cq, udata, &ucmd);
 		if (ret)
 			goto err_out;
-
 	}
 
 	set_cq_param(hr_cq, attr->cqe, attr->comp_vector, &ucmd);
@@ -460,7 +458,7 @@ void hns_roce_cq_completion(struct hns_roce_dev *hr_dev, u32 cqn)
 	hr_cq = xa_load(&hr_dev->cq_table.array,
 			cqn & (hr_dev->caps.num_cqs - 1));
 	if (!hr_cq) {
-		dev_warn(hr_dev->dev, "Completion event for bogus CQ 0x%06x\n",
+		dev_warn(hr_dev->dev, "completion event for bogus CQ 0x%06x\n",
 			 cqn);
 		return;
 	}
@@ -481,14 +479,14 @@ void hns_roce_cq_event(struct hns_roce_dev *hr_dev, u32 cqn, int event_type)
 	hr_cq = xa_load(&hr_dev->cq_table.array,
 			cqn & (hr_dev->caps.num_cqs - 1));
 	if (!hr_cq) {
-		dev_warn(dev, "Async event for bogus CQ 0x%06x\n", cqn);
+		dev_warn(dev, "async event for bogus CQ 0x%06x\n", cqn);
 		return;
 	}
 
 	if (event_type != HNS_ROCE_EVENT_TYPE_CQ_ID_INVALID &&
 	    event_type != HNS_ROCE_EVENT_TYPE_CQ_ACCESS_ERROR &&
 	    event_type != HNS_ROCE_EVENT_TYPE_CQ_OVERFLOW) {
-		dev_err(dev, "Unexpected event type 0x%x on CQ 0x%06x\n",
+		dev_err(dev, "unexpected event type 0x%x on CQ 0x%06x\n",
 			event_type, cqn);
 		return;
 	}

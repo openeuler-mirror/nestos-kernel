@@ -12,4 +12,3 @@
 #define SSS_DEV_ID_SPU					0xAC00
 
 #endif
-

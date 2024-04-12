@@ -332,7 +332,6 @@ frag_map_err:
 	return ret;
 }
 
-
 #ifdef HAVE_IP6_FRAG_ID_ENABLE_UFO
 #define sss_nic_ipv6_frag_id(task_sect, skb, ip)	\
 do { \
@@ -561,7 +560,6 @@ static inline int sss_nic_check_tx_stop(struct sss_nic_sq_desc *sq_desc,
 	return 0;
 }
 
-
 #define sss_nic_get_and_update_sq_owner(sq, owner_ptr, curr_pi, wqebb_cnt)	\
 do { \
 	if (unlikely((curr_pi) + (wqebb_cnt) >= (sq)->wq.q_depth)) \
@@ -666,7 +664,7 @@ static netdev_tx_t sss_nic_send_one_skb(struct sk_buff *skb,
 					struct sss_nic_sq_desc *sq_desc)
 {
 	u32 qinfo = 0;
-	u32 offload;
+	u32 offload = 0;
 	u16 pi = 0;
 	u16 owner;
 	u16 sge_cnt;
@@ -866,4 +864,3 @@ int sss_nic_tx_poll(struct sss_nic_sq_desc *sq_desc, int budget)
 
 	return pkt_cnt;
 }
-

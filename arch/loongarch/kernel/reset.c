@@ -15,6 +15,7 @@
 #include <acpi/reboot.h>
 #include <asm/idle.h>
 #include <asm/loongarch.h>
+#include <asm/loongson.h>
 
 void (*pm_power_off)(void);
 EXPORT_SYMBOL(pm_power_off);
@@ -42,11 +43,16 @@ void machine_power_off(void)
 	preempt_disable();
 	smp_send_stop();
 #endif
-	pm_power_off();
+#ifdef CONFIG_PM
+	if (!acpi_disabled)
+		enable_pci_wakeup();
+#endif
+	do_kernel_power_off();
 #ifdef CONFIG_EFI
 	if (efi.reset_system)
 		efi.reset_system(EFI_RESET_SHUTDOWN, EFI_SUCCESS, 0, NULL);
 #endif
+
 	while (true) {
 		__arch_cpu_idle();
 	}

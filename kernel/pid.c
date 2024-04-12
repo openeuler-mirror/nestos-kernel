@@ -43,9 +43,7 @@
 #include <linux/sched/task.h>
 #include <linux/idr.h>
 #include <net/sock.h>
-#include <linux/kmemleak.h>
 #include <uapi/linux/pidfd.h>
-#include <linux/pin_mem.h>
 
 struct pid init_struct_pid = {
 	.count		= REFCOUNT_INIT(1),
@@ -63,8 +61,14 @@ struct pid init_struct_pid = {
 
 #define RESERVED_PIDS		300
 
+#ifndef CONFIG_PID_MAX_PER_NAMESPACE
+int pid_max = PID_MAX_DEFAULT;
+int pid_max_min = RESERVED_PIDS + 1;
+int pid_max_max = PID_MAX_LIMIT;
+#else
 static int pid_max_min = RESERVED_PIDS + 1;
 static int pid_max_max = PID_MAX_LIMIT;
+#endif
 
 /*
  * PID-map pages start out as NULL, they get allocated upon
@@ -73,16 +77,21 @@ static int pid_max_max = PID_MAX_LIMIT;
  * the scheme scales to up to 4 million PIDs, runtime.
  */
 struct pid_namespace init_pid_ns = {
-	.kref = KREF_INIT(2),
+	.ns.count = REFCOUNT_INIT(2),
 	.idr = IDR_INIT(init_pid_ns.idr),
 	.pid_allocated = PIDNS_ADDING,
 	.level = 0,
 	.child_reaper = &init_task,
 	.user_ns = &init_user_ns,
 	.ns.inum = PROC_PID_INIT_INO,
+#ifdef CONFIG_PID_MAX_PER_NAMESPACE
 	.pid_max = PID_MAX_DEFAULT,
+#endif
 #ifdef CONFIG_PID_NS
 	.ns.ops = &pidns_operations,
+#endif
+#if defined(CONFIG_SYSCTL) && defined(CONFIG_MEMFD_CREATE)
+	.memfd_noexec_scope = MEMFD_NOEXEC_SCOPE_EXEC,
 #endif
 };
 EXPORT_SYMBOL_GPL(init_pid_ns);
@@ -192,7 +201,11 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid,
 			tid = set_tid[ns->level - i];
 
 			retval = -EINVAL;
+#ifndef CONFIG_PID_MAX_PER_NAMESPACE
+			if (tid < 1 || tid >= pid_max)
+#else
 			if (tid < 1 || tid >= task_active_pid_ns(current)->pid_max)
+#endif
 				goto out_free;
 			/*
 			 * Also fail if a PID != 1 is requested and
@@ -210,8 +223,6 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid,
 		spin_lock_irq(&pidmap_lock);
 
 		if (tid) {
-			free_reserved_pid(&tmp->idr, tid);
-
 			nr = idr_alloc(&tmp->idr, NULL, tid,
 				       tid + 1, GFP_ATOMIC);
 			/*
@@ -234,7 +245,11 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid,
 			 * a partially initialized PID (see below).
 			 */
 			nr = idr_alloc_cyclic(&tmp->idr, NULL, pid_min,
+#ifndef CONFIG_PID_MAX_PER_NAMESPACE
+					      pid_max, GFP_ATOMIC);
+#else
 					      tmp->pid_max, GFP_ATOMIC);
+#endif
 		}
 		spin_unlock_irq(&pidmap_lock);
 		idr_preload_end();
@@ -523,6 +538,7 @@ struct pid *find_ge_pid(int nr, struct pid_namespace *ns)
 {
 	return idr_get_next(&ns->idr, &nr);
 }
+EXPORT_SYMBOL_GPL(find_ge_pid);
 
 struct pid *pidfd_get_pid(unsigned int fd, unsigned int *flags)
 {
@@ -544,6 +560,42 @@ struct pid *pidfd_get_pid(unsigned int fd, unsigned int *flags)
 }
 
 /**
+ * pidfd_get_task() - Get the task associated with a pidfd
+ *
+ * @pidfd: pidfd for which to get the task
+ * @flags: flags associated with this pidfd
+ *
+ * Return the task associated with @pidfd. The function takes a reference on
+ * the returned task. The caller is responsible for releasing that reference.
+ *
+ * Currently, the process identified by @pidfd is always a thread-group leader.
+ * This restriction currently exists for all aspects of pidfds including pidfd
+ * creation (CLONE_PIDFD cannot be used with CLONE_THREAD) and pidfd polling
+ * (only supports thread group leaders).
+ *
+ * Return: On success, the task_struct associated with the pidfd.
+ *	   On error, a negative errno number will be returned.
+ */
+struct task_struct *pidfd_get_task(int pidfd, unsigned int *flags)
+{
+	unsigned int f_flags;
+	struct pid *pid;
+	struct task_struct *task;
+
+	pid = pidfd_get_pid(pidfd, &f_flags);
+	if (IS_ERR(pid))
+		return ERR_CAST(pid);
+
+	task = get_pid_task(pid, PIDTYPE_TGID);
+	put_pid(pid);
+	if (!task)
+		return ERR_PTR(-ESRCH);
+
+	*flags = f_flags;
+	return task;
+}
+
+/**
  * pidfd_create() - Create a new pid file descriptor.
  *
  * @pid:   struct pid that the pidfd will reference
@@ -554,23 +606,26 @@ struct pid *pidfd_get_pid(unsigned int fd, unsigned int *flags)
  * Note, that this function can only be called after the fd table has
  * been unshared to avoid leaking the pidfd to the new process.
  *
+ * This symbol should not be explicitly exported to loadable modules.
+ *
  * Return: On success, a cloexec pidfd is returned.
  *         On error, a negative errno number will be returned.
  */
-static int pidfd_create(struct pid *pid, unsigned int flags)
+int pidfd_create(struct pid *pid, unsigned int flags)
 {
-	int fd;
+	int pidfd;
+	struct file *pidfd_file;
 
-	fd = anon_inode_getfd("[pidfd]", &pidfd_fops, get_pid(pid),
-			      flags | O_RDWR | O_CLOEXEC);
-	if (fd < 0)
-		put_pid(pid);
+	pidfd = pidfd_prepare(pid, flags, &pidfd_file);
+	if (pidfd < 0)
+		return pidfd;
 
-	return fd;
+	fd_install(pidfd, pidfd_file);
+	return pidfd;
 }
 
 /**
- * pidfd_open() - Open new pid file descriptor.
+ * sys_pidfd_open() - Open new pid file descriptor.
  *
  * @pid:   pid for which to retrieve a pidfd
  * @flags: flags to pass
@@ -600,15 +655,13 @@ SYSCALL_DEFINE2(pidfd_open, pid_t, pid, unsigned int, flags)
 	if (!p)
 		return -ESRCH;
 
-	if (pid_has_task(p, PIDTYPE_TGID))
-		fd = pidfd_create(p, flags);
-	else
-		fd = -EINVAL;
+	fd = pidfd_create(p, flags);
 
 	put_pid(p);
 	return fd;
 }
 
+#ifdef CONFIG_PID_MAX_PER_NAMESPACE
 static int proc_dointvec_pidmax(struct ctl_table *table, int write,
 				void __user *buffer, size_t *lenp, loff_t *ppos)
 {
@@ -632,14 +685,13 @@ static struct ctl_table pid_ctl_table[] = {
 	},
 	{}
 };
-
-static struct ctl_path pid_kern_path[] = { { .procname = "kernel" }, {} };
+#endif
 
 void __init pid_idr_init(void)
 {
-	struct ctl_table_header *hdr;
+#ifdef CONFIG_PID_MAX_PER_NAMESPACE
 	int pid_max = init_pid_ns.pid_max;
-
+#endif
 	/* Verify no one has done anything silly: */
 	BUILD_BUG_ON(PID_MAX_LIMIT >= PIDNS_ADDING);
 
@@ -650,17 +702,19 @@ void __init pid_idr_init(void)
 				PIDS_PER_CPU_MIN * num_possible_cpus());
 	pr_info("pid_max: default: %u minimum: %u\n", pid_max, pid_max_min);
 
+#ifdef CONFIG_PID_MAX_PER_NAMESPACE
 	init_pid_ns.pid_max = pid_max;
-
+#endif
 	idr_init(&init_pid_ns.idr);
 
-	init_pid_ns.pid_cachep = KMEM_CACHE(pid,
-			SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT);
-
-	reserve_pids(&init_pid_ns.idr, pid_max);
-
-	hdr = register_sysctl_paths(pid_kern_path, pid_ctl_table);
-	kmemleak_not_leak(hdr);
+	init_pid_ns.pid_cachep = kmem_cache_create("pid",
+			struct_size_t(struct pid, numbers, 1),
+			__alignof__(struct pid),
+			SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT,
+			NULL);
+#ifdef CONFIG_PID_MAX_PER_NAMESPACE
+	register_sysctl_init("kernel", pid_ctl_table);
+#endif
 }
 
 static struct file *__pidfd_fget(struct task_struct *task, int fd)

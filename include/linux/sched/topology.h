@@ -5,7 +5,6 @@
 #include <linux/topology.h>
 
 #include <linux/sched/idle.h>
-#include <linux/kabi.h>
 
 /*
  * sched-domains (multiprocessor balancing) declarations:
@@ -82,10 +81,10 @@ struct sched_domain_shared {
 	atomic_t	ref;
 	atomic_t	nr_busy_cpus;
 	int		has_idle_cores;
+	int		nr_idle_scan;
 #ifdef CONFIG_SCHED_STEAL
 	struct sparsemask *cfs_overload_cpus;
 #endif
-	KABI_EXTEND(int		nr_idle_scan)
 };
 
 struct sched_domain {
@@ -98,6 +97,7 @@ struct sched_domain {
 	unsigned int busy_factor;	/* less balancing by factor if busy */
 	unsigned int imbalance_pct;	/* No balance until over watermark */
 	unsigned int cache_nice_tries;	/* Leave cache hot tasks for # tries */
+	unsigned int imb_numa_nr;	/* Nr running tasks that allows a NUMA imbalance */
 
 	int nohz_idle;			/* NOHZ IDLE status */
 	int flags;			/* See SD_* */
@@ -110,7 +110,7 @@ struct sched_domain {
 
 	/* idle_balance() stats */
 	u64 max_newidle_lb_cost;
-	unsigned long next_decay_max_lb_cost;
+	unsigned long last_decay_max_lb_cost;
 
 	u64 avg_scan_cost;		/* select_idle_sibling */
 
@@ -153,13 +153,6 @@ struct sched_domain {
 		struct rcu_head rcu;	/* used during destruction */
 	};
 	struct sched_domain_shared *shared;
-#ifndef __GENKSYMS__
-	unsigned int imb_numa_nr;	/* Nr running tasks that allows a NUMA imbalance */
-	KABI_FILL_HOLE(unsigned int kabi_hole)
-#else
-	KABI_RESERVE(1)
-#endif
-	KABI_RESERVE(2)
 
 	unsigned int span_weight;
 	/*
@@ -189,13 +182,12 @@ cpumask_var_t *alloc_sched_domains(unsigned int ndoms);
 void free_sched_domains(cpumask_var_t doms[], unsigned int ndoms);
 
 bool cpus_share_cache(int this_cpu, int that_cpu);
-bool cpus_share_lowest_cache(int this_cpu, int that_cpu);
+bool cpus_share_resources(int this_cpu, int that_cpu);
 
 typedef const struct cpumask *(*sched_domain_mask_f)(int cpu);
 typedef int (*sched_domain_flags_f)(void);
 
 #define SDTL_OVERLAP	0x01
-#define SDTL_SKIP	0x02
 
 struct sd_data {
 	struct sched_domain *__percpu *sd;
@@ -215,7 +207,7 @@ struct sched_domain_topology_level {
 #endif
 };
 
-extern void set_sched_topology(struct sched_domain_topology_level *tl);
+extern void __init set_sched_topology(struct sched_domain_topology_level *tl);
 
 #ifdef CONFIG_SCHED_DEBUG
 # define SD_INIT_NAME(type)		.name = #type
@@ -244,12 +236,20 @@ static inline bool cpus_share_cache(int this_cpu, int that_cpu)
 	return true;
 }
 
-static inline bool cpus_share_lowest_cache(int this_cpu, int that_cpu)
+static inline bool cpus_share_resources(int this_cpu, int that_cpu)
 {
 	return true;
 }
 
 #endif	/* !CONFIG_SMP */
+
+#if defined(CONFIG_ENERGY_MODEL) && defined(CONFIG_CPU_FREQ_GOV_SCHEDUTIL)
+extern void rebuild_sched_domains_energy(void);
+#else
+static inline void rebuild_sched_domains_energy(void)
+{
+}
+#endif
 
 #ifndef arch_scale_cpu_capacity
 /**
@@ -277,10 +277,10 @@ unsigned long arch_scale_thermal_pressure(int cpu)
 }
 #endif
 
-#ifndef arch_set_thermal_pressure
+#ifndef arch_update_thermal_pressure
 static __always_inline
-void arch_set_thermal_pressure(const struct cpumask *cpus,
-			       unsigned long th_pressure)
+void arch_update_thermal_pressure(const struct cpumask *cpus,
+				  unsigned long capped_frequency)
 { }
 #endif
 

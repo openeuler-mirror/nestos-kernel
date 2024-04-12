@@ -12,6 +12,7 @@ struct xfs_mru_cache;
 struct xfs_ail;
 struct xfs_quotainfo;
 struct xfs_da_geometry;
+struct xfs_perag;
 
 /* dynamic preallocation free space thresholds, 5% down to 1% */
 enum {
@@ -59,12 +60,15 @@ struct xfs_error_cfg {
  * Per-cpu deferred inode inactivation GC lists.
  */
 struct xfs_inodegc {
+	struct xfs_mount	*mp;
 	struct llist_head	list;
 	struct delayed_work	work;
+	int			error;
 
 	/* approximate count of inodes in the list */
 	unsigned int		items;
 	unsigned int		shrinker_hits;
+	unsigned int		cpu;
 };
 
 /*
@@ -93,7 +97,6 @@ typedef struct xfs_mount {
 	xfs_buftarg_t		*m_ddev_targp;	/* saves taking the address */
 	xfs_buftarg_t		*m_logdev_targp;/* ptr to log device */
 	xfs_buftarg_t		*m_rtdev_targp;	/* ptr to rt device */
-	struct list_head	m_mount_list;	/* global mount list */
 	void __percpu		*m_inodegc;	/* percpu inodegc structures */
 
 	/*
@@ -127,10 +130,11 @@ typedef struct xfs_mount {
 	uint			m_rmap_mnr[2];	/* min rmap btree records */
 	uint			m_refc_mxr[2];	/* max refc btree records */
 	uint			m_refc_mnr[2];	/* min refc btree records */
-	uint			m_ag_maxlevels;	/* XFS_AG_MAXLEVELS */
-	uint			m_bm_maxlevels[2]; /* XFS_BM_MAXLEVELS */
+	uint			m_alloc_maxlevels; /* max alloc btree levels */
+	uint			m_bm_maxlevels[2]; /* max bmap btree levels */
 	uint			m_rmap_maxlevels; /* max rmap btree levels */
 	uint			m_refc_maxlevels; /* max refcount btree level */
+	unsigned int		m_agbtree_maxlevels; /* max level of all AG btrees */
 	xfs_extlen_t		m_ag_prealloc_blocks; /* reserved ag blocks */
 	uint			m_alloc_set_aside; /* space we can't use */
 	uint			m_ag_max_usable; /* max space per AG */
@@ -181,6 +185,8 @@ typedef struct xfs_mount {
 	struct percpu_counter	m_icount;	/* allocated inodes counter */
 	struct percpu_counter	m_ifree;	/* free inodes counter */
 	struct percpu_counter	m_fdblocks;	/* free block counter */
+	struct percpu_counter	m_frextents;	/* free rt extent counter */
+
 	/*
 	 * Count of data device blocks reserved for delayed allocations,
 	 * including indlen blocks.  Does not include allocated CoW staging
@@ -200,14 +206,17 @@ typedef struct xfs_mount {
 	uint64_t		m_resblks_avail;/* available reserved blocks */
 	uint64_t		m_resblks_save;	/* reserved blks @ remount,ro */
 	struct delayed_work	m_reclaim_work;	/* background inode reclaim */
+	struct dentry		*m_debugfs;	/* debugfs parent */
 	struct xfs_kobj		m_kobj;
 	struct xfs_kobj		m_error_kobj;
 	struct xfs_kobj		m_error_meta_kobj;
 	struct xfs_error_cfg	m_error_cfg[XFS_ERR_CLASS_MAX][XFS_ERR_ERRNO_MAX];
 	struct xstats		m_stats;	/* per-fs stats */
+#ifdef CONFIG_XFS_ONLINE_SCRUB_STATS
+	struct xchk_stats	*m_scrub_stats;
+#endif
 	xfs_agnumber_t		m_agfrotor;	/* last ag where space found */
-	xfs_agnumber_t		m_agirotor;	/* last ag dir inode alloced */
-	spinlock_t		m_agirotor_lock;/* .. and lock protecting it */
+	atomic_t		m_agirotor;	/* last ag dir inode alloced */
 
 	/* Memory shrinker to throttle and reprioritize inodegc */
 	struct shrinker		m_inodegc_shrinker;
@@ -238,6 +247,9 @@ typedef struct xfs_mount {
 	unsigned int		*m_errortag;
 	struct xfs_kobj		m_errortag_kobj;
 #endif
+
+	/* cpus that have inodes queued for inactivation */
+	struct cpumask		m_inodegc_cpumask;
 } xfs_mount_t;
 
 #define M_IGEO(mp)		(&(mp)->m_ino_geo)
@@ -274,6 +286,7 @@ typedef struct xfs_mount {
 #define XFS_FEAT_INOBTCNT	(1ULL << 23)	/* inobt block counts */
 #define XFS_FEAT_BIGTIME	(1ULL << 24)	/* large timestamps */
 #define XFS_FEAT_NEEDSREPAIR	(1ULL << 25)	/* needs xfs_repair */
+#define XFS_FEAT_NREXT64	(1ULL << 26)	/* large extent counters */
 
 /* Mount features */
 #define XFS_FEAT_NOATTR2	(1ULL << 48)	/* disable attr2 creation */
@@ -336,6 +349,7 @@ __XFS_HAS_FEAT(realtime, REALTIME)
 __XFS_HAS_FEAT(inobtcounts, INOBTCNT)
 __XFS_HAS_FEAT(bigtime, BIGTIME)
 __XFS_HAS_FEAT(needsrepair, NEEDSREPAIR)
+__XFS_HAS_FEAT(large_extent_counts, NREXT64)
 
 /*
  * Mount features
@@ -385,6 +399,15 @@ __XFS_HAS_FEAT(nouuid, NOUUID)
  */
 #define XFS_OPSTATE_BLOCKGC_ENABLED	6
 
+/* Kernel has logged a warning about online fsck being used on this fs. */
+#define XFS_OPSTATE_WARNED_SCRUB	7
+/* Kernel has logged a warning about shrink being used on this fs. */
+#define XFS_OPSTATE_WARNED_SHRINK	8
+/* Kernel has logged a warning about logged xattr updates being used. */
+#define XFS_OPSTATE_WARNED_LARP		9
+/* Mount time quotacheck is running */
+#define XFS_OPSTATE_QUOTACHECK_RUNNING	10
+
 #define __XFS_IS_OPSTATE(name, NAME) \
 static inline bool xfs_is_ ## name (struct xfs_mount *mp) \
 { \
@@ -406,6 +429,17 @@ __XFS_IS_OPSTATE(inode32, INODE32)
 __XFS_IS_OPSTATE(readonly, READONLY)
 __XFS_IS_OPSTATE(inodegc_enabled, INODEGC_ENABLED)
 __XFS_IS_OPSTATE(blockgc_enabled, BLOCKGC_ENABLED)
+#ifdef CONFIG_XFS_QUOTA
+__XFS_IS_OPSTATE(quotacheck_running, QUOTACHECK_RUNNING)
+#else
+# define xfs_is_quotacheck_running(mp)	(false)
+#endif
+
+static inline bool
+xfs_should_warn(struct xfs_mount *mp, long nr)
+{
+	return !test_and_set_bit(nr, &mp->m_opstate);
+}
 
 #define XFS_OPSTATE_STRINGS \
 	{ (1UL << XFS_OPSTATE_UNMOUNTING),		"unmounting" }, \
@@ -414,7 +448,11 @@ __XFS_IS_OPSTATE(blockgc_enabled, BLOCKGC_ENABLED)
 	{ (1UL << XFS_OPSTATE_INODE32),			"inode32" }, \
 	{ (1UL << XFS_OPSTATE_READONLY),		"read_only" }, \
 	{ (1UL << XFS_OPSTATE_INODEGC_ENABLED),		"inodegc" }, \
-	{ (1UL << XFS_OPSTATE_BLOCKGC_ENABLED),		"blockgc" }
+	{ (1UL << XFS_OPSTATE_BLOCKGC_ENABLED),		"blockgc" }, \
+	{ (1UL << XFS_OPSTATE_WARNED_SCRUB),		"wscrub" }, \
+	{ (1UL << XFS_OPSTATE_WARNED_SHRINK),		"wshrink" }, \
+	{ (1UL << XFS_OPSTATE_WARNED_LARP),		"wlarp" }, \
+	{ (1UL << XFS_OPSTATE_QUOTACHECK_RUNNING),	"quotacheck" }
 
 /*
  * Max and min values for mount-option defined I/O
@@ -423,16 +461,24 @@ __XFS_IS_OPSTATE(blockgc_enabled, BLOCKGC_ENABLED)
 #define XFS_MAX_IO_LOG		30	/* 1G */
 #define XFS_MIN_IO_LOG		PAGE_SHIFT
 
-#define xfs_is_shutdown(mp)		xfs_is_shutdown(mp)
-void xfs_do_force_shutdown(struct xfs_mount *mp, int flags, char *fname,
+void xfs_do_force_shutdown(struct xfs_mount *mp, uint32_t flags, char *fname,
 		int lnnum);
 #define xfs_force_shutdown(m,f)	\
 	xfs_do_force_shutdown(m, f, __FILE__, __LINE__)
 
-#define SHUTDOWN_META_IO_ERROR	0x0001	/* write attempt to metadata failed */
-#define SHUTDOWN_LOG_IO_ERROR	0x0002	/* write attempt to the log failed */
-#define SHUTDOWN_FORCE_UMOUNT	0x0004	/* shutdown from a forced unmount */
-#define SHUTDOWN_CORRUPT_INCORE	0x0008	/* corrupt in-memory data structures */
+#define SHUTDOWN_META_IO_ERROR	(1u << 0) /* write attempt to metadata failed */
+#define SHUTDOWN_LOG_IO_ERROR	(1u << 1) /* write attempt to the log failed */
+#define SHUTDOWN_FORCE_UMOUNT	(1u << 2) /* shutdown from a forced unmount */
+#define SHUTDOWN_CORRUPT_INCORE	(1u << 3) /* corrupt in-memory structures */
+#define SHUTDOWN_CORRUPT_ONDISK	(1u << 4)  /* corrupt metadata on device */
+#define SHUTDOWN_DEVICE_REMOVED	(1u << 5) /* device removed underneath us */
+
+#define XFS_SHUTDOWN_STRINGS \
+	{ SHUTDOWN_META_IO_ERROR,	"metadata_io" }, \
+	{ SHUTDOWN_LOG_IO_ERROR,	"log_io" }, \
+	{ SHUTDOWN_FORCE_UMOUNT,	"force_umount" }, \
+	{ SHUTDOWN_CORRUPT_INCORE,	"corruption" }, \
+	{ SHUTDOWN_DEVICE_REMOVED,	"device_removed" }
 
 /*
  * Flags for xfs_mountfs
@@ -454,120 +500,12 @@ xfs_daddr_to_agbno(struct xfs_mount *mp, xfs_daddr_t d)
 	return (xfs_agblock_t) do_div(ld, mp->m_sb.sb_agblocks);
 }
 
-/* per-AG block reservation data structures*/
-struct xfs_ag_resv {
-	/* number of blocks originally reserved here */
-	xfs_extlen_t			ar_orig_reserved;
-	/* number of blocks reserved here */
-	xfs_extlen_t			ar_reserved;
-	/* number of blocks originally asked for */
-	xfs_extlen_t			ar_asked;
-};
-
-/*
- * Per-ag incore structure, copies of information in agf and agi, to improve the
- * performance of allocation group selection.
- */
-typedef struct xfs_perag {
-	struct xfs_mount *pag_mount;	/* owner filesystem */
-	xfs_agnumber_t	pag_agno;	/* AG this structure belongs to */
-	atomic_t	pag_ref;	/* perag reference count */
-	char		pagf_init;	/* this agf's entry is initialized */
-	char		pagi_init;	/* this agi's entry is initialized */
-	char		pagf_metadata;	/* the agf is preferred to be metadata */
-	char		pagi_inodeok;	/* The agi is ok for inodes */
-	uint8_t		pagf_levels[XFS_BTNUM_AGF];
-					/* # of levels in bno & cnt btree */
-	bool		pagf_agflreset; /* agfl requires reset before use */
-	uint32_t	pagf_flcount;	/* count of blocks in freelist */
-	xfs_extlen_t	pagf_freeblks;	/* total free blocks */
-	xfs_extlen_t	pagf_longest;	/* longest free space */
-	uint32_t	pagf_btreeblks;	/* # of blocks held in AGF btrees */
-	xfs_agino_t	pagi_freecount;	/* number of free inodes */
-	xfs_agino_t	pagi_count;	/* number of allocated inodes */
-
-	/*
-	 * Inode allocation search lookup optimisation.
-	 * If the pagino matches, the search for new inodes
-	 * doesn't need to search the near ones again straight away
-	 */
-	xfs_agino_t	pagl_pagino;
-	xfs_agino_t	pagl_leftrec;
-	xfs_agino_t	pagl_rightrec;
-
-	/*
-	 * Bitsets of per-ag metadata that have been checked and/or are sick.
-	 * Callers should hold pag_state_lock before accessing this field.
-	 */
-	uint16_t	pag_checked;
-	uint16_t	pag_sick;
-	spinlock_t	pag_state_lock;
-
-	spinlock_t	pagb_lock;	/* lock for pagb_tree */
-	struct rb_root	pagb_tree;	/* ordered tree of busy extents */
-	unsigned int	pagb_gen;	/* generation count for pagb_tree */
-	wait_queue_head_t pagb_wait;	/* woken when pagb_gen changes */
-
-	atomic_t        pagf_fstrms;    /* # of filestreams active in this AG */
-
-	spinlock_t	pag_ici_lock;	/* incore inode cache lock */
-	struct radix_tree_root pag_ici_root;	/* incore inode cache root */
-	int		pag_ici_reclaimable;	/* reclaimable inodes */
-	unsigned long	pag_ici_reclaim_cursor;	/* reclaim restart point */
-
-	/* buffer cache index */
-	spinlock_t	pag_buf_lock;	/* lock for pag_buf_hash */
-	struct rhashtable pag_buf_hash;
-
-	/* for rcu-safe freeing */
-	struct rcu_head	rcu_head;
-	int		pagb_count;	/* pagb slots in use */
-
-	/* Blocks reserved for all kinds of metadata. */
-	struct xfs_ag_resv	pag_meta_resv;
-	/* Blocks reserved for the reverse mapping btree. */
-	struct xfs_ag_resv	pag_rmapbt_resv;
-
-	/* background prealloc block trimming */
-	struct delayed_work	pag_blockgc_work;
-
-	/* reference count */
-	uint8_t			pagf_refcount_level;
-
-	/*
-	 * Unlinked inode information.  This incore information reflects
-	 * data stored in the AGI, so callers must hold the AGI buffer lock
-	 * or have some other means to control concurrency.
-	 */
-	struct rhashtable	pagi_unlinked_hash;
-} xfs_perag_t;
-
-static inline struct xfs_ag_resv *
-xfs_perag_resv(
-	struct xfs_perag	*pag,
-	enum xfs_ag_resv_type	type)
-{
-	switch (type) {
-	case XFS_AG_RESV_METADATA:
-		return &pag->pag_meta_resv;
-	case XFS_AG_RESV_RMAPBT:
-		return &pag->pag_rmapbt_resv;
-	default:
-		return NULL;
-	}
-}
-
-int xfs_buf_hash_init(xfs_perag_t *pag);
-void xfs_buf_hash_destroy(xfs_perag_t *pag);
+int xfs_buf_hash_init(struct xfs_perag *pag);
+void xfs_buf_hash_destroy(struct xfs_perag *pag);
 
 extern void	xfs_uuid_table_free(void);
-extern int	xfs_log_sbcount(xfs_mount_t *);
 extern uint64_t xfs_default_resblks(xfs_mount_t *mp);
 extern int	xfs_mountfs(xfs_mount_t *mp);
-extern void	xfs_destroy_perag(xfs_mount_t *mp, xfs_agnumber_t agstart,
-				xfs_agnumber_t agend);
-extern int	xfs_initialize_perag(xfs_mount_t *mp, xfs_agnumber_t agcount,
-				     xfs_agnumber_t *maxagi);
 extern void	xfs_unmountfs(xfs_mount_t *);
 
 /*
@@ -579,7 +517,14 @@ extern void	xfs_unmountfs(xfs_mount_t *);
  */
 #define XFS_FDBLOCKS_BATCH	1024
 
-/* Accessor added for 5.10.y backport */
+/*
+ * Estimate the amount of free space that is not available to userspace and is
+ * not explicitly reserved from the incore fdblocks.  This includes:
+ *
+ * - The minimum number of blocks needed to support splitting a bmap btree
+ * - The blocks currently in use by the freespace btrees because they record
+ *   the actual blocks that will fill per-AG metadata space reservations
+ */
 static inline uint64_t
 xfs_fdblocks_unavailable(
 	struct xfs_mount	*mp)
@@ -587,9 +532,20 @@ xfs_fdblocks_unavailable(
 	return mp->m_alloc_set_aside + atomic64_read(&mp->m_allocbt_blks);
 }
 
-extern int	xfs_mod_fdblocks(struct xfs_mount *mp, int64_t delta,
-				 bool reserved);
-extern int	xfs_mod_frextents(struct xfs_mount *mp, int64_t delta);
+int xfs_mod_freecounter(struct xfs_mount *mp, struct percpu_counter *counter,
+		int64_t delta, bool rsvd);
+
+static inline int
+xfs_mod_fdblocks(struct xfs_mount *mp, int64_t delta, bool reserved)
+{
+	return xfs_mod_freecounter(mp, &mp->m_fdblocks, delta, reserved);
+}
+
+static inline int
+xfs_mod_frextents(struct xfs_mount *mp, int64_t delta)
+{
+	return xfs_mod_freecounter(mp, &mp->m_frextents, delta, false);
+}
 
 extern int	xfs_readsb(xfs_mount_t *, int);
 extern void	xfs_freesb(xfs_mount_t *);
@@ -606,6 +562,8 @@ int	xfs_zero_extent(struct xfs_inode *ip, xfs_fsblock_t start_fsb,
 struct xfs_error_cfg * xfs_error_get_cfg(struct xfs_mount *mp,
 		int error_class, int error);
 void xfs_force_summary_recalc(struct xfs_mount *mp);
+int xfs_add_incompat_log_feature(struct xfs_mount *mp, uint32_t feature);
+bool xfs_clear_incompat_log_features(struct xfs_mount *mp);
 void xfs_mod_delalloc(struct xfs_mount *mp, int64_t delta);
 
 #endif	/* __XFS_MOUNT_H__ */

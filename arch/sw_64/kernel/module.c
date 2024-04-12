@@ -141,10 +141,7 @@ apply_relocate_add(Elf64_Shdr *sechdrs, const char *strtab,
 	 * The following should definitely cover them.
 	 */
 	got = sechdrs[me->arch.gotsecindex].sh_addr;
-	if (me->core_layout.size > 0x10000)
-		gp = got + 0x8000;
-	else
-		gp = (u64)me->core_layout.base + me->core_layout.size - 0x8000;
+	gp = got + 0x8000;
 
 	for (i = 0; i < n; i++) {
 		unsigned long r_sym = ELF64_R_SYM(rela[i].r_info);
@@ -224,7 +221,7 @@ apply_relocate_add(Elf64_Shdr *sechdrs, const char *strtab,
 			    STO_SW64_STD_GPLOAD)
 				/* Omit the prologue. */
 				value += 8;
-			/* FALLTHRU */
+			fallthrough;
 		case R_SW64_BRADDR:
 			value -= (u64)location + 4;
 			if (value & 3)

@@ -9,6 +9,7 @@
  * as published by the Free Software Foundation; either version
  * 2 of the Licence, or (at your option) any later version.
  */
+#ifdef CONFIG_PGP_LIBRARY
 
 #define pr_fmt(fmt) "PGPL: "fmt
 #include <linux/pgplib.h>
@@ -279,3 +280,6 @@ int pgp_parse_public_key(const u8 **_data, size_t *_datalen,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(pgp_parse_public_key);
+
+#endif /* #CONFIG_PGP_LIBRARY */
+

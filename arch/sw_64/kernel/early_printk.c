@@ -98,7 +98,7 @@ static __init void early_serial_hw_init(unsigned long baud)
 static __init void early_serial_init(char *s)
 {
 	unsigned long baud = DEFAULT_BAUD;
-	char *e;
+	int err;
 
 	if (*s == ',')
 		++s;
@@ -110,8 +110,8 @@ static __init void early_serial_init(char *s)
 
 		if (!strncmp(s, "ttyS", 4))
 			s += 4;
-		port = simple_strtoul(s, &e, 10);
-		if (port > 1 || s == e)
+		err = kstrtouint(s, 10, &port);
+		if (err || port > 1)
 			port = 0;
 		early_serial_base = bases[port];
 		s += strcspn(s, ",");
@@ -120,9 +120,8 @@ static __init void early_serial_init(char *s)
 	}
 
 	if (*s) {
-		baud = simple_strtoull(s, &e, 0);
-
-		if (baud == 0 || s == e)
+		err = kstrtoul(s, 0, &baud);
+		if (err || baud == 0)
 			baud = DEFAULT_BAUD;
 	}
 

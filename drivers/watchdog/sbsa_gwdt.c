@@ -43,10 +43,9 @@
 #include <linux/io.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/interrupt.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/uaccess.h>
 #include <linux/watchdog.h>
@@ -130,7 +129,7 @@ static u64 sbsa_gwdt_reg_read(struct sbsa_gwdt *gwdt)
 	if (gwdt->version == 0)
 		return readl(gwdt->control_base + SBSA_GWDT_WOR);
 	else
-		return readq(gwdt->control_base + SBSA_GWDT_WOR);
+		return lo_hi_readq(gwdt->control_base + SBSA_GWDT_WOR);
 }
 
 static void sbsa_gwdt_reg_write(u64 val, struct sbsa_gwdt *gwdt)
@@ -138,7 +137,7 @@ static void sbsa_gwdt_reg_write(u64 val, struct sbsa_gwdt *gwdt)
 	if (gwdt->version == 0)
 		writel((u32)val, gwdt->control_base + SBSA_GWDT_WOR);
 	else
-		writeq(val, gwdt->control_base + SBSA_GWDT_WOR);
+		lo_hi_writeq(val, gwdt->control_base + SBSA_GWDT_WOR);
 }
 
 /*
@@ -150,16 +149,17 @@ static int sbsa_gwdt_set_timeout(struct watchdog_device *wdd,
 	struct sbsa_gwdt *gwdt = watchdog_get_drvdata(wdd);
 
 	wdd->timeout = timeout;
+	timeout = clamp_t(unsigned int, timeout, 1, wdd->max_hw_heartbeat_ms / 1000);
 
 	if (action)
-		sbsa_gwdt_reg_write(gwdt->clk * timeout, gwdt);
+		sbsa_gwdt_reg_write((u64)gwdt->clk * timeout, gwdt);
 	else
 		/*
 		 * In the single stage mode, The first signal (WS0) is ignored,
 		 * the timeout is (WOR * 2), so the WOR should be configured
 		 * to half value of timeout.
 		 */
-		sbsa_gwdt_reg_write(gwdt->clk / 2 * timeout, gwdt);
+		sbsa_gwdt_reg_write(((u64)gwdt->clk / 2) * timeout, gwdt);
 
 	return 0;
 }
@@ -360,7 +360,7 @@ static int __maybe_unused sbsa_gwdt_suspend(struct device *dev)
 {
 	struct sbsa_gwdt *gwdt = dev_get_drvdata(dev);
 
-	if (watchdog_active(&gwdt->wdd))
+	if (watchdog_hw_running(&gwdt->wdd))
 		sbsa_gwdt_stop(&gwdt->wdd);
 
 	return 0;
@@ -371,7 +371,7 @@ static int __maybe_unused sbsa_gwdt_resume(struct device *dev)
 {
 	struct sbsa_gwdt *gwdt = dev_get_drvdata(dev);
 
-	if (watchdog_active(&gwdt->wdd))
+	if (watchdog_hw_running(&gwdt->wdd))
 		sbsa_gwdt_start(&gwdt->wdd);
 
 	return 0;
@@ -411,4 +411,3 @@ MODULE_AUTHOR("Suravee Suthikulpanit <Suravee.Suthikulpanit@amd.com>");
 MODULE_AUTHOR("Al Stone <al.stone@linaro.org>");
 MODULE_AUTHOR("Timur Tabi <timur@codeaurora.org>");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("platform:" DRV_NAME);

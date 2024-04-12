@@ -42,7 +42,6 @@ FAIL_ACTION(bad_hdr,		fault_bad_hdr_attr)
 FAIL_ACTION(bad_hdr_ebadmsg,	fault_bad_hdr_ebadmsg_attr)
 #endif
 
-
 /**
  * ubi_dump_flash - dump a region of flash.
  * @ubi: UBI device description object
@@ -249,23 +248,22 @@ static void dfs_create_fault_entry(struct dentry *parent)
 	struct dentry *dir;
 
 	dir = debugfs_create_dir("fault_inject", parent);
-
 	if (IS_ERR_OR_NULL(dir)) {
 		int err = dir ? PTR_ERR(dir) : -ENODEV;
 
 		pr_warn("UBI error: cannot create \"fault_inject\" debugfs directory, error %d\n",
-			err);
+			 err);
 		return;
 	}
 
 	fault_create_debugfs_attr("emulate_eccerr", dir,
 				  &fault_eccerr_attr);
 
-	fault_create_debugfs_attr("emulate_bitflips", dir,
-				  &fault_bitflips_attr);
-
 	fault_create_debugfs_attr("emulate_read_failure", dir,
 				  &fault_read_failure_attr);
+
+	fault_create_debugfs_attr("emulate_bitflips", dir,
+				  &fault_bitflips_attr);
 
 	fault_create_debugfs_attr("emulate_write_failure", dir,
 				  &fault_write_failure_attr);
@@ -313,6 +311,7 @@ int ubi_debugfs_init(void)
 #ifdef CONFIG_MTD_UBI_FAULT_INJECTION
 	dfs_create_fault_entry(dfs_rootdir);
 #endif
+
 	return 0;
 }
 
@@ -333,7 +332,7 @@ static ssize_t dfs_file_read(struct file *file, char __user *user_buf,
 	struct dentry *dent = file->f_path.dentry;
 	struct ubi_device *ubi;
 	struct ubi_debug_info *d;
-	char buf[12];
+	char buf[16];
 	int val;
 
 	ubi = ubi_get_device(ubi_num);
@@ -349,8 +348,27 @@ static ssize_t dfs_file_read(struct file *file, char __user *user_buf,
 		val = d->chk_fastmap;
 	else if (dent == d->dfs_disable_bgt)
 		val = d->disable_bgt;
+	else if (dent == d->dfs_emulate_bitflips)
+		val = d->emulate_bitflips;
+	else if (dent == d->dfs_emulate_io_failures)
+		val = d->emulate_io_failures;
 	else if (dent == d->dfs_emulate_failures) {
-		snprintf(buf, sizeof(buf), "%u\n", d->emulate_failures);
+		snprintf(buf, sizeof(buf), "0x%04x\n", d->emulate_failures);
+		count = simple_read_from_buffer(user_buf, count, ppos,
+						buf, strlen(buf));
+		goto out;
+	} else if (dent == d->dfs_emulate_power_cut) {
+		snprintf(buf, sizeof(buf), "%u\n", d->emulate_power_cut);
+		count = simple_read_from_buffer(user_buf, count, ppos,
+						buf, strlen(buf));
+		goto out;
+	} else if (dent == d->dfs_power_cut_min) {
+		snprintf(buf, sizeof(buf), "%u\n", d->power_cut_min);
+		count = simple_read_from_buffer(user_buf, count, ppos,
+						buf, strlen(buf));
+		goto out;
+	} else if (dent == d->dfs_power_cut_max) {
+		snprintf(buf, sizeof(buf), "%u\n", d->power_cut_max);
 		count = simple_read_from_buffer(user_buf, count, ppos,
 						buf, strlen(buf));
 		goto out;
@@ -382,7 +400,7 @@ static ssize_t dfs_file_write(struct file *file, const char __user *user_buf,
 	struct ubi_device *ubi;
 	struct ubi_debug_info *d;
 	size_t buf_size;
-	char buf[14] = {0};
+	char buf[16] = {0};
 	int val;
 
 	ubi = ubi_get_device(ubi_num);
@@ -399,6 +417,20 @@ static ssize_t dfs_file_write(struct file *file, const char __user *user_buf,
 	if (dent == d->dfs_emulate_failures) {
 		if (kstrtouint(buf, 0, &d->emulate_failures) != 0)
 			count = -EINVAL;
+		goto out;
+	} else if (dent == d->dfs_power_cut_min) {
+		if (kstrtouint(buf, 0, &d->power_cut_min) != 0)
+			count = -EINVAL;
+		goto out;
+	} else if (dent == d->dfs_power_cut_max) {
+		if (kstrtouint(buf, 0, &d->power_cut_max) != 0)
+			count = -EINVAL;
+		goto out;
+	} else if (dent == d->dfs_emulate_power_cut) {
+		if (kstrtoint(buf, 0, &val) != 0)
+			count = -EINVAL;
+		else
+			d->emulate_power_cut = val;
 		goto out;
 	}
 
@@ -419,6 +451,10 @@ static ssize_t dfs_file_write(struct file *file, const char __user *user_buf,
 		d->chk_fastmap = val;
 	else if (dent == d->dfs_disable_bgt)
 		d->disable_bgt = val;
+	else if (dent == d->dfs_emulate_bitflips)
+		d->emulate_bitflips = val;
+	else if (dent == d->dfs_emulate_io_failures)
+		d->emulate_io_failures = val;
 	else
 		count = -EINVAL;
 
@@ -437,7 +473,6 @@ static const struct file_operations dfs_fops = {
 	.llseek = no_llseek,
 	.owner  = THIS_MODULE,
 };
-
 
 /* As long as the position is less then that total number of erase blocks,
  * we still have more to print.
@@ -565,7 +600,7 @@ int ubi_debugfs_init_dev(struct ubi_device *ubi)
 
 	n = snprintf(d->dfs_dir_name, UBI_DFS_DIR_LEN + 1, UBI_DFS_DIR_NAME,
 		     ubi->ubi_num);
-	if (n == UBI_DFS_DIR_LEN) {
+	if (n > UBI_DFS_DIR_LEN) {
 		/* The array size is too small */
 		return -EINVAL;
 	}
@@ -586,23 +621,78 @@ int ubi_debugfs_init_dev(struct ubi_device *ubi)
 						 d->dfs_dir, (void *)ubi_num,
 						 &dfs_fops);
 
+	d->dfs_emulate_bitflips = debugfs_create_file("tst_emulate_bitflips",
+						      mode, d->dfs_dir,
+						      (void *)ubi_num,
+						      &dfs_fops);
+
+	d->dfs_emulate_io_failures = debugfs_create_file("tst_emulate_io_failures",
+							 mode, d->dfs_dir,
+							 (void *)ubi_num,
+							 &dfs_fops);
+
+	d->dfs_emulate_power_cut = debugfs_create_file("tst_emulate_power_cut",
+						       mode, d->dfs_dir,
+						       (void *)ubi_num,
+						       &dfs_fops);
+
+	d->dfs_power_cut_min = debugfs_create_file("tst_emulate_power_cut_min",
+						   mode, d->dfs_dir,
+						   (void *)ubi_num, &dfs_fops);
+
+	d->dfs_power_cut_max = debugfs_create_file("tst_emulate_power_cut_max",
+						   mode, d->dfs_dir,
+						   (void *)ubi_num, &dfs_fops);
+
 	debugfs_create_file("detailed_erase_block_info", S_IRUSR, d->dfs_dir,
 			    (void *)ubi_num, &eraseblk_count_fops);
 
 #ifdef CONFIG_MTD_UBI_FAULT_INJECTION
-	d->dfs_emulate_failures = debugfs_create_file("emulate_failures", mode,
-						      d->dfs_dir, (void *)ubi_num,
-						      &dfs_fops);
+	d->dfs_emulate_failures = debugfs_create_file("emulate_failures",
+						       mode, d->dfs_dir,
+						       (void *)ubi_num,
+						       &dfs_fops);
 #endif
 	return 0;
 }
 
 /**
- * dbg_debug_exit_dev - free all debugfs files corresponding to device @ubi
+ * ubi_debugfs_exit_dev - free all debugfs files corresponding to device @ubi
  * @ubi: UBI device description object
  */
 void ubi_debugfs_exit_dev(struct ubi_device *ubi)
 {
 	if (IS_ENABLED(CONFIG_DEBUG_FS))
 		debugfs_remove_recursive(ubi->dbg.dfs_dir);
+}
+
+/**
+ * ubi_dbg_power_cut - emulate a power cut if it is time to do so
+ * @ubi: UBI device description object
+ * @caller: Flags set to indicate from where the function is being called
+ *
+ * Returns non-zero if a power cut was emulated, zero if not.
+ */
+int ubi_dbg_power_cut(struct ubi_device *ubi, int caller)
+{
+	unsigned int range;
+
+	if ((ubi->dbg.emulate_power_cut & caller) == 0)
+		return 0;
+
+	if (ubi->dbg.power_cut_counter == 0) {
+		ubi->dbg.power_cut_counter = ubi->dbg.power_cut_min;
+
+		if (ubi->dbg.power_cut_max > ubi->dbg.power_cut_min) {
+			range = ubi->dbg.power_cut_max - ubi->dbg.power_cut_min;
+			ubi->dbg.power_cut_counter += get_random_u32_below(range);
+		}
+		return 0;
+	}
+
+	ubi->dbg.power_cut_counter--;
+	if (ubi->dbg.power_cut_counter)
+		return 0;
+
+	return 1;
 }

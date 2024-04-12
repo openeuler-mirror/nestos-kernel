@@ -1,5 +1,3 @@
-.. _pagemap:
-
 =============================
 Examining Process Page Tables
 =============================
@@ -19,9 +17,11 @@ There are four components to pagemap:
     * Bits 0-4   swap type if swapped
     * Bits 5-54  swap offset if swapped
     * Bit  55    pte is soft-dirty (see
-      :ref:`Documentation/admin-guide/mm/soft-dirty.rst <soft_dirty>`)
+      Documentation/admin-guide/mm/soft-dirty.rst)
     * Bit  56    page exclusively mapped (since 4.2)
-    * Bits 57-60 zero
+    * Bit  57    pte is uffd-wp write-protected (since 5.13) (see
+      Documentation/admin-guide/mm/userfaultfd.rst)
+    * Bits 58-60 zero
     * Bit  61    page is file-page or shared-anon (since 3.5)
     * Bit  62    page swapped
     * Bit  63    page present
@@ -44,7 +44,7 @@ There are four components to pagemap:
  * ``/proc/kpagecount``.  This file contains a 64-bit count of the number of
    times each page is mapped, indexed by PFN.
 
-The page-types tool in the tools/vm directory can be used to query the
+The page-types tool in the tools/mm directory can be used to query the
 number of times a page is mapped.
 
  * ``/proc/kpageflags``.  This file contains a 64-bit set of flags for each
@@ -91,9 +91,9 @@ Short descriptions to the page flags
    The page is being locked for exclusive access, e.g. by undergoing read/write
    IO.
 7 - SLAB
-   The page is managed by the SLAB/SLOB/SLUB/SLQB kernel memory allocator.
-   When compound page is used, SLUB/SLQB will only set this flag on the head
-   page; SLOB will not flag it at all.
+   The page is managed by the SLAB/SLUB kernel memory allocator.
+   When compound page is used, either will only set this flag on the head
+   page.
 10 - BUDDY
     A free memory block managed by the buddy system allocator.
     The buddy system organizes free memory in blocks of various orders.
@@ -103,8 +103,7 @@ Short descriptions to the page flags
     A compound page with order N consists of 2^N physically contiguous pages.
     A compound page with order 2 takes the form of "HTTT", where H donates its
     head page and T donates its tail page(s).  The major consumers of compound
-    pages are hugeTLB pages
-    (:ref:`Documentation/admin-guide/mm/hugetlbpage.rst <hugetlbpage>`),
+    pages are hugeTLB pages (Documentation/admin-guide/mm/hugetlbpage.rst),
     the SLUB etc.  memory allocators and various device drivers.
     However in this interface, only huge/giga pages are made visible
     to end users.
@@ -126,7 +125,7 @@ Short descriptions to the page flags
     Zero page for pfn_zero or huge_zero page.
 25 - IDLE
     The page has not been accessed since it was marked idle (see
-    :ref:`Documentation/admin-guide/mm/idle_page_tracking.rst <idle_page_tracking>`).
+    Documentation/admin-guide/mm/idle_page_tracking.rst).
     Note that this flag may be stale in case the page was accessed via
     a PTE. To make sure the flag is up-to-date one has to read
     ``/sys/kernel/mm/page_idle/bitmap`` first.
@@ -171,7 +170,7 @@ LRU related page flags
 14 - SWAPBACKED
    The page is backed by swap/RAM.
 
-The page-types tool in the tools/vm directory can be used to query the
+The page-types tool in the tools/mm directory can be used to query the
 above flags.
 
 Using pagemap to do something useful
@@ -194,6 +193,28 @@ memory that a process is using that is not shared with any other process,
 you can go through every map in the process, find the PFNs, look those up
 in kpagecount, and tally up the number of pages that are only referenced
 once.
+
+Exceptions for Shared Memory
+============================
+
+Page table entries for shared pages are cleared when the pages are zapped or
+swapped out. This makes swapped out pages indistinguishable from never-allocated
+ones.
+
+In kernel space, the swap location can still be retrieved from the page cache.
+However, values stored only on the normal PTE get lost irretrievably when the
+page is swapped out (i.e. SOFT_DIRTY).
+
+In user space, whether the page is present, swapped or none can be deduced with
+the help of lseek and/or mincore system calls.
+
+lseek() can differentiate between accessed pages (present or swapped out) and
+holes (none/non-allocated) by specifying the SEEK_DATA flag on the file where
+the pages are backed. For anonymous shared pages, the file can be found in
+``/proc/pid/map_files/``.
+
+mincore() can differentiate between pages in memory (present, including swap
+cache) and out of memory (swapped out or none/non-allocated).
 
 Other notes
 ===========

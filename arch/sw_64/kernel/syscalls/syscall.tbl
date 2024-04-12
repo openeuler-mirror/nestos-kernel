@@ -187,18 +187,18 @@
 177	common	geteuid				sys_geteuid
 178	common	getgid				sys_getgid
 179	common	getegid				sys_getegid
-#180 is unused
-#181 is unused
-#182 is unused
-#183 is unused
-#184 is unused
-#185 is unused
-#186 is unused
-#187 is unused
-#188 is unused
-#189 is unused
-#190 is unused
-#191 is unused
+180	common	epoll_pwait2			sys_epoll_pwait2
+181	common	mount_setattr			sys_mount_setattr
+182	common	quotactl_fd			sys_quotactl_fd
+183	common	landlock_create_ruleset		sys_landlock_create_ruleset
+184	common	landlock_add_rule		sys_landlock_add_rule
+185	common	landlock_restrict_self		sys_landlock_restrict_self
+# 186 reserved for memfd_secret
+187	common	process_mrelease		sys_process_mrelease
+188	common	futex_waitv			sys_futex_waitv
+189	common	set_mempolicy_home_node		sys_ni_syscall
+190	common	cachestat			sys_cachestat
+191	common	fchmodat2			sys_fchmodat2
 #192 is unused
 #193 is unused
 #194 is unused
@@ -307,7 +307,7 @@
 #297 is unused
 298	common	getpriority			sys_getpriority
 299	common	sigprocmask			sys_sigprocmask
-300	common	bdflush				sys_bdflush
+300	common	bdflush				sys_ni_syscall
 #301 is unused
 302	common	mount				sys_mount
 #303 is unused

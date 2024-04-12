@@ -185,7 +185,6 @@ void pci_pri_init(struct pci_dev *pdev)
 	if (status & PCI_PRI_STATUS_PASID)
 		pdev->pasid_required = 1;
 }
-EXPORT_SYMBOL_GPL(pci_pri_init);
 
 /**
  * pci_enable_pri - Enable PRI capability
@@ -233,7 +232,6 @@ int pci_enable_pri(struct pci_dev *pdev, u32 reqs)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(pci_enable_pri);
 
 /**
  * pci_disable_pri - Disable PRI capability
@@ -313,7 +311,6 @@ int pci_reset_pri(struct pci_dev *pdev)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(pci_reset_pri);
 
 /**
  * pci_prg_resp_pasid_required - Return PRG Response PASID Required bit
@@ -329,7 +326,6 @@ int pci_prg_resp_pasid_required(struct pci_dev *pdev)
 
 	return pdev->pasid_required;
 }
-EXPORT_SYMBOL_GPL(pci_prg_resp_pasid_required);
 
 /**
  * pci_pri_supported - Check if PRI is supported.
@@ -384,6 +380,9 @@ int pci_enable_pasid(struct pci_dev *pdev, int features)
 		return -EINVAL;
 
 	if (!pasid)
+		return -EINVAL;
+
+	if (!pci_acs_path_enabled(pdev, NULL, PCI_ACS_RR | PCI_ACS_UF))
 		return -EINVAL;
 
 	pci_read_config_word(pdev, pasid + PCI_PASID_CAP, &supported);
@@ -484,7 +483,7 @@ EXPORT_SYMBOL_GPL(pci_pasid_features);
 #define PASID_NUMBER_SHIFT	8
 #define PASID_NUMBER_MASK	(0x1f << PASID_NUMBER_SHIFT)
 /**
- * pci_max_pasid - Get maximum number of PASIDs supported by device
+ * pci_max_pasids - Get maximum number of PASIDs supported by device
  * @pdev: PCI device structure
  *
  * Returns negative value when PASID capability is not present.

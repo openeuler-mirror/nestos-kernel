@@ -1,211 +1,128 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright (C) 2022 Loongson Corporation
- */
-
-/*
- * Authors:
- *      Sui Jingfeng <suijingfeng@loongson.cn>
+ * Copyright (C) 2023 Loongson Technology Corporation Limited
  */
 
 #include <linux/pci.h>
-#include <linux/of_reserved_mem.h>
-#include <linux/platform_device.h>
-#include <linux/module.h>
-#include <linux/pci.h>
-#include <linux/of_reserved_mem.h>
-#include <linux/platform_device.h>
+#include <linux/vgaarb.h>
 
-#include <drm/drm_vblank.h>
-#include <drm/drm_fb_helper.h>
-#include <drm/drm_gem_cma_helper.h>
-#include <drm/drm_fb_cma_helper.h>
-#include <drm/drm_gem_vram_helper.h>
-#include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_aperture.h>
+#include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_probe_helper.h>
+#include <drm/drm_drv.h>
+#include <drm/drm_fbdev_generic.h>
+#include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_ioctl.h>
 #include <drm/drm_modeset_helper.h>
+#include <drm/drm_probe_helper.h>
+#include <drm/drm_vblank.h>
 
+#include "loongson_module.h"
 #include "lsdc_drv.h"
-#include "lsdc_irq.h"
-#include "lsdc_output.h"
-#include "lsdc_debugfs.h"
-#include "lsdc_i2c.h"
+#include "lsdc_gem.h"
+#include "lsdc_ttm.h"
 
-static int lsdc_use_vram_helper = -1;
-MODULE_PARM_DESC(use_vram_helper, "Using vram helper based driver(0 = disabled)");
-module_param_named(use_vram_helper, lsdc_use_vram_helper, int, 0644);
-
-static int lsdc_gamma = -1;
-MODULE_PARM_DESC(gamma, "enable gamma (-1 = disabled (default), >0 = enabled)");
-module_param_named(gamma, lsdc_gamma, int, 0644);
-
-static int lsdc_relax_alignment = -1;
-MODULE_PARM_DESC(relax_alignment,
-		 "relax crtc stride alignment (-1 = disabled (default), >0 = enabled)");
-module_param_named(relax_alignment, lsdc_relax_alignment, int, 0644);
-
-static const struct lsdc_chip_desc dc_in_ls2k1000 = {
-	.chip = LSDC_CHIP_2K1000,
-	.num_of_crtc = LSDC_NUM_CRTC,
-	/* ls2k1000 user manual say the max pixel clock can be about 200MHz */
-	.max_pixel_clk = 200000,
-	.max_width = 2560,
-	.max_height = 2048,
-	.num_of_hw_cursor = 1,
-	.hw_cursor_w = 32,
-	.hw_cursor_h = 32,
-	.stride_alignment = 256,
-	.has_builtin_i2c = false,
-	.has_vram = false,
-	.broken_gamma = true,
-};
-
-static const struct lsdc_chip_desc dc_in_ls2k0500 = {
-	.chip = LSDC_CHIP_2K0500,
-	.num_of_crtc = LSDC_NUM_CRTC,
-	.max_pixel_clk = 200000,
-	.max_width = 2048,
-	.max_height = 2048,
-	.num_of_hw_cursor = 1,
-	.hw_cursor_w = 32,
-	.hw_cursor_h = 32,
-	.stride_alignment = 256,
-	.has_builtin_i2c = false,
-	.has_vram = false,
-	.broken_gamma = true,
-};
-
-static const struct lsdc_chip_desc dc_in_ls7a1000 = {
-	.chip = LSDC_CHIP_7A1000,
-	.num_of_crtc = LSDC_NUM_CRTC,
-	.max_pixel_clk = 200000,
-	.max_width = 2048,
-	.max_height = 2048,
-	.num_of_hw_cursor = 1,
-	.hw_cursor_w = 32,
-	.hw_cursor_h = 32,
-	.stride_alignment = 256,
-	.has_builtin_i2c = true,
-	.has_vram = true,
-	.broken_gamma = true,
-};
-
-static const struct lsdc_chip_desc dc_in_ls7a2000 = {
-	.chip = LSDC_CHIP_7A2000,
-	.num_of_crtc = LSDC_NUM_CRTC,
-	.max_pixel_clk = 200000,
-	.max_width = 2048,
-	.max_height = 2048,
-	.num_of_hw_cursor = 2,
-	.hw_cursor_w = 64,
-	.hw_cursor_h = 64,
-	.stride_alignment = 256,
-	.has_builtin_i2c = true,
-	.has_vram = true,
-	.broken_gamma = true,
-};
-
-static enum drm_mode_status
-lsdc_device_mode_valid(struct drm_device *ddev, const struct drm_display_mode *mode)
-{
-	struct lsdc_device *ldev = to_lsdc(ddev);
-
-	if (ldev->use_vram_helper)
-		return drm_vram_helper_mode_valid(ddev, mode);
-
-	return MODE_OK;
-}
-
-static const struct drm_mode_config_funcs lsdc_mode_config_funcs = {
-	.fb_create = drm_gem_fb_create,
-	.output_poll_changed = drm_fb_helper_output_poll_changed,
-	.atomic_check = drm_atomic_helper_check,
-	.atomic_commit = drm_atomic_helper_commit,
-	.mode_valid = lsdc_device_mode_valid,
-};
+#define DRIVER_AUTHOR               "Sui Jingfeng <suijingfeng@loongson.cn>"
+#define DRIVER_NAME                 "loongson"
+#define DRIVER_DESC                 "drm driver for loongson graphics"
+#define DRIVER_DATE                 "20220701"
+#define DRIVER_MAJOR                1
+#define DRIVER_MINOR                0
+#define DRIVER_PATCHLEVEL           0
 
 DEFINE_DRM_GEM_FOPS(lsdc_gem_fops);
 
-static struct drm_driver lsdc_vram_driver = {
-	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
+static const struct drm_driver lsdc_drm_driver = {
+	.driver_features = DRIVER_MODESET | DRIVER_RENDER | DRIVER_GEM | DRIVER_ATOMIC,
 	.fops = &lsdc_gem_fops,
 
-	.name = "loongson-drm",
+	.name = DRIVER_NAME,
 	.desc = DRIVER_DESC,
 	.date = DRIVER_DATE,
 	.major = DRIVER_MAJOR,
 	.minor = DRIVER_MINOR,
 	.patchlevel = DRIVER_PATCHLEVEL,
-#ifdef CONFIG_DEBUG_FS
-	.debugfs_init = lsdc_vram_mm_debugfs_init,
-#endif
-	.dumb_create = drm_gem_vram_driver_dumb_create,
-	.dumb_map_offset = drm_gem_vram_driver_dumb_mmap_offset,
-	.gem_prime_mmap = drm_gem_prime_mmap,
+
+	.debugfs_init = lsdc_debugfs_init,
+	.dumb_create = lsdc_dumb_create,
+	.dumb_map_offset = lsdc_dumb_map_offset,
+	.gem_prime_import_sg_table = lsdc_prime_import_sg_table,
 };
 
-static int lsdc_modeset_init(struct lsdc_device *ldev, uint32_t num_crtc)
+static const struct drm_mode_config_funcs lsdc_mode_config_funcs = {
+	.fb_create = drm_gem_fb_create,
+	.atomic_check = drm_atomic_helper_check,
+	.atomic_commit = drm_atomic_helper_commit,
+};
+
+/* Display related */
+
+static int lsdc_modeset_init(struct lsdc_device *ldev,
+			     unsigned int num_crtc,
+			     const struct lsdc_kms_funcs *funcs,
+			     bool has_vblank)
 {
-	struct drm_device *ddev = &ldev->ddev;
+	struct drm_device *ddev = &ldev->base;
+	struct lsdc_display_pipe *dispipe;
 	unsigned int i;
 	int ret;
 
-	if (ldev->has_ports_node) {
-		drm_info(ddev, "Has OF graph support\n");
-		ret = lsdc_attach_output(ldev, num_crtc);
+	for (i = 0; i < num_crtc; i++) {
+		dispipe = &ldev->dispipe[i];
+
+		/* We need an index before crtc is initialized */
+		dispipe->index = i;
+
+		ret = funcs->create_i2c(ddev, dispipe, i);
 		if (ret)
 			return ret;
-	} else {
-		drm_info(ddev, "No OF graph support\n");
-		for (i = 0; i < num_crtc; i++) {
-			ret = lsdc_create_output(ldev, i, num_crtc);
-			if (ret)
-				return ret;
-		}
 	}
 
 	for (i = 0; i < num_crtc; i++) {
-		struct lsdc_display_pipe * const dispipe = &ldev->dispipe[i];
-		struct drm_plane * const primary = &dispipe->primary;
-		struct drm_plane * const cursor = &dispipe->cursor;
-		struct drm_crtc * const crtc = &dispipe->crtc;
-		struct lsdc_pll * const pixpll = &dispipe->pixpll;
+		struct i2c_adapter *ddc = NULL;
 
-		dispipe->index = i;
+		dispipe = &ldev->dispipe[i];
+		if (dispipe->li2c)
+			ddc = &dispipe->li2c->adapter;
 
-		ret = lsdc_pixpll_init(pixpll, ddev, i);
+		ret = funcs->output_init(ddev, dispipe, ddc, i);
 		if (ret)
 			return ret;
 
-		ret = lsdc_plane_init(ldev, primary, DRM_PLANE_TYPE_PRIMARY, i);
-		if (ret)
-			return ret;
-
-		ret = lsdc_plane_init(ldev, cursor, DRM_PLANE_TYPE_CURSOR, i);
-		if (ret)
-			return ret;
-
-		/*
-		 * Initial all of the CRTC available, in this way the crtc
-		 * index is equal to the hardware crtc index. That is:
-		 * display pipe 0 => crtc0 + dvo0 + encoder0
-		 * display pipe 1 => crtc1 + dvo1 + encoder1
-		 */
-		ret = lsdc_crtc_init(ddev, crtc, i, primary, cursor);
-		if (ret)
-			return ret;
-
-		drm_info(ddev, "display pipe %u initialized\n", i);
+		ldev->num_output++;
 	}
+
+	for (i = 0; i < num_crtc; i++) {
+		dispipe = &ldev->dispipe[i];
+
+		ret = funcs->primary_plane_init(ddev, &dispipe->primary.base, i);
+		if (ret)
+			return ret;
+
+		ret = funcs->cursor_plane_init(ddev, &dispipe->cursor.base, i);
+		if (ret)
+			return ret;
+
+		ret = funcs->crtc_init(ddev, &dispipe->crtc.base,
+				       &dispipe->primary.base,
+				       &dispipe->cursor.base,
+				       i, has_vblank);
+		if (ret)
+			return ret;
+	}
+
+	drm_info(ddev, "Total %u outputs\n", ldev->num_output);
 
 	return 0;
 }
 
-static int lsdc_mode_config_init(struct lsdc_device *ldev)
+static const struct drm_mode_config_helper_funcs lsdc_mode_config_helper_funcs = {
+	.atomic_commit_tail = drm_atomic_helper_commit_tail,
+};
+
+static int lsdc_mode_config_init(struct drm_device *ddev,
+				 const struct lsdc_desc *descp)
 {
-	const struct lsdc_chip_desc * const descp = ldev->desc;
-	struct drm_device *ddev = &ldev->ddev;
 	int ret;
 
 	ret = drmm_mode_config_init(ddev);
@@ -215,124 +132,141 @@ static int lsdc_mode_config_init(struct lsdc_device *ldev)
 	ddev->mode_config.funcs = &lsdc_mode_config_funcs;
 	ddev->mode_config.min_width = 1;
 	ddev->mode_config.min_height = 1;
-	ddev->mode_config.max_width = 4096;
-	ddev->mode_config.max_height = 4096;
+	ddev->mode_config.max_width = descp->max_width * LSDC_NUM_CRTC;
+	ddev->mode_config.max_height = descp->max_height * LSDC_NUM_CRTC;
 	ddev->mode_config.preferred_depth = 24;
-	ddev->mode_config.prefer_shadow = ldev->use_vram_helper;
+	ddev->mode_config.prefer_shadow = 1;
 
 	ddev->mode_config.cursor_width = descp->hw_cursor_h;
 	ddev->mode_config.cursor_height = descp->hw_cursor_h;
 
-	if (ldev->vram_base)
-		ddev->mode_config.fb_base = ldev->vram_base;
+	ddev->mode_config.helper_private = &lsdc_mode_config_helper_funcs;
 
-	return lsdc_modeset_init(ldev, descp->num_of_crtc);
+	if (descp->has_vblank_counter)
+		ddev->max_vblank_count = 0xffffffff;
+
+	return ret;
 }
 
 /*
- * lsdc_detect_chip - a function to tell different chips apart.
+ * The GPU and display controller in the LS7A1000/LS7A2000/LS2K2000 are
+ * separated PCIE devices. They are two devices, not one. Bar 2 of the GPU
+ * device contains the base address and size of the VRAM, both the GPU and
+ * the DC could access the on-board VRAM.
  */
-const struct lsdc_chip_desc *
-lsdc_detect_chip(struct pci_dev *pdev, const struct pci_device_id * const ent)
+static int lsdc_get_dedicated_vram(struct lsdc_device *ldev,
+				   struct pci_dev *pdev_dc,
+				   const struct lsdc_desc *descp)
 {
-	static const struct lsdc_match {
-		char name[128];
-		const void *data;
-	} compat[] = {
-		{ .name = "loongson,ls7a1000-dc", .data = &dc_in_ls7a1000 },
-		{ .name = "loongson,ls2k1000-dc", .data = &dc_in_ls2k1000 },
-		{ .name = "loongson,ls2k0500-dc", .data = &dc_in_ls2k0500 },
-		{ .name = "loongson,ls7a2000-dc", .data = &dc_in_ls7a2000 },
-		{ .name = "loongson,loongson64c-4core-ls7a", .data = &dc_in_ls7a1000 },
-		{ .name = "loongson,loongson64g-4core-ls7a", .data = &dc_in_ls7a1000 },
-		{ .name = "loongson,loongson64-2core-2k1000", .data = &dc_in_ls2k1000 },
-		{ .name = "loongson,loongson2k1000", .data = &dc_in_ls2k1000 },
-		{ /* sentinel */ },
-	};
-
-	struct device_node *np;
-	unsigned int i;
-
-	if (ent->driver_data == LSDC_CHIP_7A2000)
-		return &dc_in_ls7a2000;
-
-	if (ent->driver_data == LSDC_CHIP_7A1000)
-		return &dc_in_ls7a1000;
-
-	/* Deduce DC variant information from the DC device node */
-	for (i = 0; i < ARRAY_SIZE(compat); ++i) {
-		np = of_find_compatible_node(NULL, NULL, compat[i].name);
-		if (!np)
-			continue;
-
-		of_node_put(np);
-
-		return compat[i].data;
-	}
-
-	dev_info(&pdev->dev, "No Compatible Device Node Found\n");
-
-	if (pci_get_device(PCI_VENDOR_ID_LOONGSON, 0x7A15, NULL))
-		return &dc_in_ls7a1000;
-	else if (pci_get_device(PCI_VENDOR_ID_LOONGSON, 0x7A05, NULL))
-		return &dc_in_ls2k1000;
-
-	return NULL;
-}
-
-static int lsdc_remove_conflicting_framebuffers(void)
-{
-	struct apertures_struct *ap;
-
-	ap = alloc_apertures(1);
-	if (!ap)
-		return -ENOMEM;
-
-	ap->ranges[0].base = 0;
-	ap->ranges[0].size = ~0;
-
-	return drm_fb_helper_remove_conflicting_framebuffers(ap, "loongsondrmfb", false);
-}
-
-static int lsdc_vram_init(struct lsdc_device *ldev)
-{
-	const struct lsdc_chip_desc * const descp = ldev->desc;
-	struct pci_dev *gpu;
+	struct drm_device *ddev = &ldev->base;
+	struct pci_dev *pdev_gpu;
 	resource_size_t base, size;
 
-	if (descp->chip == LSDC_CHIP_7A2000) {
-		/* BAR 2 of LS7A2000's GPU contain VRAM */
-		gpu = pci_get_device(PCI_VENDOR_ID_LOONGSON, 0x7A25, NULL);
-	} else if (descp->chip == LSDC_CHIP_7A1000) {
-		/* BAR 2 of LS7A1000's GPU(GC1000) contain VRAM */
-		gpu = pci_get_device(PCI_VENDOR_ID_LOONGSON, 0x7A15, NULL);
-	} else {
-		drm_err(&ldev->ddev, "Unknown chip, the driver need update\n");
-		return -ENOENT;
+	/*
+	 * The GPU has 00:06.0 as its BDF, while the DC has 00:06.1
+	 * This is true for the LS7A1000, LS7A2000 and LS2K2000.
+	 */
+	pdev_gpu = pci_get_domain_bus_and_slot(pci_domain_nr(pdev_dc->bus),
+					       pdev_dc->bus->number,
+					       PCI_DEVFN(6, 0));
+	if (!pdev_gpu) {
+		drm_err(ddev, "No GPU device, then no VRAM\n");
+		return -ENODEV;
 	}
 
-	base = pci_resource_start(gpu, 2);
-	size = pci_resource_len(gpu, 2);
+	base = pci_resource_start(pdev_gpu, 2);
+	size = pci_resource_len(pdev_gpu, 2);
 
 	ldev->vram_base = base;
 	ldev->vram_size = size;
+	ldev->gpu = pdev_gpu;
 
-	drm_info(&ldev->ddev, "vram start: 0x%llx, size: %uMB\n",
+	drm_info(ddev, "Dedicated vram start: 0x%llx, size: %uMiB\n",
 		 (u64)base, (u32)(size >> 20));
 
 	return 0;
 }
 
-static int lsdc_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+static struct lsdc_device *
+lsdc_create_device(struct pci_dev *pdev,
+		   const struct lsdc_desc *descp,
+		   const struct drm_driver *driver)
 {
 	struct lsdc_device *ldev;
 	struct drm_device *ddev;
-	const struct lsdc_chip_desc *descp;
 	int ret;
 
-	ret = pcim_enable_device(pdev);
+	ldev = devm_drm_dev_alloc(&pdev->dev, driver, struct lsdc_device, base);
+	if (IS_ERR(ldev))
+		return ldev;
+
+	ldev->dc = pdev;
+	ldev->descp = descp;
+
+	ddev = &ldev->base;
+
+	loongson_gfxpll_create(ddev, &ldev->gfxpll);
+
+	ret = lsdc_get_dedicated_vram(ldev, pdev, descp);
+	if (ret) {
+		drm_err(ddev, "Init VRAM failed: %d\n", ret);
+		return ERR_PTR(ret);
+	}
+
+	ret = drm_aperture_remove_conflicting_framebuffers(ldev->vram_base,
+							   ldev->vram_size,
+							   driver);
+	if (ret) {
+		drm_err(ddev, "Remove firmware framebuffers failed: %d\n", ret);
+		return ERR_PTR(ret);
+	}
+
+	ret = lsdc_ttm_init(ldev);
+	if (ret) {
+		drm_err(ddev, "Memory manager init failed: %d\n", ret);
+		return ERR_PTR(ret);
+	}
+
+	lsdc_gem_init(ddev);
+
+	/* Bar 0 of the DC device contains the MMIO register's base address */
+	ldev->reg_base = pcim_iomap(pdev, 0, 0);
+	if (!ldev->reg_base)
+		return ERR_PTR(-ENODEV);
+
+	spin_lock_init(&ldev->reglock);
+
+	ret = lsdc_mode_config_init(ddev, descp);
 	if (ret)
-		return ret;
+		return ERR_PTR(ret);
+
+	ret = lsdc_modeset_init(ldev, descp->num_of_crtc, descp->funcs,
+				loongson_vblank);
+	if (ret)
+		return ERR_PTR(ret);
+
+	drm_mode_config_reset(ddev);
+
+	return ldev;
+}
+
+/* For multiple GPU driver instance co-exixt in the system */
+
+static unsigned int lsdc_vga_set_decode(struct pci_dev *pdev, bool state)
+{
+	return VGA_RSRC_NORMAL_IO | VGA_RSRC_NORMAL_MEM;
+}
+
+static int lsdc_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+{
+	const struct lsdc_desc *descp;
+	struct drm_device *ddev;
+	struct lsdc_device *ldev;
+	int ret;
+
+	descp = lsdc_device_probe(pdev, ent->driver_data);
+	if (IS_ERR_OR_NULL(descp))
+		return -ENODEV;
 
 	pci_set_master(pdev);
 
@@ -340,98 +274,49 @@ static int lsdc_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (ret)
 		return ret;
 
-	descp = lsdc_detect_chip(pdev, ent);
-	if (!descp) {
-		pr_info("unknown dc ip core, abort\n");
-		return -ENOENT;
-	}
+	ret = pcim_enable_device(pdev);
+	if (ret)
+		return ret;
 
-	lsdc_remove_conflicting_framebuffers();
+	dev_info(&pdev->dev, "Found %s, revision: %u",
+		 to_loongson_gfx(descp)->model, pdev->revision);
 
-	ldev = devm_drm_dev_alloc(&pdev->dev, &lsdc_vram_driver, struct lsdc_device, ddev);
+	ldev = lsdc_create_device(pdev, descp, &lsdc_drm_driver);
 	if (IS_ERR(ldev))
 		return PTR_ERR(ldev);
 
-	ldev->desc = descp;
-	ldev->use_vram_helper = lsdc_use_vram_helper && descp->has_vram;
-
-	ddev = &ldev->ddev;
-	ddev->pdev = pdev;
+	ddev = &ldev->base;
 
 	pci_set_drvdata(pdev, ddev);
 
-	if (!descp->broken_gamma)
-		ldev->enable_gamma = true;
-	else
-		ldev->enable_gamma = lsdc_gamma > 0 ? true : false;
-
-	ldev->relax_alignment = lsdc_relax_alignment > 0 ? true : false;
-
-	/* BAR 0 of the DC device contain registers base address */
-	ldev->reg_base = pcim_iomap(pdev, 0, 0);
-	if (!ldev->reg_base)
-		return -ENODEV;
-
-	if (ldev->use_vram_helper) {
-		ret = lsdc_vram_init(ldev);
-		if (ret) {
-			drm_err(ddev, "VRAM is unavailable\n");
-			ldev->use_vram_helper = false;
-		}
-	}
-
-	ldev->irq = pdev->irq;
-
-	if (ldev->use_vram_helper) {
-		ret = drmm_vram_helper_init(ddev, ldev->vram_base, ldev->vram_size);
-		if (ret) {
-			drm_err(ddev, "vram helper init failed: %d\n", ret);
-			goto err_kms;
-		}
-	};
-
-	spin_lock_init(&ldev->reglock);
-
-	ret = lsdc_mode_config_init(ldev);
-	if (ret) {
-		drm_dbg(ddev, "%s: %d\n", __func__, ret);
-		goto err_kms;
-	}
-
-	drm_mode_config_reset(ddev);
-
-	ret = devm_request_threaded_irq(&pdev->dev,
-					ldev->irq,
-					lsdc_irq_handler_cb,
-					lsdc_irq_thread_cb,
-					IRQF_ONESHOT, NULL,
-					ddev);
-	if (ret) {
-		drm_err(ddev, "Failed to register lsdc interrupt\n");
-		goto err_kms;
-	}
-
-	ret = drm_vblank_init(ddev, ldev->desc->num_of_crtc);
-	if (ret)
-		goto err_kms;
+	vga_client_register(pdev, lsdc_vga_set_decode);
 
 	drm_kms_helper_poll_init(ddev);
 
+	if (loongson_vblank) {
+		ret = drm_vblank_init(ddev, descp->num_of_crtc);
+		if (ret)
+			return ret;
+
+		ret = devm_request_irq(&pdev->dev, pdev->irq,
+				       descp->funcs->irq_handler,
+				       IRQF_SHARED,
+				       dev_name(&pdev->dev), ddev);
+		if (ret) {
+			drm_err(ddev, "Failed to register interrupt: %d\n", ret);
+			return ret;
+		}
+
+		drm_info(ddev, "registered irq: %u\n", pdev->irq);
+	}
+
 	ret = drm_dev_register(ddev, 0);
 	if (ret)
-		goto err_poll_fini;
+		return ret;
 
 	drm_fbdev_generic_setup(ddev, 32);
 
 	return 0;
-
-err_poll_fini:
-	drm_kms_helper_poll_fini(ddev);
-err_kms:
-	drm_dev_put(ddev);
-
-	return ret;
-
 }
 
 static void lsdc_pci_remove(struct pci_dev *pdev)
@@ -444,13 +329,48 @@ static void lsdc_pci_remove(struct pci_dev *pdev)
 
 static int lsdc_drm_freeze(struct drm_device *ddev)
 {
-	int error;
+	struct lsdc_device *ldev = to_lsdc(ddev);
+	struct lsdc_bo *lbo;
+	int ret;
 
-	error = drm_mode_config_helper_suspend(ddev);
-	if (error)
-		return error;
+	/* unpin all of buffers in the VRAM */
+	mutex_lock(&ldev->gem.mutex);
+	list_for_each_entry(lbo, &ldev->gem.objects, list) {
+		struct ttm_buffer_object *tbo = &lbo->tbo;
+		struct ttm_resource *resource = tbo->resource;
+		unsigned int pin_count = tbo->pin_count;
 
-	pci_save_state(to_pci_dev(ddev->dev));
+		drm_dbg(ddev, "bo[%p], size: %zuKiB, type: %s, pin count: %u\n",
+			lbo, lsdc_bo_size(lbo) >> 10,
+			lsdc_mem_type_to_str(resource->mem_type), pin_count);
+
+		if (!pin_count)
+			continue;
+
+		if (resource->mem_type == TTM_PL_VRAM) {
+			ret = lsdc_bo_reserve(lbo);
+			if (unlikely(ret)) {
+				drm_err(ddev, "bo reserve failed: %d\n", ret);
+				continue;
+			}
+
+			do {
+				lsdc_bo_unpin(lbo);
+				--pin_count;
+			} while (pin_count);
+
+			lsdc_bo_unreserve(lbo);
+		}
+	}
+	mutex_unlock(&ldev->gem.mutex);
+
+	lsdc_bo_evict_vram(ddev);
+
+	ret = drm_mode_config_helper_suspend(ddev);
+	if (unlikely(ret)) {
+		drm_err(ddev, "Freeze error: %d", ret);
+		return ret;
+	}
 
 	return 0;
 }
@@ -497,12 +417,12 @@ static int lsdc_pm_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 
-	if (pcim_enable_device(pdev))
-		return -EIO;
-
 	pci_set_power_state(pdev, PCI_D0);
 
 	pci_restore_state(pdev);
+
+	if (pcim_enable_device(pdev))
+		return -EIO;
 
 	return lsdc_pm_thaw(dev);
 }
@@ -517,12 +437,12 @@ static const struct dev_pm_ops lsdc_pm_ops = {
 };
 
 static const struct pci_device_id lsdc_pciid_list[] = {
-	{PCI_VENDOR_ID_LOONGSON, 0x7a06, PCI_ANY_ID, PCI_ANY_ID, 0, 0, (kernel_ulong_t)LSDC_CHIP_7A1000},
-	{PCI_VENDOR_ID_LOONGSON, 0x7a36, PCI_ANY_ID, PCI_ANY_ID, 0, 0, (kernel_ulong_t)LSDC_CHIP_7A2000},
-	{0, 0, 0, 0, 0, 0, 0}
+	{PCI_VDEVICE(LOONGSON, 0x7a06), CHIP_LS7A1000},
+	{PCI_VDEVICE(LOONGSON, 0x7a36), CHIP_LS7A2000},
+	{ }
 };
 
-static struct pci_driver lsdc_pci_driver = {
+struct pci_driver lsdc_pci_driver = {
 	.name = DRIVER_NAME,
 	.id_table = lsdc_pciid_list,
 	.probe = lsdc_pci_probe,
@@ -530,34 +450,7 @@ static struct pci_driver lsdc_pci_driver = {
 	.driver.pm = &lsdc_pm_ops,
 };
 
-static int __init lsdc_drm_init(void)
-{
-	struct pci_dev *pdev = NULL;
-
-	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_VGA << 8, pdev))) {
-		/*
-		 * Multiple video card workaround
-		 *
-		 * This integrated video card will always be selected as
-		 * default boot device by vgaarb subsystem.
-		 */
-		if (pdev->vendor != PCI_VENDOR_ID_LOONGSON) {
-			pr_info("Discrete graphic card detected, abort\n");
-			return 0;
-		}
-	}
-
-	return pci_register_driver(&lsdc_pci_driver);
-}
-module_init(lsdc_drm_init);
-
-static void __exit lsdc_drm_exit(void)
-{
-	pci_unregister_driver(&lsdc_pci_driver);
-}
-module_exit(lsdc_drm_exit);
-
 MODULE_DEVICE_TABLE(pci, lsdc_pciid_list);
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

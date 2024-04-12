@@ -582,8 +582,8 @@ static void emit_relocs(int as_text, int as_bin, FILE *outf)
 		 * which will fix this problem and allow a bit of headroom
 		 * if more kernel features are enabled
 		 */
-		die("Relocations overflow available space!\n" \
-		    "Please adjust CONFIG_RELOCATION_TABLE_SIZE " \
+		die("Relocations overflow available space!\n"
+		    "Please adjust CONFIG_RELOCATION_TABLE_SIZE "
 		    "to at least 0x%08x\n", (size + 0x1000) & ~0xFFF);
 }
 

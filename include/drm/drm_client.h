@@ -3,12 +3,14 @@
 #ifndef _DRM_CLIENT_H_
 #define _DRM_CLIENT_H_
 
+#include <linux/iosys-map.h>
 #include <linux/lockdep.h>
 #include <linux/mutex.h>
 #include <linux/types.h>
 
 #include <drm/drm_connector.h>
 #include <drm/drm_crtc.h>
+#include <linux/kabi.h>
 
 struct drm_client_dev;
 struct drm_device;
@@ -105,6 +107,17 @@ struct drm_client_dev {
 	 * @modesets: CRTC configurations
 	 */
 	struct drm_mode_set *modesets;
+
+	/**
+	 * @hotplug_failed:
+	 *
+	 * Set by client hotplug helpers if the hotplugging failed
+	 * before. It is usually not tried again.
+	 */
+	bool hotplug_failed;
+
+	KABI_RESERVE(1)
+	KABI_RESERVE(2)
 };
 
 int drm_client_init(struct drm_device *dev, struct drm_client_dev *client,
@@ -126,11 +139,6 @@ struct drm_client_buffer {
 	struct drm_client_dev *client;
 
 	/**
-	 * @handle: Buffer handle
-	 */
-	u32 handle;
-
-	/**
 	 * @pitch: Buffer pitch
 	 */
 	u32 pitch;
@@ -141,21 +149,25 @@ struct drm_client_buffer {
 	struct drm_gem_object *gem;
 
 	/**
-	 * @vaddr: Virtual address for the buffer
+	 * @map: Virtual address for the buffer
 	 */
-	void *vaddr;
+	struct iosys_map map;
 
 	/**
 	 * @fb: DRM framebuffer
 	 */
 	struct drm_framebuffer *fb;
+
+	KABI_RESERVE(1)
+	KABI_RESERVE(2)
 };
 
 struct drm_client_buffer *
 drm_client_framebuffer_create(struct drm_client_dev *client, u32 width, u32 height, u32 format);
 void drm_client_framebuffer_delete(struct drm_client_buffer *buffer);
 int drm_client_framebuffer_flush(struct drm_client_buffer *buffer, struct drm_rect *rect);
-void *drm_client_buffer_vmap(struct drm_client_buffer *buffer);
+int drm_client_buffer_vmap(struct drm_client_buffer *buffer,
+			   struct iosys_map *map);
 void drm_client_buffer_vunmap(struct drm_client_buffer *buffer);
 
 int drm_client_modeset_create(struct drm_client_dev *client);

@@ -10,7 +10,6 @@
 
 #include <linux/key.h>
 #include <linux/errno.h>
-#include <linux/kabi.h>
 
 #ifdef CONFIG_KEYS
 
@@ -30,6 +29,7 @@ struct kernel_pkey_params;
  * clear the contents.
  */
 struct key_preparsed_payload {
+	const char	*orig_description; /* Actual or proposed description (maybe NULL) */
 	char		*description;	/* Proposed key description (or NULL) */
 	union key_payload payload;	/* Proposed payload */
 	const void	*data;		/* Raw data */
@@ -56,7 +56,6 @@ struct key_match_data {
 	unsigned	lookup_type;	/* Type of lookup for this search. */
 #define KEYRING_SEARCH_LOOKUP_DIRECT	0x0000	/* Direct lookup by description. */
 #define KEYRING_SEARCH_LOOKUP_ITERATE	0x0001	/* Iterative search. */
-	KABI_RESERVE(1)
 };
 
 /*
@@ -74,6 +73,7 @@ struct key_type {
 
 	unsigned int flags;
 #define KEY_TYPE_NET_DOMAIN	0x00000001 /* Keys of this type have a net namespace domain */
+#define KEY_TYPE_INSTANT_REAP	0x00000002 /* Keys of this type don't have a delay after expiring */
 
 	/* vet a description */
 	int (*vet_description)(const char *description);

@@ -8,40 +8,6 @@
 #ifndef __UBI_DEBUG_H__
 #define __UBI_DEBUG_H__
 
-/**
- * MASK_XXX: Mask for emulate_failures in ubi_debug_info.The mask is used to
- * precisely control the type and process of fault injection.
- */
-/* Emulate bit-flips */
-#define MASK_BITFLIPS			(1 << 0)
-/* Emulate ecc error */
-#define MASK_ECCERR			(1 << 1)
-/* Emulates -EIO during data read */
-#define MASK_READ_FAILURE		(1 << 2)
-#define MASK_READ_FAILURE_EC		(1 << 3)
-#define MASK_READ_FAILURE_VID		(1 << 4)
-/* Emulates -EIO during data write */
-#define MASK_WRITE_FAILURE		(1 << 5)
-/* Emulates -EIO during erase a PEB*/
-#define MASK_ERASE_FAILURE		(1 << 6)
-/* Emulate a power cut when writing EC/VID header */
-#define MASK_POWER_CUT_EC		(1 << 7)
-#define MASK_POWER_CUT_VID		(1 << 8)
-/* Emulate a power cut when writing data*/
-#define MASK_POWER_CUT_DATA		(1 << 9)
-/* Return UBI_IO_FF when reading EC/VID header */
-#define MASK_IO_FF_EC			(1 << 10)
-#define MASK_IO_FF_VID			(1 << 11)
-/* Return UBI_IO_FF_BITFLIPS when reading EC/VID header */
-#define MASK_IO_FF_BITFLIPS_EC		(1 << 12)
-#define MASK_IO_FF_BITFLIPS_VID		(1 << 13)
-/* Return UBI_IO_BAD_HDR when reading EC/VID header */
-#define MASK_BAD_HDR_EC			(1 << 14)
-#define MASK_BAD_HDR_VID		(1 << 15)
-/* Return UBI_IO_BAD_HDR_EBADMSG when reading EC/VID header */
-#define MASK_BAD_HDR_EBADMSG_EC		(1 << 16)
-#define MASK_BAD_HDR_EBADMSG_VID	(1 << 17)
-
 void ubi_dump_flash(struct ubi_device *ubi, int pnum, int offset, int len);
 void ubi_dump_ec_hdr(const struct ubi_ec_hdr *ec_hdr);
 void ubi_dump_vid_hdr(const struct ubi_vid_hdr *vid_hdr);
@@ -87,16 +53,66 @@ int ubi_debugfs_init_dev(struct ubi_device *ubi);
 void ubi_debugfs_exit_dev(struct ubi_device *ubi);
 
 /**
- * ubi_dbg_is_bgt_disabled - if the background thread is disabled.
- * @ubi: UBI device description object
- *
- * Returns non-zero if the UBI background thread is disabled for testing
- * purposes.
+ * The following function is a legacy implementation of UBI fault-injection
+ * hook. When using more powerful fault injection capabilities, the legacy
+ * fault injection interface should be retained.
  */
-static inline int ubi_dbg_is_bgt_disabled(const struct ubi_device *ubi)
+int ubi_dbg_power_cut(struct ubi_device *ubi, int caller);
+
+static inline int ubi_dbg_bitflip(const struct ubi_device *ubi)
 {
-	return ubi->dbg.disable_bgt;
+	if (ubi->dbg.emulate_bitflips)
+		return !get_random_u32_below(200);
+	return 0;
 }
+
+static inline int ubi_dbg_write_failure(const struct ubi_device *ubi)
+{
+	if (ubi->dbg.emulate_io_failures)
+		return !get_random_u32_below(500);
+	return 0;
+}
+
+static inline int ubi_dbg_erase_failure(const struct ubi_device *ubi)
+{
+	if (ubi->dbg.emulate_io_failures)
+		return !get_random_u32_below(400);
+	return 0;
+}
+
+/**
+ * MASK_XXX: Mask for emulate_failures in ubi_debug_info.The mask is used to
+ * precisely control the type and process of fault injection.
+ */
+/* Emulate a power cut when writing EC/VID header */
+#define MASK_POWER_CUT_EC			(1 << 0)
+#define MASK_POWER_CUT_VID			(1 << 1)
+/* Emulate a power cut when writing data*/
+#define MASK_POWER_CUT_DATA			(1 << 2)
+/* Emulate bit-flips */
+#define MASK_BITFLIPS				(1 << 3)
+/* Emulate ecc error */
+#define MASK_ECCERR				(1 << 4)
+/* Emulates -EIO during data read */
+#define MASK_READ_FAILURE			(1 << 5)
+#define MASK_READ_FAILURE_EC			(1 << 6)
+#define MASK_READ_FAILURE_VID			(1 << 7)
+/* Emulates -EIO during data write */
+#define MASK_WRITE_FAILURE			(1 << 8)
+/* Emulates -EIO during erase a PEB*/
+#define MASK_ERASE_FAILURE			(1 << 9)
+/* Return UBI_IO_FF when reading EC/VID header */
+#define MASK_IO_FF_EC				(1 << 10)
+#define MASK_IO_FF_VID				(1 << 11)
+/* Return UBI_IO_FF_BITFLIPS when reading EC/VID header */
+#define MASK_IO_FF_BITFLIPS_EC			(1 << 12)
+#define MASK_IO_FF_BITFLIPS_VID			(1 << 13)
+/* Return UBI_IO_BAD_HDR when reading EC/VID header */
+#define MASK_BAD_HDR_EC				(1 << 14)
+#define MASK_BAD_HDR_VID			(1 << 15)
+/* Return UBI_IO_BAD_HDR_EBADMSG when reading EC/VID header */
+#define MASK_BAD_HDR_EBADMSG_EC			(1 << 16)
+#define MASK_BAD_HDR_EBADMSG_VID		(1 << 17)
 
 #ifdef CONFIG_MTD_UBI_FAULT_INJECTION
 
@@ -111,6 +127,110 @@ extern bool should_fail_io_ff_bitflips(void);
 extern bool should_fail_bad_hdr(void);
 extern bool should_fail_bad_hdr_ebadmsg(void);
 
+static inline bool ubi_dbg_fail_bitflip(const struct ubi_device *ubi)
+{
+	if (ubi->dbg.emulate_failures & MASK_BITFLIPS)
+		return should_fail_bitflips();
+	return false;
+}
+
+static inline bool ubi_dbg_fail_write(const struct ubi_device *ubi)
+{
+	if (ubi->dbg.emulate_failures & MASK_WRITE_FAILURE)
+		return should_fail_write_failure();
+	return false;
+}
+
+static inline bool ubi_dbg_fail_erase(const struct ubi_device *ubi)
+{
+	if (ubi->dbg.emulate_failures & MASK_ERASE_FAILURE)
+		return should_fail_erase_failure();
+	return false;
+}
+
+static inline bool ubi_dbg_fail_power_cut(const struct ubi_device *ubi,
+					  unsigned int caller)
+{
+	if (ubi->dbg.emulate_failures & caller)
+		return should_fail_power_cut();
+	return false;
+}
+
+static inline bool ubi_dbg_fail_read(const struct ubi_device *ubi,
+				     unsigned int caller)
+{
+	if (ubi->dbg.emulate_failures & caller)
+		return should_fail_read_failure();
+	return false;
+}
+
+static inline bool ubi_dbg_fail_eccerr(const struct ubi_device *ubi)
+{
+	if (ubi->dbg.emulate_failures & MASK_ECCERR)
+		return should_fail_eccerr();
+	return false;
+}
+
+static inline bool ubi_dbg_fail_ff(const struct ubi_device *ubi,
+				   unsigned int caller)
+{
+	if (ubi->dbg.emulate_failures & caller)
+		return should_fail_io_ff();
+	return false;
+}
+
+static inline bool ubi_dbg_fail_ff_bitflips(const struct ubi_device *ubi,
+					    unsigned int caller)
+{
+	if (ubi->dbg.emulate_failures & caller)
+		return should_fail_io_ff_bitflips();
+	return false;
+}
+
+static inline bool ubi_dbg_fail_bad_hdr(const struct ubi_device *ubi,
+					 unsigned int caller)
+{
+	if (ubi->dbg.emulate_failures & caller)
+		return should_fail_bad_hdr();
+	return false;
+}
+
+static inline bool ubi_dbg_fail_bad_hdr_ebadmsg(const struct ubi_device *ubi,
+						 unsigned int caller)
+{
+	if (ubi->dbg.emulate_failures & caller)
+		return should_fail_bad_hdr_ebadmsg();
+	return false;
+}
+#else /* CONFIG_MTD_UBI_FAULT_INJECTION */
+
+#define ubi_dbg_fail_bitflip(u)             false
+#define ubi_dbg_fail_write(u)               false
+#define ubi_dbg_fail_erase(u)               false
+#define ubi_dbg_fail_power_cut(u, c)        false
+#define ubi_dbg_fail_read(u, c)             false
+#define ubi_dbg_fail_eccerr(u)              false
+#define ubi_dbg_fail_ff(u, c)               false
+#define ubi_dbg_fail_ff_bitflips(u, v)      false
+#define ubi_dbg_fail_bad_hdr(u, c)          false
+#define ubi_dbg_fail_bad_hdr_ebadmsg(u, c)  false
+
+#endif
+
+/**
+ * ubi_dbg_is_power_cut - if it is time to emulate power cut.
+ * @ubi: UBI device description object
+ *
+ * Returns true if power cut should be emulated, otherwise returns false.
+ */
+static inline bool ubi_dbg_is_power_cut(struct ubi_device *ubi,
+					unsigned int caller)
+{
+	if (ubi_dbg_power_cut(ubi, caller))
+		return true;
+	return ubi_dbg_fail_power_cut(ubi, caller);
+}
+
 /**
  * ubi_dbg_is_bitflip - if it is time to emulate a bit-flip.
  * @ubi: UBI device description object
@@ -119,9 +239,37 @@ extern bool should_fail_bad_hdr_ebadmsg(void);
  */
 static inline bool ubi_dbg_is_bitflip(const struct ubi_device *ubi)
 {
-	if (ubi->dbg.emulate_failures & MASK_BITFLIPS)
-		return should_fail_bitflips();
-	return false;
+	if (ubi_dbg_bitflip(ubi))
+		return true;
+	return ubi_dbg_fail_bitflip(ubi);
+}
+
+/**
+ * ubi_dbg_is_write_failure - if it is time to emulate a write failure.
+ * @ubi: UBI device description object
+ *
+ * Returns true if a write failure should be emulated, otherwise returns
+ * false.
+ */
+static inline bool ubi_dbg_is_write_failure(const struct ubi_device *ubi)
+{
+	if (ubi_dbg_write_failure(ubi))
+		return true;
+	return ubi_dbg_fail_write(ubi);
+}
+
+/**
+ * ubi_dbg_is_erase_failure - if its time to emulate an erase failure.
+ * @ubi: UBI device description object
+ *
+ * Returns true if an erase failure should be emulated, otherwise returns
+ * false.
+ */
+static inline bool ubi_dbg_is_erase_failure(const struct ubi_device *ubi)
+{
+	if (ubi_dbg_erase_failure(ubi))
+		return true;
+	return ubi_dbg_fail_erase(ubi);
 }
 
 /**
@@ -132,9 +280,7 @@ static inline bool ubi_dbg_is_bitflip(const struct ubi_device *ubi)
  */
 static inline bool ubi_dbg_is_eccerr(const struct ubi_device *ubi)
 {
-	if (ubi->dbg.emulate_failures & MASK_ECCERR)
-		return should_fail_eccerr();
-	return false;
+	return ubi_dbg_fail_eccerr(ubi);
 }
 
 /**
@@ -147,51 +293,7 @@ static inline bool ubi_dbg_is_eccerr(const struct ubi_device *ubi)
 static inline bool ubi_dbg_is_read_failure(const struct ubi_device *ubi,
 					   unsigned int caller)
 {
-	if (ubi->dbg.emulate_failures & caller)
-		return should_fail_read_failure();
-	return false;
-}
-
-/**
- * ubi_dbg_is_write_failure - if it is time to emulate a write failure.
- * @ubi: UBI device description object
- *
- * Returns true if a write failure should be emulated, otherwise returns
- * false.
- */
-static inline bool ubi_dbg_is_write_failure(const struct ubi_device *ubi)
-{
-	if (ubi->dbg.emulate_failures & MASK_WRITE_FAILURE)
-		return should_fail_write_failure();
-	return false;
-}
-
-/**
- * ubi_dbg_is_erase_failure - if its time to emulate an erase failure.
- * @ubi: UBI device description object
- *
- * Returns true if an erase failure should be emulated, otherwise returns
- * false.
- */
-static inline bool ubi_dbg_is_erase_failure(const struct ubi_device *ubi)
-{
-	if (ubi->dbg.emulate_failures & MASK_ERASE_FAILURE)
-		return should_fail_erase_failure();
-	return false;
-}
-
-/**
- * ubi_dbg_power_cut - if it is time to emulate power cut.
- * @ubi: UBI device description object
- *
- * Returns true if power cut should be emulated, otherwise returns false.
- */
-static inline bool ubi_dbg_power_cut(const struct ubi_device *ubi,
-				     unsigned int caller)
-{
-	if (ubi->dbg.emulate_failures & caller)
-		return should_fail_power_cut();
-	return false;
+	return ubi_dbg_fail_read(ubi, caller);
 }
 
 /**
@@ -204,9 +306,7 @@ static inline bool ubi_dbg_power_cut(const struct ubi_device *ubi,
 static inline bool ubi_dbg_is_ff(const struct ubi_device *ubi,
 				 unsigned int caller)
 {
-	if (ubi->dbg.emulate_failures & caller)
-		return should_fail_io_ff();
-	return false;
+	return ubi_dbg_fail_ff(ubi, caller);
 }
 
 /**
@@ -221,9 +321,7 @@ static inline bool ubi_dbg_is_ff(const struct ubi_device *ubi,
 static inline bool ubi_dbg_is_ff_bitflips(const struct ubi_device *ubi,
 					  unsigned int caller)
 {
-	if (ubi->dbg.emulate_failures & caller)
-		return should_fail_io_ff_bitflips();
-	return false;
+	return ubi_dbg_fail_ff_bitflips(ubi, caller);
 }
 
 /**
@@ -236,9 +334,7 @@ static inline bool ubi_dbg_is_ff_bitflips(const struct ubi_device *ubi,
 static inline bool ubi_dbg_is_bad_hdr(const struct ubi_device *ubi,
 				      unsigned int caller)
 {
-	if (ubi->dbg.emulate_failures & caller)
-		return should_fail_bad_hdr();
-	return false;
+	return ubi_dbg_fail_bad_hdr(ubi, caller);
 }
 
 /**
@@ -253,70 +349,21 @@ static inline bool ubi_dbg_is_bad_hdr(const struct ubi_device *ubi,
 static inline bool ubi_dbg_is_bad_hdr_ebadmsg(const struct ubi_device *ubi,
 					      unsigned int caller)
 {
-	if (ubi->dbg.emulate_failures & caller)
-		return should_fail_bad_hdr_ebadmsg();
-	return false;
+	return ubi_dbg_fail_bad_hdr_ebadmsg(ubi, caller);
 }
 
-#else /* CONFIG_MTD_UBI_FAULT_INJECTION */
-
-static inline bool ubi_dbg_is_bitflip(const struct ubi_device *ubi)
+/**
+ * ubi_dbg_is_bgt_disabled - if the background thread is disabled.
+ * @ubi: UBI device description object
+ *
+ * Returns non-zero if the UBI background thread is disabled for testing
+ * purposes.
+ */
+static inline int ubi_dbg_is_bgt_disabled(const struct ubi_device *ubi)
 {
-	return false;
+	return ubi->dbg.disable_bgt;
 }
 
-static inline bool ubi_dbg_is_eccerr(const struct ubi_device *ubi)
-{
-	return false;
-}
-
-static inline bool ubi_dbg_is_read_failure(const struct ubi_device *ubi,
-					   unsigned int caller)
-{
-	return false;
-}
-
-static inline bool ubi_dbg_is_write_failure(const struct ubi_device *ubi)
-{
-	return false;
-}
-
-static inline bool ubi_dbg_is_erase_failure(const struct ubi_device *ubi)
-{
-	return false;
-}
-
-static inline bool ubi_dbg_power_cut(const struct ubi_device *ubi,
-				     unsigned int caller)
-{
-	return false;
-}
-
-static inline bool ubi_dbg_is_ff(const struct ubi_device *ubi,
-				 unsigned int caller)
-{
-	return false;
-}
-
-static inline bool ubi_dbg_is_ff_bitflips(const struct ubi_device *ubi,
-					  unsigned int caller)
-{
-	return false;
-}
-
-static inline bool ubi_dbg_is_bad_hdr(const struct ubi_device *ubi,
-				      unsigned int caller)
-{
-	return false;
-}
-
-static inline bool ubi_dbg_is_bad_hdr_ebadmsg(const struct ubi_device *ubi,
-					      unsigned int caller)
-{
-	return false;
-}
-
-#endif
 static inline int ubi_dbg_chk_io(const struct ubi_device *ubi)
 {
 	return ubi->dbg.chk_io;

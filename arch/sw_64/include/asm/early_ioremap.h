@@ -5,7 +5,7 @@
 #include <asm/page.h>
 #include <asm/io.h>
 
-static inline void __iomem *
+static inline void  __iomem *
 early_ioremap(unsigned long phys_addr, unsigned long size)
 {
 	unsigned long y = 0;
@@ -23,7 +23,6 @@ early_ioremap(unsigned long phys_addr, unsigned long size)
 
 static inline void early_iounmap(volatile void __iomem *addr, unsigned long size)
 {
-	return;
 }
 #define early_memunmap(addr, size)		early_iounmap(addr, size)
 

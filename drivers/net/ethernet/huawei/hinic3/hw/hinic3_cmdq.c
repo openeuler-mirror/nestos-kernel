@@ -261,12 +261,10 @@ struct hinic3_cmd_buf *hinic3_alloc_cmd_buf(void *hwdev)
 	dev = ((struct hinic3_hwdev *)hwdev)->dev_hdl;
 
 	cmd_buf = kzalloc(sizeof(*cmd_buf), GFP_ATOMIC);
-	if (!cmd_buf) {
-		sdk_err(dev, "Failed to allocate cmd buf\n");
+	if (!cmd_buf)
 		return NULL;
-	}
 
-	cmd_buf->buf = pci_pool_alloc(cmdqs->cmd_buf_pool, GFP_ATOMIC,
+	cmd_buf->buf = dma_pool_alloc(cmdqs->cmd_buf_pool, GFP_ATOMIC,
 				      &cmd_buf->dma_addr);
 	if (!cmd_buf->buf) {
 		sdk_err(dev, "Failed to allocate cmdq cmd buf from the pool\n");
@@ -298,7 +296,7 @@ void hinic3_free_cmd_buf(void *hwdev, struct hinic3_cmd_buf *cmd_buf)
 
 	cmdqs = ((struct hinic3_hwdev *)hwdev)->cmdqs;
 
-	pci_pool_free(cmdqs->cmd_buf_pool, cmd_buf->buf, cmd_buf->dma_addr);
+	dma_pool_free(cmdqs->cmd_buf_pool, cmd_buf->buf, cmd_buf->dma_addr);
 	kfree(cmd_buf);
 }
 EXPORT_SYMBOL(hinic3_free_cmd_buf);
@@ -1100,7 +1098,7 @@ void hinic3_cmdq_ceq_handler(void *handle, u32 ceqe_data)
 			sdk_warn(hwdev->dev_hdl, "Cmdq timeout, q_id: %u, ci: %u\n",
 				 cmdq_type, ci);
 			hinic3_dump_cmdq_wqe_head(hwdev, wqe);
-			/*lint -fallthrough */
+			fallthrough;
 		case HINIC3_CMD_TYPE_FAKE_TIMEOUT:
 			cmdq_clear_cmd_buf(cmd_info, hwdev);
 			clear_wqe_complete_bit(cmdq, wqe, ci);
@@ -1176,7 +1174,6 @@ static int init_cmdq(struct hinic3_cmdq *cmdq, struct hinic3_hwdev *hwdev,
 	cmdq->cmd_infos = kcalloc(cmdq->wq.q_depth, sizeof(*cmdq->cmd_infos),
 				  GFP_KERNEL);
 	if (!cmdq->cmd_infos) {
-		sdk_err(hwdev->dev_hdl, "Failed to allocate cmdq infos\n");
 		err = -ENOMEM;
 		goto cmd_infos_err;
 	}

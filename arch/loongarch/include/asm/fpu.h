@@ -21,6 +21,9 @@
 
 struct sigcontext;
 
+extern void kernel_fpu_begin(void);
+extern void kernel_fpu_end(void);
+
 extern void _init_fpu(unsigned int);
 extern void _save_fp(struct loongarch_fpu *);
 extern void _restore_fp(struct loongarch_fpu *);
@@ -125,21 +128,21 @@ static inline void own_fpu(int restore)
 static inline void lose_fpu_inatomic(int save, struct task_struct *tsk)
 {
 	if (is_fpu_owner()) {
-		if (is_simd_enabled()) {
+		if (!is_simd_enabled()) {
+			if (save)
+				_save_fp(&tsk->thread.fpu);
+			disable_fpu();
+		} else {
 			if (save) {
-				if (is_lasx_enabled())
-					save_lasx(tsk);
-				else
+				if (!is_lasx_enabled())
 					save_lsx(tsk);
+				else
+					save_lasx(tsk);
 			}
 			disable_fpu();
 			disable_lsx();
 			disable_lasx();
 			clear_tsk_thread_flag(tsk, TIF_USEDSIMD);
-		} else {
-			if (save)
-				_save_fp(&tsk->thread.fpu);
-			disable_fpu();
 		}
 		clear_tsk_thread_flag(tsk, TIF_USEDFPU);
 	}
@@ -174,22 +177,31 @@ static inline void restore_fp(struct task_struct *tsk)
 		_restore_fp(&tsk->thread.fpu);
 }
 
-static inline union fpureg *get_fpu_regs(struct task_struct *tsk)
+static inline void save_fpu_regs(struct task_struct *tsk)
 {
+	unsigned int euen;
+
 	if (tsk == current) {
 		preempt_disable();
-		if (is_fpu_owner())
+
+		euen = csr_read32(LOONGARCH_CSR_EUEN);
+
+#ifdef CONFIG_CPU_HAS_LASX
+		if (euen & CSR_EUEN_LASXEN)
+			_save_lasx(&current->thread.fpu);
+		else
+#endif
+#ifdef CONFIG_CPU_HAS_LSX
+		if (euen & CSR_EUEN_LSXEN)
+			_save_lsx(&current->thread.fpu);
+		else
+#endif
+		if (euen & CSR_EUEN_FPEN)
 			_save_fp(&current->thread.fpu);
+
 		preempt_enable();
 	}
-
-	return tsk->thread.fpu.fpr;
 }
-
-enum {
-	CTX_LSX = 1,
-	CTX_LASX = 2,
-};
 
 static inline int is_simd_owner(void)
 {
@@ -227,15 +239,8 @@ static inline void restore_lsx(struct task_struct *t)
 
 static inline void init_lsx_upper(void)
 {
-	/*
-	 * Check cpu_has_lsx only if it's a constant. This will allow the
-	 * compiler to optimise out code for CPUs without LSX without adding
-	 * an extra redundant check for CPUs with LSX.
-	 */
-	if (__builtin_constant_p(cpu_has_lsx) && !cpu_has_lsx)
-		return;
-
-	_init_lsx_upper();
+	if (cpu_has_lsx)
+		_init_lsx_upper();
 }
 
 static inline void restore_lsx_upper(struct task_struct *t)
@@ -307,26 +312,18 @@ static inline void restore_lasx_upper(struct task_struct *t) {}
 
 static inline int thread_lsx_context_live(void)
 {
-	int ret = 0;
+	if (!cpu_has_lsx)
+		return 0;
 
-	if (__builtin_constant_p(cpu_has_lsx) && !cpu_has_lsx)
-		goto  out;
-
-	ret =  test_thread_flag(TIF_LSX_CTX_LIVE) ? CTX_LSX : 0;
-out:
-	return ret;
+	return test_thread_flag(TIF_LSX_CTX_LIVE);
 }
 
 static inline int thread_lasx_context_live(void)
 {
-	int ret = 0;
+	if (!cpu_has_lasx)
+		return 0;
 
-	if (__builtin_constant_p(cpu_has_lasx) && !cpu_has_lasx)
-		goto out;
-
-	ret = test_thread_flag(TIF_LASX_CTX_LIVE) ? CTX_LASX : 0;
-out:
-	return ret;
+	return test_thread_flag(TIF_LASX_CTX_LIVE);
 }
 
 #endif /* _ASM_FPU_H */

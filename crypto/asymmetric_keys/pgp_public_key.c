@@ -10,6 +10,8 @@
  * 2 of the Licence, or (at your option) any later version.
  */
 
+#ifdef CONFIG_PGP_KEY_PARSER
+
 #define pr_fmt(fmt) "PGP: "fmt
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -284,7 +286,7 @@ static struct asymmetric_key_ids *pgp_key_generate_id(
 
 	kids->id[0] = kid;
 	kids->id[1] = kmemdup(kid, struct_size(kid, data, fingerprint_len),
-			      GFP_KERNEL);
+		      GFP_KERNEL);
 	if (!kids->id[1])
 		goto error;
 
@@ -391,3 +393,6 @@ static void __exit pgp_key_exit(void)
 
 module_init(pgp_key_init);
 module_exit(pgp_key_exit);
+
+#endif /* CONFIG_PGP_KEY_PARSER */
+

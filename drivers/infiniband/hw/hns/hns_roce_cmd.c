@@ -48,6 +48,7 @@ static int hns_roce_cmd_mbox_post_hw(struct hns_roce_dev *hr_dev,
 		return ret;
 
 	atomic64_inc(&hr_dev->dfx_cnt[HNS_ROCE_DFX_MBX_POSTED_CNT]);
+
 	return 0;
 }
 
@@ -70,6 +71,7 @@ static int __hns_roce_cmd_mbox_poll(struct hns_roce_dev *hr_dev,
 		return ret;
 
 	atomic64_inc(&hr_dev->dfx_cnt[HNS_ROCE_DFX_MBX_POLLED_CNT]);
+
 	return 0;
 }
 

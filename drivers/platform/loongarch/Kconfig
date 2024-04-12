@@ -1,13 +1,14 @@
 #
-# LOONGARCH Platform Specific Drivers
+# LoongArch Platform Specific Drivers
 #
 
 menuconfig LOONGARCH_PLATFORM_DEVICES
-	bool "LOONGARCH Platform Specific Device Drivers"
+	bool "LoongArch Platform Specific Device Drivers"
 	default y
+	depends on LOONGARCH
 	help
 	  Say Y here to get to see options for device drivers of various
-	  LOONGARCH platforms, including vendor-specific netbook/laptop/desktop
+	  LoongArch platforms, including vendor-specific laptop/desktop
 	  extension and hardware monitor drivers. This option itself does
 	  not add any kernel code.
 
@@ -15,7 +16,7 @@ menuconfig LOONGARCH_PLATFORM_DEVICES
 
 if LOONGARCH_PLATFORM_DEVICES
 
-config LOONGSON_GENERIC_LAPTOP
+config LOONGSON_LAPTOP
 	tristate "Generic Loongson-3 Laptop Driver"
 	depends on ACPI
 	depends on BACKLIGHT_CLASS_DEVICE

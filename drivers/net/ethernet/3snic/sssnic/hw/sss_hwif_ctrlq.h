@@ -31,4 +31,3 @@ int sss_ctrlq_sync_cmd_detail_reply(struct sss_ctrlq *ctrlq, u8 mod, u8 cmd,
 				    u64 *out_param, u32 timeout, u16 channel);
 
 #endif
-

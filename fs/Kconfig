@@ -15,10 +15,18 @@ config VALIDATE_FS_PARSER
 	  Enable this to perform validation of the parameter description for a
 	  filesystem when it is registered.
 
-if BLOCK
-
 config FS_IOMAP
 	bool
+
+config BUFFER_HEAD
+	bool
+
+# old blockdev_direct_IO implementation.  Use iomap for new code instead
+config LEGACY_DIRECT_IO
+	depends on BUFFER_HEAD
+	bool
+
+if BLOCK
 
 source "fs/ext2/Kconfig"
 source "fs/ext4/Kconfig"
@@ -42,19 +50,36 @@ source "fs/nilfs2/Kconfig"
 source "fs/f2fs/Kconfig"
 source "fs/zonefs/Kconfig"
 
+endif # BLOCK
+
 config FS_DAX
-	bool "Direct Access (DAX) support"
+	bool "File system based Direct Access (DAX) support"
 	depends on MMU
 	depends on !(ARM || MIPS || SPARC)
-	select DEV_PAGEMAP_OPS if (ZONE_DEVICE && !FS_DAX_LIMITED)
+	depends on ZONE_DEVICE || FS_DAX_LIMITED
 	select FS_IOMAP
 	select DAX
 	help
 	  Direct Access (DAX) can be used on memory-backed block devices.
 	  If the block device supports DAX and the filesystem supports DAX,
 	  then you can avoid using the pagecache to buffer I/Os.  Turning
-	  on this option will compile in support for DAX; you will need to
-	  mount the filesystem using the -o dax option.
+	  on this option will compile in support for DAX.
+
+	  For a DAX device to support file system access it needs to have
+	  struct pages.  For the nfit based NVDIMMs this can be enabled
+	  using the ndctl utility:
+
+		# ndctl create-namespace --force --reconfig=namespace0.0 \
+			--mode=fsdax --map=mem
+
+	  See the 'create-namespace' man page for details on the overhead of
+	  --map=mem:
+	  https://docs.pmem.io/ndctl-user-guide/ndctl-man-pages/ndctl-create-namespace
+
+          For ndctl to work CONFIG_DEV_DAX needs to be enabled as well. For most
+	  file systems DAX support needs to be manually enabled globally or
+	  per-inode using a mount option as well.  See the file documentation in
+	  Documentation/filesystems/dax.rst for details.
 
 	  If you do not have a block device that is capable of using this,
 	  or if unsure, say N.  Saying Y will increase the size of the kernel
@@ -73,8 +98,6 @@ config FS_DAX_PMD
 # direct-I/O to a DAX mapping.
 config FS_DAX_LIMITED
 	bool
-
-endif # BLOCK
 
 # Posix ACL utility routines
 #
@@ -101,16 +124,6 @@ config FILE_LOCKING
           for filesystems like NFS and for the flock() system
           call. Disabling this option saves about 11k.
 
-config MANDATORY_FILE_LOCKING
-	bool "Enable Mandatory file locking"
-	depends on FILE_LOCKING
-	default y
-	help
-	  This option enables files appropriately marked files on appropriely
-	  mounted filesystems to support mandatory locking.
-
-	  To the best of my knowledge this is dead code that no one cares about.
-
 source "fs/crypto/Kconfig"
 
 source "fs/verity/Kconfig"
@@ -125,6 +138,7 @@ source "fs/overlayfs/Kconfig"
 
 menu "Caches"
 
+source "fs/netfs/Kconfig"
 source "fs/fscache/Kconfig"
 source "fs/cachefiles/Kconfig"
 
@@ -156,9 +170,23 @@ source "fs/proc/Kconfig"
 source "fs/kernfs/Kconfig"
 source "fs/sysfs/Kconfig"
 
+config DIRTY_PAGES
+	bool "Dumps the number of dirty pages of each file"
+	depends on PROC_FS
+	default y
+	help
+	  This config supports the rendering of dirty page data to the user,
+	  which may be useful to analyze the IO performance when using buffer
+	  IO.
+
+	  It create 3 interfaces by using procfs. /proc/dirty/buffer_size for
+	  buffer allocation and release; /proc/dirty/page_threshold to filter
+	  result; /proc/dirty/dirty_list to get dirty pages.
+
 config TMPFS
 	bool "Tmpfs virtual memory file system support (former shm fs)"
 	depends on SHMEM
+	select MEMFD_CREATE
 	help
 	  Tmpfs is a file system which keeps all files in virtual memory.
 
@@ -195,8 +223,8 @@ config TMPFS_XATTR
 	  Extended attributes are name:value pairs associated with inodes by
 	  the kernel or by users (see the attr(5) manual page for details).
 
-	  Currently this enables support for the trusted.* and
-	  security.* namespaces.
+	  This enables support for the trusted.*, security.* and user.*
+	  namespaces.
 
 	  You need this for POSIX ACL support on tmpfs.
 
@@ -204,7 +232,7 @@ config TMPFS_XATTR
 
 config TMPFS_INODE64
 	bool "Use 64-bit ino_t by default in tmpfs"
-	depends on TMPFS && 64BIT && !(S390 || ALPHA)
+	depends on TMPFS && 64BIT
 	default n
 	help
 	  tmpfs has historically used only inode numbers as wide as an unsigned
@@ -223,10 +251,26 @@ config TMPFS_INODE64
 
 	  If unsure, say N.
 
+config TMPFS_QUOTA
+	bool "Tmpfs quota support"
+	depends on TMPFS
+	select QUOTA
+	help
+	  Quota support allows to set per user and group limits for tmpfs
+	  usage.  Say Y to enable quota support. Once enabled you can control
+	  user and group quota enforcement with quota, usrquota and grpquota
+	  mount options.
+
+	  If unsure, say N.
+
+config ARCH_SUPPORTS_HUGETLBFS
+	def_bool n
+
 config HUGETLBFS
 	bool "HugeTLB file system support"
-	depends on X86 || IA64 || SPARC64 || (S390 && 64BIT) || \
-		   SYS_SUPPORTS_HUGETLBFS || BROKEN
+	depends on X86 || IA64 || SPARC64 || ARCH_SUPPORTS_HUGETLBFS || BROKEN
+	depends on (SYSFS || SYSCTL)
+	select MEMFD_CREATE
 	help
 	  hugetlbfs is a filesystem backing for HugeTLB pages, based on
 	  ramfs. For architectures that support it, say Y here and read
@@ -237,41 +281,33 @@ config HUGETLBFS
 config HUGETLB_PAGE
 	def_bool HUGETLBFS
 
-#
-# Select this config option from the architecture Kconfig, if it is preferred
-# to enable the feature of minimizing overhead of struct page associated with
-# each HugeTLB page.
-#
-config ARCH_WANT_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
-	bool
-
 config HUGETLB_PAGE_OPTIMIZE_VMEMMAP
 	def_bool HUGETLB_PAGE
-	depends on ARCH_WANT_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
+	depends on ARCH_WANT_OPTIMIZE_HUGETLB_VMEMMAP
 	depends on SPARSEMEM_VMEMMAP
 
 config HUGETLB_PAGE_OPTIMIZE_VMEMMAP_DEFAULT_ON
-	bool "Default optimizing vmemmap pages of HugeTLB to on"
+	bool "HugeTLB Vmemmap Optimization (HVO) defaults to on"
 	default n
 	depends on HUGETLB_PAGE_OPTIMIZE_VMEMMAP
 	help
-	  When using HUGETLB_PAGE_OPTIMIZE_VMEMMAP, the optimizing unused vmemmap
-	  pages associated with each HugeTLB page is default off. Say Y here
-	  to enable optimizing vmemmap pages of HugeTLB by default. It can then
-	  be disabled on the command line via hugetlb_free_vmemmap=off.
+	  The HugeTLB VmemmapvOptimization (HVO) defaults to off. Say Y here to
+	  enable HVO by default. It can be disabled via hugetlb_free_vmemmap=off
+	  (boot command line) or hugetlb_optimize_vmemmap (sysctl).
 
-config DYNAMIC_HUGETLB
-	bool "Dynamic HugeTLB"
-	depends on X86_64 || (ARM64 && ARM64_4K_PAGES)
-	depends on HUGETLBFS
-	depends on MEMCG && CGROUP_HUGETLB
+config HUGETLB_ALLOC_LIMIT
+	bool "Limit hugeTLB pages allocation"
+	depends on HUGETLB_PAGE
+	default n
 	help
-	  Dynamic hugepage are used in memcg and can be splited into small
-	  pages automatically. The tasks in the memcg prefer to alloc dynamic
-	  hugepage.
+	  HugeTLB pages should not alloc page when the rest of
+	  the normal pages less than hugepage_prohibit_sz. This
+	  setting is to make sure a system can start even when
+	  part of physical memory is broken or wrong hugepage
+	  configration, admin users can adjust this according to
+	  typical environment.
 
-config MEMFD_CREATE
-	def_bool TMPFS || HUGETLBFS
+	  If unsure, say N.
 
 config ARCH_HAS_GIGANTIC_PAGE
 	bool
@@ -316,6 +352,7 @@ source "fs/omfs/Kconfig"
 source "fs/hpfs/Kconfig"
 source "fs/qnx4/Kconfig"
 source "fs/qnx6/Kconfig"
+source "fs/resctrl/Kconfig"
 source "fs/romfs/Kconfig"
 source "fs/pstore/Kconfig"
 source "fs/sysv/Kconfig"
@@ -354,7 +391,7 @@ config LOCKD
 
 config LOCKD_V4
 	bool
-	depends on NFSD_V3 || NFS_V3
+	depends on NFSD || NFS_V3
 	depends on FILE_LOCKING
 	default y
 
@@ -367,14 +404,17 @@ config NFS_COMMON
 	depends on NFSD || NFS_FS || LOCKD
 	default y
 
+config NFS_V4_2_SSC_HELPER
+	bool
+	default y if NFS_V4_2
+
 source "net/sunrpc/Kconfig"
 source "fs/ceph/Kconfig"
-source "fs/cifs/Kconfig"
-source "fs/ksmbd/Kconfig"
+
+source "fs/smb/Kconfig"
 source "fs/coda/Kconfig"
 source "fs/afs/Kconfig"
 source "fs/9p/Kconfig"
-source "fs/eulerfs/Kconfig"
 
 endif # NETWORK_FILESYSTEMS
 
@@ -386,12 +426,3 @@ config IO_WQ
 	bool
 
 endmenu
-
-config RESCTRL
-	bool "Support Memory Partitioning and Monitoring"
-	default n
-	depends on MPAM
-	select KERNFS
-	help
-	  Memory Partitioning and Monitoring. More exactly Memory system
-	  performance resource Partitioning and Monitoring

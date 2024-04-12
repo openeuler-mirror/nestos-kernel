@@ -20,9 +20,7 @@
 #include <linux/linkage.h>
 #include <asm/unistd.h>
 #include <uapi/asm/hmcall.h>
-
-#define RT_SIGFRAME_SIZE	1600
-#define RT_SIGFRAME_MCTX	176
+#include <asm/asm-offsets.h>
 
 	.text
 
@@ -58,7 +56,7 @@
 	.cfi_startproc
 	.cfi_return_column 64
 	.cfi_signal_frame
-	SIGCONTEXT_REGS -RT_SIGFRAME_SIZE + RT_SIGFRAME_MCTX
+	SIGCONTEXT_REGS (-RT_SIGFRAME_SIZE + RT_SIGFRAME_MCTX)
 	.cfi_def_cfa_offset RT_SIGFRAME_SIZE
 
 	nop

@@ -142,6 +142,6 @@ static struct platform_driver chip3_spi_mmio_driver = {
 };
 module_platform_driver(chip3_spi_mmio_driver);
 
-MODULE_AUTHOR("Platform@wiat.com");
+MODULE_AUTHOR("Platform@wxiat.com");
 MODULE_DESCRIPTION("Memory-mapped I/O interface driver for Sunway CHIP3");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

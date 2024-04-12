@@ -114,7 +114,7 @@ static void drain_openssl_errors(void)
 		bool __cond = (cond);			\
 		display_openssl_errors(__LINE__);	\
 		if (__cond) {				\
-			err(1, fmt, ## __VA_ARGS__);	\
+			errx(1, fmt, ## __VA_ARGS__);	\
 		}					\
 	} while(0)
 
@@ -213,28 +213,6 @@ static X509 *read_x509(const char *x509_name)
 	return x509;
 }
 
-#if defined(EVP_PKEY_SM2) && OPENSSL_VERSION_NUMBER < 0x10200000L
-static int pkey_is_sm2(EVP_PKEY *pkey)
-{
-	EC_KEY *eckey = NULL;
-
-	const EC_GROUP *group = NULL;
-
-	if (pkey == NULL || EVP_PKEY_id(pkey) != EVP_PKEY_EC)
-		return 0;
-
-	eckey = EVP_PKEY_get0_EC_KEY(pkey);
-	if (eckey == NULL)
-		return 0;
-
-	group = EC_KEY_get0_group(eckey);
-	if (group == NULL)
-		return 0;
-
-	return EC_GROUP_get_curve_name(group) == NID_sm2;
-}
-#endif
-
 int main(int argc, char **argv)
 {
 	struct module_signature sig_info = { .id_type = PKEY_ID_PKCS7 };
@@ -249,10 +227,6 @@ int main(int argc, char **argv)
 	unsigned int use_signed_attrs;
 	const EVP_MD *digest_algo;
 	EVP_PKEY *private_key;
-#if defined(EVP_PKEY_SM2) && OPENSSL_VERSION_NUMBER < 0x10200000L
-	EVP_PKEY *public_key;
-#endif
-
 #ifndef USE_PKCS7
 	CMS_ContentInfo *cms = NULL;
 	unsigned int use_keyid = 0;
@@ -336,16 +310,6 @@ int main(int argc, char **argv)
 		digest_algo = EVP_get_digestbyname(hash_algo);
 		ERR(!digest_algo, "EVP_get_digestbyname");
 
-#if defined(EVP_PKEY_SM2) && OPENSSL_VERSION_NUMBER < 0x10200000L
-	if (pkey_is_sm2(private_key))
-		EVP_PKEY_set_alias_type(private_key, EVP_PKEY_SM2);
-
-	public_key = X509_get0_pubkey(x509);
-	ERR(!public_key, "X509_get0_pubkey");
-	if (pkey_is_sm2(public_key))
-		EVP_PKEY_set_alias_type(public_key, EVP_PKEY_SM2);
-#endif
-
 #ifndef USE_PKCS7
 		/* Load the signature message from the digest buffer. */
 		cms = CMS_sign(NULL, NULL, NULL, NULL,
@@ -358,7 +322,7 @@ int main(int argc, char **argv)
 				     CMS_NOSMIMECAP | use_keyid |
 				     use_signed_attrs),
 		    "CMS_add1_signer");
-		ERR(CMS_final(cms, bm, NULL, CMS_NOCERTS | CMS_BINARY) < 0,
+		ERR(CMS_final(cms, bm, NULL, CMS_NOCERTS | CMS_BINARY) != 1,
 		    "CMS_final");
 
 #else
@@ -377,10 +341,10 @@ int main(int argc, char **argv)
 			b = BIO_new_file(sig_file_name, "wb");
 			ERR(!b, "%s", sig_file_name);
 #ifndef USE_PKCS7
-			ERR(i2d_CMS_bio_stream(b, cms, NULL, 0) < 0,
+			ERR(i2d_CMS_bio_stream(b, cms, NULL, 0) != 1,
 			    "%s", sig_file_name);
 #else
-			ERR(i2d_PKCS7_bio(b, pkcs7) < 0,
+			ERR(i2d_PKCS7_bio(b, pkcs7) != 1,
 			    "%s", sig_file_name);
 #endif
 			BIO_free(b);
@@ -410,9 +374,9 @@ int main(int argc, char **argv)
 
 	if (!raw_sig) {
 #ifndef USE_PKCS7
-		ERR(i2d_CMS_bio_stream(bd, cms, NULL, 0) < 0, "%s", dest_name);
+		ERR(i2d_CMS_bio_stream(bd, cms, NULL, 0) != 1, "%s", dest_name);
 #else
-		ERR(i2d_PKCS7_bio(bd, pkcs7) < 0, "%s", dest_name);
+		ERR(i2d_PKCS7_bio(bd, pkcs7) != 1, "%s", dest_name);
 #endif
 	} else {
 		BIO *b;
@@ -432,7 +396,7 @@ int main(int argc, char **argv)
 	ERR(BIO_write(bd, &sig_info, sizeof(sig_info)) < 0, "%s", dest_name);
 	ERR(BIO_write(bd, magic_number, sizeof(magic_number) - 1) < 0, "%s", dest_name);
 
-	ERR(BIO_free(bd) < 0, "%s", dest_name);
+	ERR(BIO_free(bd) != 1, "%s", dest_name);
 
 	/* Finally, if we're signing in place, replace the original. */
 	if (replace_orig)

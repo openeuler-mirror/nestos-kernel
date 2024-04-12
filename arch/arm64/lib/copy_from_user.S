@@ -25,7 +25,7 @@
 	.endm
 
 	.macro strb1 reg, ptr, val
-	USER_MC(9998f, strb \reg, [\ptr], \val)
+	USER(9998f, strb \reg, [\ptr], \val)
 	.endm
 
 	.macro ldrh1 reg, ptr, val
@@ -33,7 +33,7 @@
 	.endm
 
 	.macro strh1 reg, ptr, val
-	USER_MC(9998f, strh \reg, [\ptr], \val)
+	USER(9998f, strh \reg, [\ptr], \val)
 	.endm
 
 	.macro ldr1 reg, ptr, val
@@ -41,7 +41,7 @@
 	.endm
 
 	.macro str1 reg, ptr, val
-	USER_MC(9998f, str \reg, [\ptr], \val)
+	USER(9998f, str \reg, [\ptr], \val)
 	.endm
 
 	.macro ldp1 reg1, reg2, ptr, val
@@ -49,7 +49,7 @@
 	.endm
 
 	.macro stp1 reg1, reg2, ptr, val
-	USER_MC(9998f, stp \reg1, \reg2, [\ptr], \val)
+	USER(9998f, stp \reg1, \reg2, [\ptr], \val)
 	.endm
 
 end	.req	x5
@@ -60,16 +60,14 @@ SYM_FUNC_START(__arch_copy_from_user)
 #include "copy_template.S"
 	mov	x0, #0				// Nothing to copy
 	ret
-SYM_FUNC_END(__arch_copy_from_user)
-EXPORT_SYMBOL(__arch_copy_from_user)
 
-	.section .fixup,"ax"
-	.align	2
+	// Exception fixups
 9997:	cmp	dst, dstin
 	b.ne	9998f
 	// Before being absolutely sure we couldn't copy anything, try harder
 USER(9998f, ldtrb tmp1w, [srcin])
-	strb	tmp1w, [dst], #1
+USER(9998f, strb	tmp1w, [dst], #1)
 9998:	sub	x0, end, dst			// bytes not copied
 	ret
-	.previous
+SYM_FUNC_END(__arch_copy_from_user)
+EXPORT_SYMBOL(__arch_copy_from_user)

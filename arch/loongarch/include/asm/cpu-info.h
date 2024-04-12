@@ -9,11 +9,12 @@
 #include <linux/types.h>
 
 #include <asm/loongarch.h>
+
 /* cache_desc->flags */
 enum {
 	CACHE_PRESENT	= (1 << 0),
 	CACHE_PRIVATE	= (1 << 1),	/* core private cache */
-	CACHE_INCLUSIVE	= (1 << 2),	/* include the lower level caches */
+	CACHE_INCLUSIVE	= (1 << 2),	/* include the inner level caches */
 };
 
 /*
@@ -28,9 +29,9 @@ struct cache_desc {
 	unsigned char flags;	/* Flags describing cache properties */
 };
 
+#define CACHE_LEVEL_MAX		3
 #define CACHE_LEAVES_MAX	6
 
-#define CACHE_LEVEL_MAX		3
 struct cpuinfo_loongarch {
 	u64			asid_cache;
 	unsigned long		asid_mask;
@@ -49,10 +50,11 @@ struct cpuinfo_loongarch {
 	int			tlbsizemtlb;
 	int			tlbsizestlbsets;
 	int			tlbsizestlbways;
-	unsigned int		cache_leaves_present; /* number of cache_leaves[] elements */
+	int			cache_leaves_present; /* number of cache_leaves[] elements */
 	struct cache_desc	cache_leaves[CACHE_LEAVES_MAX];
 	int			core;   /* physical core number in package */
 	int			package;/* physical package number */
+	int			global_id; /* physical global thread number */
 	int			vabits; /* Virtual Address size in bits */
 	int			pabits; /* Physical Address size in bits */
 	unsigned int		ksave_mask; /* Usable KSave mask. */

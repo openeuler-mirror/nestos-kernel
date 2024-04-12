@@ -19,7 +19,6 @@ pmd_populate(struct mm_struct *mm, pmd_t *pmd, pgtable_t pte)
 
 	set_pmd(pmd, __pmd((pfn << _PFN_SHIFT) | _PAGE_TABLE));
 }
-#define pmd_pgtable(pmd) pmd_page(pmd)
 
 static inline void
 pmd_populate_kernel(struct mm_struct *mm, pmd_t *pmd, pte_t *pte)

@@ -16,6 +16,7 @@
 #include <linux/module.h>
 
 #include "sss_kernel.h"
+#include "sss_pci.h"
 #include "sss_hw.h"
 #include "sss_hwdev.h"
 #include "sss_hwif_export.h"
@@ -293,7 +294,7 @@ static int sss_init_ctrlq(struct sss_hwdev *hwdev)
 {
 	u8 i;
 	u8 q_type;
-	int ret;
+	int ret = -ENOMEM;
 	struct sss_ctrlq_info *ctrlq_info = NULL;
 
 	ctrlq_info = kzalloc(sizeof(*ctrlq_info), GFP_KERNEL);

@@ -214,6 +214,11 @@ extern int arch_setup_additional_pages(struct linux_binprm *bprm,
 typedef unsigned int			compat_elf_greg_t;
 typedef compat_elf_greg_t		compat_elf_gregset_t[COMPAT_ELF_NGREG];
 
+/* AArch32 EABI. */
+#define EF_ARM_EABI_MASK		0xff000000
+int compat_elf_check_arch(const struct elf32_hdr *);
+#define compat_start_thread		compat_start_thread
+
 #ifdef CONFIG_COMPAT_VDSO
 #define COMPAT_ARCH_DLINFO						\
 do {									\

@@ -8,91 +8,15 @@
 #include <linux/atomic.h>
 #include <uapi/linux/mman.h>
 
-#ifdef CONFIG_COHERENT_DEVICE
-#define CHECKNODE_BITS  48
-#define CHECKNODE_MASK	(~((_AC(1, UL) << CHECKNODE_BITS) - 1))
-static inline void set_vm_checknode(vm_flags_t *vm_flags, unsigned long flags)
-{
-	if (is_set_cdmmask())
-		*vm_flags |= VM_CHECKNODE | ((((flags >> MAP_HUGE_SHIFT) &
-			MAP_HUGE_MASK) << CHECKNODE_BITS) & CHECKNODE_MASK);
-}
-#else
-#define CHECKNODE_BITS	(0)
-static inline void set_vm_checknode(vm_flags_t *vm_flags, unsigned long flags)
-{}
-#endif
-
-extern int enable_mmap_dvpp;
-/*
- * Enable MAP_32BIT for Ascend Platform
- */
-#ifdef CONFIG_ASCEND_DVPP_MMAP
-
-#define MAP_DVPP	0x200
-
-#define DVPP_MMAP_SIZE	(0x100000000UL)
-#define DVPP_MMAP_BASE (TASK_SIZE - DVPP_MMAP_SIZE)
-
-static inline int dvpp_mmap_check(unsigned long addr, unsigned long len,
-								unsigned long flags)
-{
-	if (enable_mmap_dvpp && (flags & MAP_DVPP) &&
-		(addr < DVPP_MMAP_BASE + DVPP_MMAP_SIZE) &&
-			(addr > DVPP_MMAP_BASE))
-		return -EINVAL;
-	else
-		return 0;
-}
-
-static inline void dvpp_mmap_get_area(struct vm_unmapped_area_info *info,
-									unsigned long flags)
-{
-	if (flags & MAP_DVPP) {
-		info->low_limit = DVPP_MMAP_BASE;
-		info->high_limit = DVPP_MMAP_BASE + DVPP_MMAP_SIZE;
-	} else {
-		info->low_limit = max(info->low_limit, TASK_UNMAPPED_BASE);
-		info->high_limit = min(info->high_limit, DVPP_MMAP_BASE);
-	}
-}
-
-static inline int dvpp_mmap_zone(unsigned long addr)
-{
-	if (addr >= DVPP_MMAP_BASE)
-		return 1;
-	else
-		return 0;
-}
-#else
-
-#define MAP_DVPP (0)
-
-static inline int dvpp_mmap_check(unsigned long addr, unsigned long len,
-								unsigned long flags)
-{
-	return 0;
-}
-
-static inline void dvpp_mmap_get_area(struct vm_unmapped_area_info *info,
-									unsigned long flags)
-{
-}
-
-static inline int dvpp_mmap_zone(unsigned long addr) { return 0; }
-
-#define DVPP_MMAP_BASE (0)
-
-#define DVPP_MMAP_SIZE (0)
-
-#endif
-
 /*
  * Arrange for legacy / undefined architecture specific flags to be
  * ignored by mmap handling code.
  */
 #ifndef MAP_32BIT
 #define MAP_32BIT 0
+#endif
+#ifndef MAP_ABOVE4G
+#define MAP_ABOVE4G 0
 #endif
 #ifndef MAP_HUGE_2MB
 #define MAP_HUGE_2MB 0
@@ -110,6 +34,9 @@ static inline int dvpp_mmap_zone(unsigned long addr) { return 0; }
 /*
  * The historical set of flags that all mmap implementations implicitly
  * support when a ->mmap_validate() op is not provided in file_operations.
+ *
+ * MAP_EXECUTABLE and MAP_DENYWRITE are completely ignored throughout the
+ * kernel.
  */
 #define LEGACY_MAP_MASK (MAP_SHARED \
 		| MAP_PRIVATE \
@@ -126,6 +53,7 @@ static inline int dvpp_mmap_zone(unsigned long addr) { return 0; }
 		| MAP_STACK \
 		| MAP_HUGETLB \
 		| MAP_32BIT \
+		| MAP_ABOVE4G \
 		| MAP_HUGE_2MB \
 		| MAP_HUGE_1GB)
 
@@ -167,10 +95,6 @@ static inline void vm_unacct_memory(long pages)
 
 #ifndef arch_calc_vm_flag_bits
 #define arch_calc_vm_flag_bits(flags) 0
-#endif
-
-#ifndef arch_vm_get_page_prot
-#define arch_vm_get_page_prot(vm_flags) __pgprot(0)
 #endif
 
 #ifndef arch_validate_prot
@@ -230,11 +154,44 @@ static inline unsigned long
 calc_vm_flag_bits(unsigned long flags)
 {
 	return _calc_vm_trans(flags, MAP_GROWSDOWN,  VM_GROWSDOWN ) |
-	       _calc_vm_trans(flags, MAP_DENYWRITE,  VM_DENYWRITE ) |
 	       _calc_vm_trans(flags, MAP_LOCKED,     VM_LOCKED    ) |
 	       _calc_vm_trans(flags, MAP_SYNC,	     VM_SYNC      ) |
 	       arch_calc_vm_flag_bits(flags);
 }
 
 unsigned long vm_commit_limit(void);
+
+/*
+ * Denies creating a writable executable mapping or gaining executable permissions.
+ *
+ * This denies the following:
+ *
+ * 	a)	mmap(PROT_WRITE | PROT_EXEC)
+ *
+ *	b)	mmap(PROT_WRITE)
+ *		mprotect(PROT_EXEC)
+ *
+ *	c)	mmap(PROT_WRITE)
+ *		mprotect(PROT_READ)
+ *		mprotect(PROT_EXEC)
+ *
+ * But allows the following:
+ *
+ *	d)	mmap(PROT_READ | PROT_EXEC)
+ *		mmap(PROT_READ | PROT_EXEC | PROT_BTI)
+ */
+static inline bool map_deny_write_exec(struct vm_area_struct *vma,  unsigned long vm_flags)
+{
+	if (!test_bit(MMF_HAS_MDWE, &current->mm->flags))
+		return false;
+
+	if ((vm_flags & VM_EXEC) && (vm_flags & VM_WRITE))
+		return true;
+
+	if (!(vma->vm_flags & VM_EXEC) && (vm_flags & VM_EXEC))
+		return true;
+
+	return false;
+}
+
 #endif /* _LINUX_MMAN_H */

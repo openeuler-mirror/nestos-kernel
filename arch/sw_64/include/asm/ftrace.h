@@ -21,6 +21,7 @@
 #include <linux/compat.h>
 #include <asm/insn.h>
 
+
 extern void _mcount(unsigned long);
 
 struct dyn_arch_ftrace {

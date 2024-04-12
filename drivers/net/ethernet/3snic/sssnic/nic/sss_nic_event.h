@@ -56,4 +56,3 @@ void sss_nic_pf_event_handler(void *hwdev, u16 cmd,
 			      void *buf_out, u16 *out_size);
 
 #endif
-

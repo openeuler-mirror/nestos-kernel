@@ -37,27 +37,27 @@ extern void show_regs(struct pt_regs *regs);
 void show_all_vma(void)
 {
 	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *tmp;
+	struct vm_area_struct *vma;
 
-	unsigned long start = 0;
-	unsigned long end = 0;
-	int i = 0;
+	MA_STATE(mas, 0, 0, 0);
 
-	if (mm) {
-		tmp = mm->mmap;
-		while (tmp) {
-			start = tmp->vm_start;
-			end = tmp->vm_end;
-			if (tmp->vm_file)
-				pr_info("vma[%d]: [%#lx, %#lx], len = %#lx, flags = %#lx, file = %s, name = %s\n",
-						i, start, end, (end - start), tmp->vm_flags,
-						tmp->vm_file->f_path.dentry->d_name.name, current->comm);
-			else
-				pr_info("vma[%d]: [%#lx, %#lx], len = %#lx, flags = %#lx, name = %s\n",
-						i, start, end, (end - start), tmp->vm_flags, current->comm);
-			tmp = tmp->vm_next;
-			i++;
-		}
+	if (!mm)
+		return;
+
+	mas.tree = &mm->mm_mt;
+
+	for (int i = 0;	(vma = mas_find(&mas, ULONG_MAX)) != NULL; i++) {
+		unsigned long start = vma->vm_start;
+		unsigned long end = vma->vm_end;
+		struct file *file = vma->vm_file;
+
+		if (file)
+			pr_info("vma[%d]: [%#lx, %#lx], len = %#lx, flags = %#lx, file = %s, name = %s\n",
+					i, start, end, (end - start), vma->vm_flags,
+					file->f_path.dentry->d_name.name, current->comm);
+		else
+			pr_info("vma[%d]: [%#lx, %#lx], len = %#lx, flags = %#lx, name = %s\n",
+					i, start, end, (end - start), vma->vm_flags, current->comm);
 	}
 }
 
@@ -121,7 +121,7 @@ unsigned long show_va_to_pa(struct mm_struct *mm, unsigned long addr)
 	}
 	pte = pte_offset_map(pmd, addr);
 	if (pte_present(*pte)) {
-		ret = (unsigned long)pfn_to_virt(pte_val(*pte) >> _PFN_SHIFT);
+		ret = (unsigned long)pfn_to_virt(pte_pfn(*pte));
 		pr_debug("addr = %#lx, pgd = %#lx, pud = %#lx, pmd = %#lx, pte = %#lx, ret = %#lx\n",
 				addr, *(unsigned long *)pgd, *(unsigned long *)pud,
 				*(unsigned long *)pmd, *(unsigned long *)pte, ret);
@@ -138,10 +138,9 @@ do_page_fault(unsigned long address, unsigned long mmcsr,
 {
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
-	const struct exception_table_entry *fixup;
 	int si_code = SEGV_MAPERR;
 	vm_fault_t fault;
-	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	unsigned int flags = FAULT_FLAG_DEFAULT;
 
 	if (notify_page_fault(regs, mmcsr))
 		return;
@@ -155,7 +154,7 @@ do_page_fault(unsigned long address, unsigned long mmcsr,
 		if (!user_mode(regs))
 			goto no_context;
 		else {
-			down_read(&mm->mmap_lock);
+			mmap_read_unlock(mm);
 			goto bad_area;
 		}
 	}
@@ -170,24 +169,17 @@ do_page_fault(unsigned long address, unsigned long mmcsr,
 	if (user_mode(regs))
 		flags |= FAULT_FLAG_USER;
 
-retry:
-	down_read(&mm->mmap_lock);
-	vma = find_vma(mm, address);
-	if (!vma)
-		goto bad_area;
+	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
 
-	if (vma->vm_start <= address)
-		goto good_area;
-	if (!(vma->vm_flags & VM_GROWSDOWN))
-		goto bad_area;
-	if (expand_stack(vma, address))
-		goto bad_area;
+retry:
+	vma = lock_mm_and_find_vma(mm, address, regs);
+	if (!vma)
+		goto bad_area_nosemaphore;
 
 	/*
 	 * Ok, we have a good vm_area for this memory access, so
 	 * we can handle it.
 	 */
-good_area:
 	si_code = SEGV_ACCERR;
 	if (cause < 0) {
 		if (!(vma->vm_flags & VM_EXEC))
@@ -207,11 +199,17 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-	fault = handle_mm_fault(vma, address, flags, NULL);
+	fault = handle_mm_fault(vma, address, flags, regs);
 
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+	if (fault_signal_pending(fault, regs)) {
+		if (!user_mode(regs))
+			goto no_context;
 		return;
-	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
+	}
+
+	/* The fault is fully completed (including releasing mmap lock) */
+	if (fault & VM_FAULT_COMPLETED)
+		return;
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
@@ -222,30 +220,29 @@ good_area:
 			goto do_sigbus;
 		BUG();
 	}
-	if (flags & FAULT_FLAG_ALLOW_RETRY) {
-		if (fault & VM_FAULT_MAJOR) {
-			perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MAJ, 1,
-					regs, address);
-			current->maj_flt++;
-		} else {
-			perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MIN, 1,
-					regs, address);
-			current->min_flt++;
-		}
-		if (fault & VM_FAULT_RETRY) {
-			flags &= ~FAULT_FLAG_ALLOW_RETRY;
 
-			 /*
-			  * No need to up_read(&mm->mmap_lock) as we would
-			  * have already released it in __lock_page_or_retry
-			  * in mm/filemap.c.
-			  */
-
-			goto retry;
-		}
+	if (fault & VM_FAULT_MAJOR) {
+		perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MAJ, 1,
+				regs, address);
+		current->maj_flt++;
+	} else {
+		perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MIN, 1,
+				regs, address);
+		current->min_flt++;
 	}
 
-	up_read(&mm->mmap_lock);
+	if (fault & VM_FAULT_RETRY) {
+		flags |= FAULT_FLAG_TRIED;
+
+		/* No need to mmap_read_unlock(mm) as we would
+		 * have already released it in __lock_page_or_retry
+		 * in mm/filemap.c.
+		 */
+
+		goto retry;
+	}
+
+	mmap_read_unlock(mm);
 
 	return;
 
@@ -254,21 +251,16 @@ good_area:
 	 * Fix it, but check if it's kernel or user first.
 	 */
  bad_area:
-	up_read(&mm->mmap_lock);
+	mmap_read_unlock(mm);
 
+ bad_area_nosemaphore:
 	if (user_mode(regs))
 		goto do_sigsegv;
 
  no_context:
 	/* Are we prepared to handle this fault as an exception?  */
-	fixup = search_exception_tables(regs->pc);
-	if (fixup != 0) {
-		unsigned long newpc;
-
-		newpc = fixup_exception(map_regs, fixup, regs->pc);
-		regs->pc = newpc;
+	if (fixup_exception(regs, regs->pc))
 		return;
-	}
 
 	/*
 	 * Oops. The kernel tried to access some bad page. We'll have to
@@ -277,32 +269,32 @@ good_area:
 	pr_alert("Unable to handle kernel paging request at virtual address %016lx\n",
 	       address);
 	die("Oops", regs, cause);
-	do_exit(SIGKILL);
+	make_task_dead(SIGKILL);
 
 	/*
 	 * We ran out of memory, or some other thing happened to us that
 	 * made us unable to handle the page fault gracefully.
 	 */
  out_of_memory:
-	up_read(&mm->mmap_lock);
+	mmap_read_unlock(mm);
 	if (!user_mode(regs))
 		goto no_context;
 	pagefault_out_of_memory();
 	return;
 
  do_sigbus:
-	up_read(&mm->mmap_lock);
+	mmap_read_unlock(mm);
 	/*
 	 * Send a sigbus, regardless of whether we were in kernel
 	 * or user mode.
 	 */
-	force_sig_fault(SIGBUS, BUS_ADRERR, (void __user *) address, 0);
+	force_sig_fault(SIGBUS, BUS_ADRERR, (void __user *) address);
 	if (!user_mode(regs))
 		goto no_context;
 	return;
 
  do_sigsegv:
-	force_sig_fault(SIGSEGV, si_code, (void __user *) address, 0);
+	force_sig_fault(SIGSEGV, si_code, (void __user *) address);
 
 	if (unlikely(segv_debug_enabled)) {
 		pr_info("fault: want to send_segv: pid %d, cause = %#lx, mmcsr = %#lx, address = %#lx, pc %#lx\n",
@@ -310,6 +302,4 @@ good_area:
 		show_regs(regs);
 		show_all_vma();
 	}
-
-	return;
 }

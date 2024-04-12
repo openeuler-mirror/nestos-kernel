@@ -16,7 +16,7 @@
  * to local caches without needing to acquire swap_info
  * lock.  We do not reuse the returned slots directly but
  * move them back to the global pool in a batch.  This
- * allows the slots to coaellesce and reduce fragmentation.
+ * allows the slots to coalesce and reduce fragmentation.
  *
  * The swap entry allocated is marked with SWAP_HAS_CACHE
  * flag in map_count that prevents it from being allocated
@@ -30,11 +30,17 @@
 #include <linux/swap_slots.h>
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/mutex.h>
 #include <linux/mm.h>
 
 static DEFINE_PER_CPU(struct swap_slots_cache, swp_slots);
+#ifdef CONFIG_MEMCG_SWAP_QOS
+static unsigned int nr_swap_slots;
+static unsigned int max_swap_slots;
+static DEFINE_PER_CPU(struct swap_slots_cache [MAX_SWAPFILES], swp_type_slots);
+#endif
 static bool	swap_slot_cache_active;
 bool	swap_slot_cache_enabled;
 static bool	swap_slot_cache_initialized;
@@ -43,8 +49,6 @@ static DEFINE_MUTEX(swap_slots_cache_mutex);
 static DEFINE_MUTEX(swap_slots_cache_enable_mutex);
 
 static void __drain_swap_slots_cache(unsigned int type);
-static void deactivate_swap_slots_cache(void);
-static void reactivate_swap_slots_cache(void);
 
 #define use_swap_slot_cache (swap_slot_cache_active && swap_slot_cache_enabled)
 #define SLOTS_CACHE 0x1
@@ -72,9 +76,9 @@ void disable_swap_slots_cache_lock(void)
 	swap_slot_cache_enabled = false;
 	if (swap_slot_cache_initialized) {
 		/* serialize with cpu hotplug operations */
-		get_online_cpus();
+		cpus_read_lock();
 		__drain_swap_slots_cache(SLOTS_CACHE|SLOTS_CACHE_RET);
-		put_online_cpus();
+		cpus_read_unlock();
 	}
 }
 
@@ -111,14 +115,44 @@ out:
 	return swap_slot_cache_active;
 }
 
-static int alloc_swap_slot_cache(unsigned int cpu)
+#ifdef CONFIG_MEMCG_SWAP_QOS
+static inline struct swap_slots_cache *get_slots_cache(int swap_type)
+{
+	if (swap_type == SWAP_TYPE_ALL)
+		return raw_cpu_ptr(&swp_slots);
+	else
+		return raw_cpu_ptr(&swp_type_slots[swap_type]);
+}
+
+static inline struct swap_slots_cache *get_slots_cache_cpu(unsigned int cpu,
+							   int swap_type)
+{
+	if (swap_type == SWAP_TYPE_ALL)
+		return &per_cpu(swp_slots, cpu);
+	else
+		return &per_cpu(swp_type_slots, cpu)[swap_type];
+}
+#else
+static inline struct swap_slots_cache *get_slots_cache(int swap_type)
+{
+	return raw_cpu_ptr(&swp_slots);
+}
+
+static inline struct swap_slots_cache *get_slots_cache_cpu(unsigned int cpu,
+							   int swap_type)
+{
+	return &per_cpu(swp_slots, cpu);
+}
+#endif
+
+static int alloc_swap_slot_cache_cpu_type(unsigned int cpu, int swap_type)
 {
 	struct swap_slots_cache *cache;
 	swp_entry_t *slots, *slots_ret;
 
 	/*
 	 * Do allocation outside swap_slots_cache_mutex
-	 * as kvzalloc could trigger reclaim and get_swap_page,
+	 * as kvzalloc could trigger reclaim and folio_alloc_swap,
 	 * which can lock swap_slots_cache_mutex.
 	 */
 	slots = kvcalloc(SWAP_SLOTS_CACHE_SIZE, sizeof(swp_entry_t),
@@ -134,7 +168,7 @@ static int alloc_swap_slot_cache(unsigned int cpu)
 	}
 
 	mutex_lock(&swap_slots_cache_mutex);
-	cache = &per_cpu(swp_slots, cpu);
+	cache = get_slots_cache_cpu(cpu, swap_type);
 	if (cache->slots || cache->slots_ret) {
 		/* cache already allocated */
 		mutex_unlock(&swap_slots_cache_mutex);
@@ -166,13 +200,74 @@ static int alloc_swap_slot_cache(unsigned int cpu)
 	return 0;
 }
 
-static void drain_slots_cache_cpu(unsigned int cpu, unsigned int type,
-				  bool free_slots)
+#ifdef CONFIG_MEMCG_SWAP_QOS
+static int __alloc_swap_slot_cache_cpu(unsigned int cpu)
+{
+	int i, ret;
+
+	ret = alloc_swap_slot_cache_cpu_type(cpu, SWAP_TYPE_ALL);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < nr_swap_slots; i++) {
+		ret = alloc_swap_slot_cache_cpu_type(cpu, i);
+		if (ret)
+			return ret;
+	}
+
+	return ret;
+}
+
+static void alloc_swap_slot_cache_type(int type)
+{
+	unsigned int cpu;
+
+	if (type >= max_swap_slots)
+		max_swap_slots = type + 1;
+
+	if (!static_branch_likely(&memcg_swap_qos_key))
+		return;
+
+	/* serialize with cpu hotplug operations */
+	cpus_read_lock();
+	while (type >= nr_swap_slots) {
+		for_each_online_cpu(cpu)
+			alloc_swap_slot_cache_cpu_type(cpu, nr_swap_slots);
+		nr_swap_slots++;
+	}
+	cpus_read_unlock();
+}
+
+void enable_swap_slots_cache_max(void)
+{
+	mutex_lock(&swap_slots_cache_enable_mutex);
+	if (max_swap_slots)
+		alloc_swap_slot_cache_type(max_swap_slots - 1);
+	mutex_unlock(&swap_slots_cache_enable_mutex);
+}
+#else
+static inline int __alloc_swap_slot_cache_cpu(unsigned int cpu)
+{
+	return alloc_swap_slot_cache_cpu_type(cpu, SWAP_TYPE_ALL);
+}
+
+static void alloc_swap_slot_cache_type(int type)
+{
+}
+#endif
+
+static int alloc_swap_slot_cache(unsigned int cpu)
+{
+	return __alloc_swap_slot_cache_cpu(cpu);
+}
+
+static void drain_slots_cache_cpu_type(unsigned int cpu, unsigned int type,
+				    bool free_slots, int swap_type)
 {
 	struct swap_slots_cache *cache;
 	swp_entry_t *slots = NULL;
 
-	cache = &per_cpu(swp_slots, cpu);
+	cache = get_slots_cache_cpu(cpu, swap_type);
 	if ((type & SLOTS_CACHE) && cache->slots) {
 		mutex_lock(&cache->alloc_lock);
 		swapcache_free_entries(cache->slots + cache->cur, cache->nr);
@@ -193,9 +288,32 @@ static void drain_slots_cache_cpu(unsigned int cpu, unsigned int type,
 			cache->slots_ret = NULL;
 		}
 		spin_unlock_irq(&cache->free_lock);
-		if (slots)
-			kvfree(slots);
+		kvfree(slots);
 	}
+}
+
+#ifdef CONFIG_MEMCG_SWAP_QOS
+static void __drain_slots_cache_cpu(unsigned int cpu, unsigned int type,
+				       bool free_slots)
+{
+	int i;
+
+	drain_slots_cache_cpu_type(cpu, type, free_slots, SWAP_TYPE_ALL);
+	for (i = 0; i < nr_swap_slots; i++)
+		drain_slots_cache_cpu_type(cpu, type, free_slots, i);
+}
+#else
+static inline void __drain_slots_cache_cpu(unsigned int cpu,
+					unsigned int type, bool free_slots)
+{
+	drain_slots_cache_cpu_type(cpu, type, free_slots, SWAP_TYPE_ALL);
+}
+#endif
+
+static void drain_slots_cache_cpu(unsigned int cpu, unsigned int type,
+				  bool free_slots)
+{
+	__drain_slots_cache_cpu(cpu, type, free_slots);
 }
 
 static void __drain_swap_slots_cache(unsigned int type)
@@ -215,7 +333,7 @@ static void __drain_swap_slots_cache(unsigned int type)
 	 * this function can be invoked in the cpu
 	 * hot plug path:
 	 * cpu_up -> lock cpu_hotplug -> cpu hotplug state callback
-	 *   -> memory allocation -> direct reclaim -> get_swap_page
+	 *   -> memory allocation -> direct reclaim -> folio_alloc_swap
 	 *   -> drain_swap_slots_cache
 	 *
 	 * Hence the loop over current online cpu below could miss cpu that
@@ -237,7 +355,7 @@ static int free_slot_cache(unsigned int cpu)
 	return 0;
 }
 
-void enable_swap_slots_cache(void)
+void enable_swap_slots_cache(int type)
 {
 	mutex_lock(&swap_slots_cache_enable_mutex);
 	if (!swap_slot_cache_initialized) {
@@ -252,26 +370,27 @@ void enable_swap_slots_cache(void)
 		swap_slot_cache_initialized = true;
 	}
 
+	alloc_swap_slot_cache_type(type);
 	__reenable_swap_slots_cache();
 out_unlock:
 	mutex_unlock(&swap_slots_cache_enable_mutex);
 }
 
 /* called with swap slot cache's alloc lock held */
-static int refill_swap_slots_cache(struct swap_slots_cache *cache)
+static int refill_swap_slots_cache(struct swap_slots_cache *cache, int type)
 {
-	if (!use_swap_slot_cache || cache->nr)
+	if (!use_swap_slot_cache)
 		return 0;
 
 	cache->cur = 0;
 	if (swap_slot_cache_active)
 		cache->nr = get_swap_pages(SWAP_SLOTS_CACHE_SIZE,
-					   cache->slots, 1);
+					   cache->slots, 1, type);
 
 	return cache->nr;
 }
 
-int free_swap_slot(swp_entry_t entry)
+void free_swap_slot(swp_entry_t entry)
 {
 	struct swap_slots_cache *cache;
 
@@ -299,20 +418,24 @@ int free_swap_slot(swp_entry_t entry)
 direct_free:
 		swapcache_free_entries(&entry, 1);
 	}
-
-	return 0;
 }
 
-swp_entry_t get_swap_page(struct page *page)
+swp_entry_t folio_alloc_swap(struct folio *folio)
 {
 	swp_entry_t entry;
 	struct swap_slots_cache *cache;
+	int type;
 
 	entry.val = 0;
 
-	if (PageTransHuge(page)) {
-		if (IS_ENABLED(CONFIG_THP_SWAP))
-			get_swap_pages(1, &entry, HPAGE_PMD_NR);
+	type = memcg_get_swap_type(folio);
+	if (type == SWAP_TYPE_NONE)
+		goto out;
+
+
+	if (folio_test_large(folio)) {
+		if (IS_ENABLED(CONFIG_THP_SWAP) && arch_thp_swp_supported())
+			get_swap_pages(1, &entry, folio_nr_pages(folio), type);
 		goto out;
 	}
 
@@ -325,7 +448,7 @@ swp_entry_t get_swap_page(struct page *page)
 	 * The alloc path here does not touch cache->slots_ret
 	 * so cache->free_lock is not taken.
 	 */
-	cache = raw_cpu_ptr(&swp_slots);
+	cache = get_slots_cache(type);
 
 	if (likely(check_cache_active() && cache->slots)) {
 		mutex_lock(&cache->alloc_lock);
@@ -335,7 +458,7 @@ repeat:
 				entry = cache->slots[cache->cur];
 				cache->slots[cache->cur++].val = 0;
 				cache->nr--;
-			} else if (refill_swap_slots_cache(cache)) {
+			} else if (refill_swap_slots_cache(cache, type)) {
 				goto repeat;
 			}
 		}
@@ -344,10 +467,10 @@ repeat:
 			goto out;
 	}
 
-	get_swap_pages(1, &entry, 1);
+	get_swap_pages(1, &entry, 1, type);
 out:
-	if (mem_cgroup_try_charge_swap(page, entry)) {
-		put_swap_page(page, entry);
+	if (mem_cgroup_try_charge_swap(folio, entry)) {
+		put_swap_folio(folio, entry);
 		entry.val = 0;
 	}
 	return entry;

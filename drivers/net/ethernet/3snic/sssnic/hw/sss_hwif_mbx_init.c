@@ -18,14 +18,13 @@
 #include "sss_hwif_mbx.h"
 #include "sss_csr.h"
 #include "sss_common.h"
+#include "sss_adapter_mgmt.h"
 
 #define SSS_MBX_WB_STATUS_SIZE			16UL
 
 #define SSS_MBX_DMA_MSG_QUEUE_DEPTH	32
 
 #define SSS_MBX_WQ_NAME				"sss_mbx"
-
-#define SSS_MAX_FUNC					4096
 
 #define SSS_MBX_AREA(hwif)				\
 	((hwif)->cfg_reg_base + SSS_HW_CSR_MBX_DATA_OFF)
@@ -270,7 +269,7 @@ int sss_init_func_mbx_msg(void *hwdev, u16 func_num)
 	for (cnt = 0; cnt < func_num; cnt++) {
 		ret = sss_alloc_mbx_msg_buffer(&mbx->func_msg[cnt]);
 		if (ret != 0) {
-			sdk_err(dev->dev_hdl, "Fail to alloc func %hu msg buf\n", cnt);
+			sdk_err(dev->dev_hdl, "Fail to alloc func %u msg buf\n", cnt);
 			goto alloc_mbx_msg_buf_err;
 		}
 	}
@@ -449,18 +448,21 @@ init_mbx_info_err:
 
 void sss_hwif_deinit_mbx(struct sss_hwdev *hwdev)
 {
-	struct sss_mbx *mdx = hwdev->mbx;
+	struct sss_mbx *mbx = hwdev->mbx;
 
-	destroy_workqueue(mdx->workq);
-	mdx->workq = NULL;
+	destroy_workqueue(mbx->workq);
+	mbx->workq = NULL;
 
-	sss_chip_reset_mbx_attr(mdx);
+	sss_chip_reset_mbx_attr(mbx);
 
-	sss_free_host_msg(mdx);
+	sss_free_host_msg(mbx);
 
-	sss_deinit_func_mbx_msg(mdx);
+	sss_deinit_func_mbx_msg(mbx);
 
-	sss_deinit_mbx_info(mdx);
+	sss_deinit_mbx_info(mbx);
+
+	kfree(mbx);
+	hwdev->mbx = NULL;
 }
 
 static bool sss_check_mbx_msg_header(void *dev_hdl,
@@ -582,7 +584,7 @@ static int sss_recv_vf_mbx_handler(struct sss_mbx *mbx,
 	struct sss_hwdev *hwdev = SSS_TO_HWDEV(mbx);
 
 	if (recv_mbx->mod >= SSS_MOD_TYPE_MAX) {
-		sdk_warn(hwdev->dev_hdl, "Recv err mbx msg, mod = %hhu\n", recv_mbx->mod);
+		sdk_warn(hwdev->dev_hdl, "Recv err mbx msg, mod = %u\n", recv_mbx->mod);
 		return -EINVAL;
 	}
 
@@ -643,7 +645,7 @@ static int sss_recv_ppf_mbx_handler(struct sss_mbx *mbx,
 	struct sss_hwdev *hwdev = SSS_TO_HWDEV(mbx);
 
 	if (recv_mbx->mod >= SSS_MOD_TYPE_MAX) {
-		sdk_warn(hwdev->dev_hdl, "Recv err mbx msg, mod = %hhu\n", recv_mbx->mod);
+		sdk_warn(hwdev->dev_hdl, "Recv err mbx msg, mod = %u\n", recv_mbx->mod);
 		return -EINVAL;
 	}
 
@@ -655,7 +657,7 @@ static int sss_recv_ppf_mbx_handler(struct sss_mbx *mbx,
 		ret = callback(mbx->ppf_mbx_data[recv_mbx->mod], pf_id, vf_id, recv_mbx->cmd,
 			       recv_mbx->buf, recv_mbx->buf_len, resp_buf, size);
 	} else {
-		sdk_warn(hwdev->dev_hdl, "PPF mbx cb is unregistered, mod = %hhu\n", recv_mbx->mod);
+		sdk_warn(hwdev->dev_hdl, "PPF mbx cb is unregistered, mod = %u\n", recv_mbx->mod);
 		ret = -EINVAL;
 	}
 
@@ -675,7 +677,7 @@ static int sss_recv_pf_from_vf_mbx_handler(struct sss_mbx *mbx,
 	struct sss_hwdev *hwdev = SSS_TO_HWDEV(mbx);
 
 	if (recv_mbx->mod >= SSS_MOD_TYPE_MAX) {
-		sdk_warn(hwdev->dev_hdl, "Recv err mbx msg, mod = %hhu\n", recv_mbx->mod);
+		sdk_warn(hwdev->dev_hdl, "Recv err mbx msg, mod = %u\n", recv_mbx->mod);
 		return -EINVAL;
 	}
 
@@ -725,7 +727,7 @@ static void sss_recv_mbx_handler(struct sss_mbx *mbx,
 	int ret = 0;
 	void *resp_buf = recv_mbx->resp_buf;
 	u16 size = SSS_MBX_DATA_SIZE;
-	u16 src_func_id;
+	u16 src_func_id = recv_mbx->src_func_id;
 	struct sss_hwdev *hwdev = SSS_TO_HWDEV(mbx);
 
 	if (SSS_IS_VF(hwdev)) {
@@ -733,7 +735,6 @@ static void sss_recv_mbx_handler(struct sss_mbx *mbx,
 		goto out;
 	}
 
-	src_func_id = recv_mbx->src_func_id;
 	if (SSS_SRC_IS_PF_OR_PPF(hwdev, src_func_id)) {
 		if (SSS_IS_PPF(hwdev))
 			ret = sss_recv_ppf_mbx_handler(mbx, recv_mbx,

@@ -8,15 +8,14 @@
  */
 #include <linux/io.h>
 
+#include <asm/apic.h>
 #include <asm/cpu.h>
 #include <asm/smp.h>
 #include <asm/numa.h>
 #include <asm/cacheinfo.h>
 #include <asm/spec-ctrl.h>
 #include <asm/delay.h>
-#ifdef CONFIG_X86_64
-# include <asm/set_memory.h>
-#endif
+#include <asm/resctrl.h>
 
 #include "cpu.h"
 
@@ -82,15 +81,21 @@ static void hygon_get_topology(struct cpuinfo_x86 *c)
 			c->x86_max_cores /= smp_num_siblings;
 
 		/*
-		 * In case leaf B is available, use it to derive
+		 * From model 0x4, leaf B is available, so use it to derive
 		 * topology information.
 		 */
 		err = detect_extended_topology(c);
-		if (!err)
+		if (!err) {
 			c->x86_coreid_bits = get_count_order(c->x86_max_cores);
+			__max_die_per_package = nodes_per_socket;
+		}
 
-		/* Socket ID is ApicId[6] for these processors. */
-		c->phys_proc_id = c->apicid >> APICID_SOCKET_ID_BIT;
+		/*
+		 * Socket ID is ApicId[6] for the processors with model <= 0x3
+		 * when running on host.
+		 */
+		if (!boot_cpu_has(X86_FEATURE_HYPERVISOR) && c->x86_model <= 0x3)
+			c->phys_proc_id = c->apicid >> APICID_SOCKET_ID_BIT;
 
 		cacheinfo_hygon_init_llc_id(c, cpu);
 	} else if (cpu_has(c, X86_FEATURE_NODEID_MSR)) {
@@ -203,23 +208,6 @@ static void early_init_hygon_mc(struct cpuinfo_x86 *c)
 
 static void bsp_init_hygon(struct cpuinfo_x86 *c)
 {
-#ifdef CONFIG_X86_64
-	unsigned long long tseg;
-
-	/*
-	 * Split up direct mapping around the TSEG SMM area.
-	 * Don't do it for gbpages because there seems very little
-	 * benefit in doing so.
-	 */
-	if (!rdmsrl_safe(MSR_K8_TSEG_ADDR, &tseg)) {
-		unsigned long pfn = tseg >> PAGE_SHIFT;
-
-		pr_debug("tseg: %010llx\n", tseg);
-		if (pfn_range_is_mapped(pfn, pfn + 1))
-			set_memory_4k((unsigned long)__va(tseg), 1);
-	}
-#endif
-
 	if (cpu_has(c, X86_FEATURE_CONSTANT_TSC)) {
 		u64 val;
 
@@ -255,6 +243,7 @@ static void bsp_init_hygon(struct cpuinfo_x86 *c)
 			x86_amd_ls_cfg_ssbd_mask = 1ULL << 10;
 		}
 	}
+	resctrl_cpu_detect(c);
 }
 
 static void early_init_hygon(struct cpuinfo_x86 *c)
@@ -279,6 +268,10 @@ static void early_init_hygon(struct cpuinfo_x86 *c)
 	/* Bit 12 of 8000_0007 edx is accumulated power mechanism. */
 	if (c->x86_power & BIT(12))
 		set_cpu_cap(c, X86_FEATURE_ACC_POWER);
+
+	/* Bit 14 indicates the Runtime Average Power Limit interface. */
+	if (c->x86_power & BIT(14))
+		set_cpu_cap(c, X86_FEATURE_RAPL);
 
 #ifdef CONFIG_X86_64
 	set_cpu_cap(c, X86_FEATURE_SYSCALL32);
@@ -316,7 +309,7 @@ static void init_hygon(struct cpuinfo_x86 *c)
 	set_cpu_cap(c, X86_FEATURE_REP_GOOD);
 
 	/* get apicid instead of initial apic id from cpuid */
-	c->apicid = hard_smp_processor_id();
+	c->apicid = read_apic_id();
 
 	/*
 	 * XXX someone from Hygon needs to confirm this DTRT
@@ -355,10 +348,13 @@ static void init_hygon(struct cpuinfo_x86 *c)
 	set_cpu_cap(c, X86_FEATURE_ARAT);
 
 	/* Hygon CPUs don't reset SS attributes on SYSRET, Xen does. */
-	if (!cpu_has(c, X86_FEATURE_XENPV))
+	if (!cpu_feature_enabled(X86_FEATURE_XENPV))
 		set_cpu_bug(c, X86_BUG_SYSRET_SS_ATTRS);
 
 	check_null_seg_clears_base(c);
+
+	/* Hygon CPUs don't need fencing after x2APIC/TSC_DEADLINE MSR writes. */
+	clear_cpu_cap(c, X86_FEATURE_APIC_MSRS_FENCE);
 }
 
 static void cpu_detect_tlb_hygon(struct cpuinfo_x86 *c)

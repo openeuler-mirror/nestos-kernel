@@ -13,7 +13,7 @@
 #include <linux/fs.h>
 #include <linux/xattr.h>
 #include <linux/evm.h>
-#include <linux/iversion.h>
+#include <linux/fsverity.h>
 
 #include "ima.h"
 
@@ -101,13 +101,19 @@ out:
  */
 int ima_store_template(struct ima_template_entry *entry,
 		       int violation, struct inode *inode,
+#ifdef CONFIG_IMA_DIGEST_LIST
 		       const unsigned char *filename, int pcr,
 		       struct ima_digest *digest)
+#else
+		       const unsigned char *filename, int pcr)
+#endif
 {
 	static const char op[] = "add_template_measure";
 	static const char audit_cause[] = "hashing_error";
 	char *template_name = entry->template_desc->name;
+#ifdef CONFIG_IMA_DIGEST_LIST
 	struct ima_template_entry *duplicated_entry = NULL;
+#endif
 	int result;
 
 	if (!violation) {
@@ -120,7 +126,7 @@ int ima_store_template(struct ima_template_entry *entry,
 			return result;
 		}
 	}
-
+#ifdef CONFIG_IMA_DIGEST_LIST
 	if (ima_plus_standard_pcr && !digest) {
 		duplicated_entry = kmemdup(entry,
 			sizeof(*entry) + entry->template_desc->num_fields *
@@ -130,9 +136,10 @@ int ima_store_template(struct ima_template_entry *entry,
 	} else if (!ima_plus_standard_pcr && ima_digest_list_pcr >= 0) {
 		pcr = ima_digest_list_pcr;
 	}
-
+#endif
 	entry->pcr = pcr;
 	result = ima_add_template_entry(entry, violation, op, inode, filename);
+#ifdef CONFIG_IMA_DIGEST_LIST
 	if (result) {
 		kfree(duplicated_entry);
 	} else if (duplicated_entry) {
@@ -141,7 +148,7 @@ int ima_store_template(struct ima_template_entry *entry,
 		if (result < 0)
 			kfree(duplicated_entry);
 	}
-
+#endif
 	return result;
 }
 
@@ -173,8 +180,13 @@ void ima_add_violation(struct file *file, const unsigned char *filename,
 		result = -ENOMEM;
 		goto err_out;
 	}
+#ifdef CONFIG_IMA_DIGEST_LIST
 	result = ima_store_template(entry, violation, inode, filename,
 				    CONFIG_IMA_MEASURE_PCR_IDX, NULL);
+#else
+	result = ima_store_template(entry, violation, inode,
+				    filename, CONFIG_IMA_MEASURE_PCR_IDX);
+#endif
 	if (result < 0)
 		ima_free_template_entry(entry);
 err_out:
@@ -184,6 +196,7 @@ err_out:
 
 /**
  * ima_get_action - appraise & measure decision based on policy.
+ * @idmap: idmap of the mount the inode was found from
  * @inode: pointer to the inode associated with the object being validated
  * @cred: pointer to credentials structure to validate
  * @secid: secid of the task being validated
@@ -192,30 +205,60 @@ err_out:
  * @func: caller identifier
  * @pcr: pointer filled in if matched measure policy sets pcr=
  * @template_desc: pointer filled in if matched measure policy sets template=
- * @keyring: keyring name used to determine the action
+ * @func_data: func specific data, may be NULL
+ * @allowed_algos: allowlist of hash algorithms for the IMA xattr
  *
  * The policy is defined in terms of keypairs:
  *		subj=, obj=, type=, func=, mask=, fsmagic=
  *	subj,obj, and type: are LSM specific.
  *	func: FILE_CHECK | BPRM_CHECK | CREDS_CHECK | MMAP_CHECK | MODULE_CHECK
- *	| KEXEC_CMDLINE | KEY_CHECK
+ *	| KEXEC_CMDLINE | KEY_CHECK | CRITICAL_DATA | SETXATTR_CHECK
+ *	| MMAP_CHECK_REQPROT
  *	mask: contains the permission mask
  *	fsmagic: hex value
  *
  * Returns IMA_MEASURE, IMA_APPRAISE mask.
  *
  */
-int ima_get_action(struct inode *inode, const struct cred *cred, u32 secid,
-		   int mask, enum ima_hooks func, int *pcr,
+int ima_get_action(struct mnt_idmap *idmap, struct inode *inode,
+		   const struct cred *cred, u32 secid, int mask,
+		   enum ima_hooks func, int *pcr,
 		   struct ima_template_desc **template_desc,
-		   const char *keyring)
+		   const char *func_data, unsigned int *allowed_algos)
 {
 	int flags = IMA_MEASURE | IMA_AUDIT | IMA_APPRAISE | IMA_HASH;
 
 	flags &= ima_policy_flag;
 
-	return ima_match_policy(inode, cred, secid, func, mask, flags, pcr,
-				template_desc, keyring);
+	return ima_match_policy(idmap, inode, cred, secid, func, mask,
+				flags, pcr, template_desc, func_data,
+				allowed_algos);
+}
+
+static bool ima_get_verity_digest(struct integrity_iint_cache *iint,
+				  struct ima_max_digest_data *hash)
+{
+	enum hash_algo alg;
+	int digest_len;
+
+	/*
+	 * On failure, 'measure' policy rules will result in a file data
+	 * hash containing 0's.
+	 */
+	digest_len = fsverity_get_digest(iint->inode, hash->digest, NULL, &alg);
+	if (digest_len == 0)
+		return false;
+
+	/*
+	 * Unlike in the case of actually calculating the file hash, in
+	 * the fsverity case regardless of the hash algorithm, return
+	 * the verity digest to be included in the measurement list. A
+	 * mismatch between the verity algorithm and the xattr signature
+	 * algorithm, if one exists, will be detected later.
+	 */
+	hash->hdr.algo = alg;
+	hash->hdr.length = digest_len;
+	return true;
 }
 
 /*
@@ -234,15 +277,14 @@ int ima_collect_measurement(struct integrity_iint_cache *iint,
 {
 	const char *audit_cause = "failed";
 	struct inode *inode = file_inode(file);
+	struct inode *real_inode = d_real_inode(file_dentry(file));
 	const char *filename = file->f_path.dentry->d_name.name;
+	struct ima_max_digest_data hash;
+	struct kstat stat;
 	int result = 0;
 	int length;
 	void *tmpbuf;
-	u64 i_version;
-	struct {
-		struct ima_digest_data hdr;
-		char digest[IMA_MAX_DIGEST_SIZE];
-	} hash;
+	u64 i_version = 0;
 
 	/*
 	 * Always collect the modsig, because IMA might have already collected
@@ -256,20 +298,31 @@ int ima_collect_measurement(struct integrity_iint_cache *iint,
 		goto out;
 
 	/*
-	 * Dectecting file change is based on i_version. On filesystems
-	 * which do not support i_version, support is limited to an initial
-	 * measurement/appraisal/audit.
+	 * Detecting file change is based on i_version. On filesystems
+	 * which do not support i_version, support was originally limited
+	 * to an initial measurement/appraisal/audit, but was modified to
+	 * assume the file changed.
 	 */
-	i_version = inode_query_iversion(inode);
+	result = vfs_getattr_nosec(&file->f_path, &stat, STATX_CHANGE_COOKIE,
+				   AT_STATX_SYNC_AS_STAT);
+	if (!result && (stat.result_mask & STATX_CHANGE_COOKIE))
+		i_version = stat.change_cookie;
 	hash.hdr.algo = algo;
+	hash.hdr.length = hash_digest_size[algo];
 
 	/* Initialize hash digest to 0's in case of failure */
 	memset(&hash.digest, 0, sizeof(hash.digest));
 
-	if (buf)
+	if (iint->flags & IMA_VERITY_REQUIRED) {
+		if (!ima_get_verity_digest(iint, &hash)) {
+			audit_cause = "no-verity-digest";
+			result = -ENODATA;
+		}
+	} else if (buf) {
 		result = ima_calc_buffer_hash(buf, size, &hash.hdr);
-	else
+	} else {
 		result = ima_calc_file_hash(file, &hash.hdr);
+	}
 
 	if (result && result != -EBADF && result != -EINVAL)
 		goto out;
@@ -284,6 +337,10 @@ int ima_collect_measurement(struct integrity_iint_cache *iint,
 	iint->ima_hash = tmpbuf;
 	memcpy(iint->ima_hash, &hash, length);
 	iint->version = i_version;
+	if (real_inode != inode) {
+		iint->real_ino = real_inode->i_ino;
+		iint->real_dev = real_inode->i_sb->s_dev;
+	}
 
 	/* Possibly temporary failure due to type of read (eg. O_DIRECT) */
 	if (!result)
@@ -319,8 +376,12 @@ void ima_store_measurement(struct integrity_iint_cache *iint,
 			   struct file *file, const unsigned char *filename,
 			   struct evm_ima_xattr_data *xattr_value,
 			   int xattr_len, const struct modsig *modsig, int pcr,
+#ifdef CONFIG_IMA_DIGEST_LIST
 			   struct ima_template_desc *template_desc,
 			   struct ima_digest *digest)
+#else
+			   struct ima_template_desc *template_desc)
+#endif
 {
 	static const char op[] = "add_template_measure";
 	static const char audit_cause[] = "ENOMEM";
@@ -344,11 +405,12 @@ void ima_store_measurement(struct integrity_iint_cache *iint,
 	if (iint->measured_pcrs & (0x1 << pcr) && !modsig)
 		return;
 
+#ifdef CONFIG_IMA_DIGEST_LIST
 	if (digest && !ima_plus_standard_pcr && ima_digest_list_pcr >= 0) {
 		result = -EEXIST;
 		goto out;
 	}
-
+#endif
 	result = ima_alloc_init_template(&event_data, &entry, template_desc);
 	if (result < 0) {
 		integrity_audit_msg(AUDIT_INTEGRITY_PCR, inode, filename,
@@ -356,14 +418,22 @@ void ima_store_measurement(struct integrity_iint_cache *iint,
 		return;
 	}
 
+#ifdef CONFIG_IMA_DIGEST_LIST
 	result = ima_store_template(entry, violation, inode, filename, pcr,
 				    digest);
 out:
+#else
+	result = ima_store_template(entry, violation, inode, filename, pcr);
+#endif
 	if ((!result || result == -EEXIST) && !(file->f_flags & O_DIRECT)) {
 		iint->flags |= IMA_MEASURED;
 		iint->measured_pcrs |= (0x1 << pcr);
 	}
+#ifdef CONFIG_IMA_DIGEST_LIST
 	if (result < 0 && entry)
+#else
+	if (result < 0)
+#endif
 		ima_free_template_entry(entry);
 }
 
@@ -429,7 +499,7 @@ const char *ima_d_path(const struct path *path, char **pathbuf, char *namebuf)
 	}
 
 	if (!pathname) {
-		strlcpy(namebuf, path->dentry->d_name.name, NAME_MAX);
+		strscpy(namebuf, path->dentry->d_name.name, NAME_MAX);
 		pathname = namebuf;
 	}
 

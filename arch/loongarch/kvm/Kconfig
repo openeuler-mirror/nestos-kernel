@@ -2,6 +2,7 @@
 #
 # KVM configuration
 #
+
 source "virt/kvm/Kconfig"
 
 menuconfig VIRTUALIZATION
@@ -11,44 +12,29 @@ menuconfig VIRTUALIZATION
 	  other operating systems inside virtual machines (guests).
 	  This option alone does not add any kernel code.
 
-	  If you say N, all options in this submenu will be skipped and disabled.
+	  If you say N, all options in this submenu will be skipped and
+	  disabled.
 
 if VIRTUALIZATION
 
 config KVM
 	tristate "Kernel-based Virtual Machine (KVM) support"
+	depends on AS_HAS_LVZ_EXTENSION
 	depends on HAVE_KVM
-	select EXPORT_UASM
-	select PREEMPT_NOTIFIERS
-	select ANON_INODES
-	select KVM_GENERIC_DIRTYLOG_READ_PROTECT
-	select HAVE_KVM_VCPU_ASYNC_IOCTL
-	select KVM_MMIO
-	select MMU_NOTIFIER
-	select HAVE_KVM_IRQCHIP
-	select HAVE_KVM_IRQFD
-	select HAVE_KVM_IRQ_ROUTING
+	select HAVE_KVM_DIRTY_RING_ACQ_REL
 	select HAVE_KVM_EVENTFD
-	select HAVE_KVM_MSI
-	select SRCU
-	select KVM_VFIO
+	select HAVE_KVM_VCPU_ASYNC_IOCTL
+	select KVM_GENERIC_DIRTYLOG_READ_PROTECT
+	select KVM_GENERIC_HARDWARE_ENABLING
+	select KVM_MMIO
+	select KVM_XFER_TO_GUEST_WORK
+	select MMU_NOTIFIER
+	select PREEMPT_NOTIFIERS
 	help
-	  Support for hosting Guest kernels.
+	  Support hosting virtualized guest machines using
+	  hardware virtualization extensions. You will need
+	  a processor equipped with virtualization extensions.
 
-choice
-	prompt "Virtualization mode"
-	depends on KVM
-	default KVM_LOONGARCH_LVZ
-
-config KVM_LOONGARCH_LVZ
-	bool "LOONGARCH Virtualization (VZ) ASE"
-	help
-	  Use the LOONGARCH Virtualization (VZ) ASE to virtualize guests. This
-	  supports running unmodified guest kernels, but requires hardware
-	  support.
-
-endchoice
-
-source "drivers/vhost/Kconfig"
+	  If unsure, say N.
 
 endif # VIRTUALIZATION

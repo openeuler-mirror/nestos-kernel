@@ -4,7 +4,6 @@
 #ifndef OSSL_KNL_LINUX_H_
 #define OSSL_KNL_LINUX_H_
 
-#include <net/checksum.h>
 #include <net/ipv6.h>
 #include <linux/string.h>
 #include <linux/pci.h>
@@ -31,9 +30,6 @@
 #ifndef __GFP_COMP
 #define __GFP_COMP 0
 #endif
-
-#undef __always_unused
-#define __always_unused __attribute__((__unused__))
 
 #define ETH_TYPE_TRANS_SETS_DEV
 #define HAVE_NETDEV_STATS_IN_NETDEV
@@ -79,9 +75,6 @@
 #ifdef ETHTOOL_SRXNTUPLE
 #undef ETHTOOL_SRXNTUPLE
 #endif
-
-#define _kc_kmap_atomic(page) kmap_atomic(page)
-#define _kc_kunmap_atomic(addr) kunmap_atomic(addr)
 
 #include <linux/of_net.h>
 
@@ -189,10 +182,6 @@ static inline void _kc_do_gettimeofday(struct timeval *tv)
 #define HAVE_NDO_SELECT_QUEUE_SB_DEV_ONLY
 #define ETH_GET_HEADLEN_NEED_DEV
 #define HAVE_GENL_OPS_FIELD_VALIDATE
-
-#ifndef FIELD_SIZEOF
-#define FIELD_SIZEOF(t, f) (sizeof(((t *)0)->f))
-#endif
 
 #define HAVE_DEVLINK_FLASH_UPDATE_PARAMS
 

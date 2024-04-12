@@ -70,7 +70,7 @@ static int hns3_roh_register_device(struct hns3_roh_device *hroh_dev)
 	int ret;
 
 	if (!strlen(rohdev->name))
-		strlcpy(rohdev->name, "hns3_%d", ROH_DEVICE_NAME_MAX);
+		strscpy(rohdev->name, "hns3_%d", ROH_DEVICE_NAME_MAX);
 
 	rohdev->owner = THIS_MODULE;
 	rohdev->dev.parent = dev;
@@ -387,6 +387,9 @@ static int hns3_roh_reset_notify(struct hnae3_handle *handle,
 		break;
 	case HNAE3_UNINIT_CLIENT:
 		ret = hns3_roh_reset_notify_uninit(handle);
+		break;
+	case HNAE3_DOWN_CLIENT:
+		set_bit(HNS3_ROH_STATE_CMD_DISABLE, &handle->rohinfo.reset_state);
 		break;
 	default:
 		break;

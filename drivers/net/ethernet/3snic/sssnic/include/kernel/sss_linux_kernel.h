@@ -4,6 +4,7 @@
 #ifndef SSS_LINUX_KERNEL_H_
 #define SSS_LINUX_KERNEL_H_
 
+#include <linux/bitops.h>
 #include <net/checksum.h>
 #include <net/ipv6.h>
 #include <linux/string.h>
@@ -86,8 +87,8 @@
 #endif
 
 /* ************************************************************************ */
-#define _kc_kmap_atomic(page) kmap_atomic(page)
-#define _kc_kunmap_atomic(addr) kunmap_atomic(addr)
+#define _kc_kmap_atomic(page) kmap_local_page(page)
+#define _kc_kunmap_atomic(addr) kunmap_local(addr)
 
 /* ************************************************************************ */
 #include <linux/of_net.h>
@@ -235,12 +236,19 @@ static inline void _kc_do_gettimeofday(struct timeval *tv)
 #define HAVE_XDP_FRAME_SZ
 
 /* ************************************************************************ */
-#define HAVE_DEVLINK_FW_FILE_NAME_MEMBER
-
-/* ************************************************************************ */
-
 #define HAVE_ENCAPSULATION_TSO
 #define HAVE_ENCAPSULATION_CSUM
+
+/* ************************************************************************ */
+#define HAVE_BFP_WARN_NETDEV_PARAM
+#define USE_OLD_PCI_FUNCTION
+#define CLASS_CREATE_WITH_ONE_PARAM
+#define NEED_NETIF_NAPI_ADD_NO_WEIGHT
+#define HAS_DEVLINK_ALLOC_SETS_DEV
+#define NO_DEVLINK_REGISTER_SETS_DEV
+#define DEVLINK_REGISTER_RETURN_VOID
+#define devlink_params_publish(x) do {} while (0)
+#define devlink_params_unpublish(x) do {} while (0)
 
 #ifndef eth_zero_addr
 static inline void __kc_eth_zero_addr(u8 *addr)

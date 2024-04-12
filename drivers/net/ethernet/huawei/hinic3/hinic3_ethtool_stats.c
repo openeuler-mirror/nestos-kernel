@@ -25,7 +25,7 @@
 #include "hinic3_rx.h"
 
 #define FPGA_PORT_COUNTER 0
-#define EVB_PORT_COUNTER  1
+#define EVB_PORT_COUNTER 1
 u16 mag_support_mode = EVB_PORT_COUNTER;
 module_param(mag_support_mode, ushort, 0444);
 MODULE_PARM_DESC(mag_support_mode, "Set mag port counter support mode, 0:FPGA 1:EVB, default is 1");
@@ -38,7 +38,7 @@ struct hinic3_stats {
 
 #define HINIC3_NETDEV_STAT(_stat_item) { \
 	.name = #_stat_item, \
-	.size = FIELD_SIZEOF(struct rtnl_link_stats64, _stat_item), \
+	.size = sizeof_field(struct rtnl_link_stats64, _stat_item), \
 	.offset = offsetof(struct rtnl_link_stats64, _stat_item) \
 }
 
@@ -67,7 +67,7 @@ static struct hinic3_stats hinic3_netdev_stats[] = {
 
 #define HINIC3_NIC_STAT(_stat_item) { \
 	.name = #_stat_item, \
-	.size = FIELD_SIZEOF(struct hinic3_nic_stats, _stat_item), \
+	.size = sizeof_field(struct hinic3_nic_stats, _stat_item), \
 	.offset = offsetof(struct hinic3_nic_stats, _stat_item) \
 }
 
@@ -84,13 +84,13 @@ static struct hinic3_stats hinic3_nic_dev_stats_extern[] = {
 
 #define HINIC3_RXQ_STAT(_stat_item) { \
 	.name = "rxq%d_"#_stat_item, \
-	.size = FIELD_SIZEOF(struct hinic3_rxq_stats, _stat_item), \
+	.size = sizeof_field(struct hinic3_rxq_stats, _stat_item), \
 	.offset = offsetof(struct hinic3_rxq_stats, _stat_item) \
 }
 
 #define HINIC3_TXQ_STAT(_stat_item) { \
 	.name = "txq%d_"#_stat_item, \
-	.size = FIELD_SIZEOF(struct hinic3_txq_stats, _stat_item), \
+	.size = sizeof_field(struct hinic3_txq_stats, _stat_item), \
 	.offset = offsetof(struct hinic3_txq_stats, _stat_item) \
 }
 
@@ -139,7 +139,7 @@ static struct hinic3_stats hinic3_tx_queue_stats_extern[] = {
 
 #define HINIC3_FUNC_STAT(_stat_item) {	\
 	.name = #_stat_item, \
-	.size = FIELD_SIZEOF(struct hinic3_vport_stats, _stat_item), \
+	.size = sizeof_field(struct hinic3_vport_stats, _stat_item), \
 	.offset = offsetof(struct hinic3_vport_stats, _stat_item) \
 }
 
@@ -166,7 +166,7 @@ static struct hinic3_stats hinic3_function_stats[] = {
 
 #define HINIC3_PORT_STAT(_stat_item) { \
 	.name = #_stat_item, \
-	.size = FIELD_SIZEOF(struct mag_cmd_port_stats, _stat_item), \
+	.size = sizeof_field(struct mag_cmd_port_stats, _stat_item), \
 	.offset = offsetof(struct mag_cmd_port_stats, _stat_item) \
 }
 
@@ -262,7 +262,7 @@ static struct hinic3_stats hinic3_port_stats[] = {
 
 #define HINIC3_FGPA_PORT_STAT(_stat_item) { \
 	.name = #_stat_item, \
-	.size = FIELD_SIZEOF(struct hinic3_phy_fpga_port_stats, _stat_item), \
+	.size = sizeof_field(struct hinic3_phy_fpga_port_stats, _stat_item), \
 	.offset = offsetof(struct hinic3_phy_fpga_port_stats, _stat_item) \
 }
 
@@ -316,46 +316,61 @@ u32 hinic3_get_io_stats_size(const struct hinic3_nic_dev *nic_dev)
 	count = ARRAY_LEN(hinic3_nic_dev_stats) +
 		ARRAY_LEN(hinic3_nic_dev_stats_extern) +
 		(ARRAY_LEN(hinic3_tx_queue_stats) +
-		ARRAY_LEN(hinic3_tx_queue_stats_extern) +
-		ARRAY_LEN(hinic3_rx_queue_stats) +
-		ARRAY_LEN(hinic3_rx_queue_stats_extern)) * nic_dev->max_qps;
+		 ARRAY_LEN(hinic3_tx_queue_stats_extern) +
+		 ARRAY_LEN(hinic3_rx_queue_stats) +
+		 ARRAY_LEN(hinic3_rx_queue_stats_extern)) *
+			nic_dev->max_qps;
 
 	return count;
 }
 
-#define GET_VALUE_OF_PTR(size, ptr) (				\
-	(size) == sizeof(u64) ? *(u64 *)(ptr) :			\
-	(size) == sizeof(u32) ? *(u32 *)(ptr) :			\
-	(size) == sizeof(u16) ? *(u16 *)(ptr) : *(u8 *)(ptr)	\
-)
+static u64 get_value_of_ptr(u32 size, const void *ptr)
+{
+	u64 ret = (size) == sizeof(u64) ? *(u64 *)(ptr) :
+		  (size) == sizeof(u32) ? *(u32 *)(ptr) :
+		  (size) == sizeof(u16) ? *(u16 *)(ptr) :
+					  *(u8 *)(ptr);
+	return ret;
+}
 
-#define DEV_STATS_PACK(items, item_idx, array, stats_ptr) do {		\
-	int j;								\
-	for (j = 0; j < ARRAY_LEN(array); j++) {			\
-		memcpy((items)[item_idx].name, (array)[j].name,		\
-		       HINIC3_SHOW_ITEM_LEN);				\
-		(items)[item_idx].hexadecimal = 0;			\
-		(items)[item_idx].value =				\
-			GET_VALUE_OF_PTR((array)[j].size,		\
-			(char *)(stats_ptr) + (array)[j].offset);	\
-		(item_idx)++;						\
-	}								\
-} while (0)
+static int dev_stats_pack(struct hinic3_show_item *items, int len,
+			  struct hinic3_stats *array, const void *stats_ptr)
+{
+	int j;
+	int item_idx = 0;
 
-#define QUEUE_STATS_PACK(items, item_idx, array, stats_ptr, qid) do {	\
-	int j;								\
-	for (j = 0; j < ARRAY_LEN(array); j++) {			\
-		memcpy((items)[item_idx].name, (array)[j].name,		\
-		       HINIC3_SHOW_ITEM_LEN);				\
-		snprintf((items)[item_idx].name, HINIC3_SHOW_ITEM_LEN,	\
-			 (array)[j].name, (qid));			\
-		(items)[item_idx].hexadecimal = 0;			\
-		(items)[item_idx].value =				\
-			GET_VALUE_OF_PTR((array)[j].size,		\
-			(char *)(stats_ptr) + (array)[j].offset);	\
-		(item_idx)++;						\
-	}								\
-} while (0)
+	for (j = 0; j < len; j++) {
+		memcpy(items[item_idx].name, array[j].name,
+		       HINIC3_SHOW_ITEM_LEN);
+		items[item_idx].hexadecimal = 0;
+		items[item_idx].value = get_value_of_ptr(array[j].size,
+							 stats_ptr + array[j].offset);
+		item_idx++;
+	}
+
+	return item_idx;
+}
+
+static int queue_stats_pack(struct hinic3_show_item *items, int len,
+			    struct hinic3_stats *array, void *stats_ptr,
+			    u16 qid)
+{
+	int j;
+	int item_idx = 0;
+
+	for (j = 0; j < len; j++) {
+		memcpy(items[item_idx].name, array[j].name,
+		       HINIC3_SHOW_ITEM_LEN);
+		snprintf(items[item_idx].name, HINIC3_SHOW_ITEM_LEN,
+			 array[j].name, qid);
+		items[item_idx].hexadecimal = 0;
+		items[item_idx].value = get_value_of_ptr(array[j].size,
+							 stats_ptr + array[j].offset);
+		item_idx++;
+	}
+
+	return item_idx;
+}
 
 void hinic3_get_io_stats(const struct hinic3_nic_dev *nic_dev, void *stats)
 {
@@ -363,22 +378,36 @@ void hinic3_get_io_stats(const struct hinic3_nic_dev *nic_dev, void *stats)
 	int item_idx = 0;
 	u16 qid;
 
-	DEV_STATS_PACK(items, item_idx, hinic3_nic_dev_stats, &nic_dev->stats);
-	DEV_STATS_PACK(items, item_idx, hinic3_nic_dev_stats_extern,
-		       &nic_dev->stats);
+	item_idx += dev_stats_pack(&items[item_idx],
+				   ARRAY_LEN(hinic3_nic_dev_stats),
+				   hinic3_nic_dev_stats, &nic_dev->stats);
+	item_idx += dev_stats_pack(&items[item_idx],
+				   ARRAY_LEN(hinic3_nic_dev_stats_extern),
+				   hinic3_nic_dev_stats_extern,
+				   &nic_dev->stats);
 
 	for (qid = 0; qid < nic_dev->max_qps; qid++) {
-		QUEUE_STATS_PACK(items, item_idx, hinic3_tx_queue_stats,
-				 &nic_dev->txqs[qid].txq_stats, qid);
-		QUEUE_STATS_PACK(items, item_idx, hinic3_tx_queue_stats_extern,
-				 &nic_dev->txqs[qid].txq_stats, qid);
+		item_idx += queue_stats_pack(&items[item_idx],
+					     ARRAY_LEN(hinic3_tx_queue_stats),
+					     hinic3_tx_queue_stats,
+					     &nic_dev->txqs[qid].txq_stats,
+					     qid);
+		item_idx += queue_stats_pack(&items[item_idx],
+					     ARRAY_LEN(hinic3_tx_queue_stats_extern),
+					     hinic3_tx_queue_stats_extern,
+					     &nic_dev->txqs[qid].txq_stats, qid);
 	}
 
 	for (qid = 0; qid < nic_dev->max_qps; qid++) {
-		QUEUE_STATS_PACK(items, item_idx, hinic3_rx_queue_stats,
-				 &nic_dev->rxqs[qid].rxq_stats, qid);
-		QUEUE_STATS_PACK(items, item_idx, hinic3_rx_queue_stats_extern,
-				 &nic_dev->rxqs[qid].rxq_stats, qid);
+		item_idx += queue_stats_pack(&items[item_idx],
+					     ARRAY_LEN(hinic3_rx_queue_stats),
+					     hinic3_rx_queue_stats,
+					     &nic_dev->rxqs[qid].rxq_stats,
+					     qid);
+		item_idx += queue_stats_pack(&items[item_idx],
+					     ARRAY_LEN(hinic3_rx_queue_stats_extern),
+					     hinic3_rx_queue_stats_extern,
+					     &nic_dev->rxqs[qid].rxq_stats, qid);
 	}
 }
 
@@ -398,10 +427,11 @@ int hinic3_get_sset_count(struct net_device *netdev, int sset)
 	case ETH_SS_STATS:
 		q_num = nic_dev->q_params.num_qps;
 		count = ARRAY_LEN(hinic3_netdev_stats) +
-		    ARRAY_LEN(hinic3_nic_dev_stats) +
+			ARRAY_LEN(hinic3_nic_dev_stats) +
 			ARRAY_LEN(hinic3_function_stats) +
 			(ARRAY_LEN(hinic3_tx_queue_stats) +
-			ARRAY_LEN(hinic3_rx_queue_stats)) * q_num;
+			 ARRAY_LEN(hinic3_rx_queue_stats)) *
+				q_num;
 
 		if (!HINIC3_FUNC_IS_VF(nic_dev->hwdev)) {
 			if (mag_support_mode == FPGA_PORT_COUNTER)
@@ -432,9 +462,11 @@ static void get_drv_queue_stats(struct hinic3_nic_dev *nic_dev, u64 *data)
 		hinic3_txq_get_stats(&nic_dev->txqs[qid], &txq_stats);
 		for (j = 0; j < ARRAY_LEN(hinic3_tx_queue_stats); j++, i++) {
 			p = (char *)(&txq_stats) +
-				hinic3_tx_queue_stats[j].offset;
-			data[i] = (hinic3_tx_queue_stats[j].size ==
-					sizeof(u64)) ? *(u64 *)p : *(u32 *)p;
+			    hinic3_tx_queue_stats[j].offset;
+			data[i] =
+				(hinic3_tx_queue_stats[j].size == sizeof(u64)) ?
+					*(u64 *)p :
+					*(u32 *)p;
 		}
 	}
 
@@ -445,9 +477,11 @@ static void get_drv_queue_stats(struct hinic3_nic_dev *nic_dev, u64 *data)
 		hinic3_rxq_get_stats(&nic_dev->rxqs[qid], &rxq_stats);
 		for (j = 0; j < ARRAY_LEN(hinic3_rx_queue_stats); j++, i++) {
 			p = (char *)(&rxq_stats) +
-				hinic3_rx_queue_stats[j].offset;
-			data[i] = (hinic3_rx_queue_stats[j].size ==
-					sizeof(u64)) ? *(u64 *)p : *(u32 *)p;
+			    hinic3_rx_queue_stats[j].offset;
+			data[i] =
+				(hinic3_rx_queue_stats[j].size == sizeof(u64)) ?
+					*(u64 *)p :
+					*(u32 *)p;
 		}
 	}
 }
@@ -461,8 +495,6 @@ static u16 get_fpga_port_stats(struct hinic3_nic_dev *nic_dev, u64 *data)
 
 	port_stats = kzalloc(sizeof(*port_stats), GFP_KERNEL);
 	if (!port_stats) {
-		nicif_err(nic_dev, drv, nic_dev->netdev,
-			  "Failed to malloc port stats\n");
 		memset(&data[i], 0,
 		       ARRAY_LEN(g_hinic3_fpga_port_stats) * sizeof(*data));
 		i += ARRAY_LEN(g_hinic3_fpga_port_stats);
@@ -476,8 +508,9 @@ static u16 get_fpga_port_stats(struct hinic3_nic_dev *nic_dev, u64 *data)
 
 	for (j = 0; j < ARRAY_LEN(g_hinic3_fpga_port_stats); j++, i++) {
 		p = (char *)(port_stats) + g_hinic3_fpga_port_stats[j].offset;
-		data[i] = (g_hinic3_fpga_port_stats[j].size ==
-				sizeof(u64)) ? *(u64 *)p : *(u32 *)p;
+		data[i] = (g_hinic3_fpga_port_stats[j].size == sizeof(u64)) ?
+				  *(u64 *)p :
+				  *(u32 *)p;
 	}
 
 	kfree(port_stats);
@@ -497,8 +530,6 @@ static u16 get_ethtool_port_stats(struct hinic3_nic_dev *nic_dev, u64 *data)
 
 	port_stats = kzalloc(sizeof(*port_stats), GFP_KERNEL);
 	if (!port_stats) {
-		nicif_err(nic_dev, drv, nic_dev->netdev,
-			  "Failed to malloc port stats\n");
 		memset(&data[i], 0,
 		       ARRAY_LEN(hinic3_port_stats) * sizeof(*data));
 		i += ARRAY_LEN(hinic3_port_stats);
@@ -512,8 +543,9 @@ static u16 get_ethtool_port_stats(struct hinic3_nic_dev *nic_dev, u64 *data)
 
 	for (j = 0; j < ARRAY_LEN(hinic3_port_stats); j++, i++) {
 		p = (char *)(port_stats) + hinic3_port_stats[j].offset;
-		data[i] = (hinic3_port_stats[j].size ==
-				sizeof(u64)) ? *(u64 *)p : *(u32 *)p;
+		data[i] = (hinic3_port_stats[j].size == sizeof(u64)) ?
+				  *(u64 *)p :
+				  *(u32 *)p;
 	}
 
 	kfree(port_stats);
@@ -533,7 +565,7 @@ void hinic3_get_ethtool_stats(struct net_device *netdev,
 #endif
 	struct hinic3_nic_stats *nic_stats = NULL;
 
-	struct hinic3_vport_stats vport_stats = {0};
+	struct hinic3_vport_stats vport_stats = { 0 };
 	u16 i = 0, j = 0;
 	char *p = NULL;
 	int err;
@@ -545,16 +577,17 @@ void hinic3_get_ethtool_stats(struct net_device *netdev,
 #endif
 	for (j = 0; j < ARRAY_LEN(hinic3_netdev_stats); j++, i++) {
 		p = (char *)(net_stats) + hinic3_netdev_stats[j].offset;
-		data[i] = GET_VALUE_OF_PTR(hinic3_netdev_stats[j].size, p);
+		data[i] = get_value_of_ptr(hinic3_netdev_stats[j].size, p);
 	}
 
 	nic_stats = &nic_dev->stats;
 	for (j = 0; j < ARRAY_LEN(hinic3_nic_dev_stats); j++, i++) {
 		p = (char *)(nic_stats) + hinic3_nic_dev_stats[j].offset;
-		data[i] = GET_VALUE_OF_PTR(hinic3_nic_dev_stats[j].size, p);
+		data[i] = get_value_of_ptr(hinic3_nic_dev_stats[j].size, p);
 	}
 
-	err = hinic3_get_vport_stats(nic_dev->hwdev, hinic3_global_func_id(nic_dev->hwdev),
+	err = hinic3_get_vport_stats(nic_dev->hwdev,
+				     hinic3_global_func_id(nic_dev->hwdev),
 				     &vport_stats);
 	if (err)
 		nicif_err(nic_dev, drv, netdev,
@@ -562,7 +595,7 @@ void hinic3_get_ethtool_stats(struct net_device *netdev,
 
 	for (j = 0; j < ARRAY_LEN(hinic3_function_stats); j++, i++) {
 		p = (char *)(&vport_stats) + hinic3_function_stats[j].offset;
-		data[i] = GET_VALUE_OF_PTR(hinic3_function_stats[j].size, p);
+		data[i] = get_value_of_ptr(hinic3_function_stats[j].size, p);
 	}
 
 	if (!HINIC3_FUNC_IS_VF(nic_dev->hwdev))
@@ -576,8 +609,7 @@ static u16 get_drv_dev_strings(struct hinic3_nic_dev *nic_dev, char *p)
 	u16 i, cnt = 0;
 
 	for (i = 0; i < ARRAY_LEN(hinic3_netdev_stats); i++) {
-		memcpy(p, hinic3_netdev_stats[i].name,
-		       ETH_GSTRING_LEN);
+		memcpy(p, hinic3_netdev_stats[i].name, ETH_GSTRING_LEN);
 		p += ETH_GSTRING_LEN;
 		cnt++;
 	}
@@ -596,22 +628,24 @@ static u16 get_hw_stats_strings(struct hinic3_nic_dev *nic_dev, char *p)
 	u16 i, cnt = 0;
 
 	for (i = 0; i < ARRAY_LEN(hinic3_function_stats); i++) {
-		memcpy(p, hinic3_function_stats[i].name,
-		       ETH_GSTRING_LEN);
+		memcpy(p, hinic3_function_stats[i].name, ETH_GSTRING_LEN);
 		p += ETH_GSTRING_LEN;
 		cnt++;
 	}
 
 	if (!HINIC3_FUNC_IS_VF(nic_dev->hwdev)) {
 		if (mag_support_mode == FPGA_PORT_COUNTER) {
-			for (i = 0; i < ARRAY_LEN(g_hinic3_fpga_port_stats); i++) {
-				memcpy(p, g_hinic3_fpga_port_stats[i].name, ETH_GSTRING_LEN);
+			for (i = 0; i < ARRAY_LEN(g_hinic3_fpga_port_stats);
+			     i++) {
+				memcpy(p, g_hinic3_fpga_port_stats[i].name,
+				       ETH_GSTRING_LEN);
 				p += ETH_GSTRING_LEN;
 				cnt++;
 			}
 		} else {
 			for (i = 0; i < ARRAY_LEN(hinic3_port_stats); i++) {
-				memcpy(p, hinic3_port_stats[i].name, ETH_GSTRING_LEN);
+				memcpy(p, hinic3_port_stats[i].name,
+				       ETH_GSTRING_LEN);
 				p += ETH_GSTRING_LEN;
 				cnt++;
 			}
@@ -630,8 +664,7 @@ static u16 get_qp_stats_strings(const struct hinic3_nic_dev *nic_dev, char *p)
 		for (j = 0; j < ARRAY_LEN(hinic3_tx_queue_stats); j++) {
 			err = sprintf(p, hinic3_tx_queue_stats[j].name, i);
 			if (err < 0)
-				nicif_err(nic_dev, drv, nic_dev->netdev,
-					  "Failed to sprintf tx queue stats name, idx_qps: %u, idx_stats: %u\n",
+				nicif_err(nic_dev, drv, nic_dev->netdev, "Failed to sprintf tx queue stats name, idx_qps: %u, idx_stats: %u\n",
 					  i, j);
 			p += ETH_GSTRING_LEN;
 			cnt++;
@@ -642,8 +675,7 @@ static u16 get_qp_stats_strings(const struct hinic3_nic_dev *nic_dev, char *p)
 		for (j = 0; j < ARRAY_LEN(hinic3_rx_queue_stats); j++) {
 			err = sprintf(p, hinic3_rx_queue_stats[j].name, i);
 			if (err < 0)
-				nicif_err(nic_dev, drv, nic_dev->netdev,
-					  "Failed to sprintf rx queue stats name, idx_qps: %u, idx_stats: %u\n",
+				nicif_err(nic_dev, drv, nic_dev->netdev, "Failed to sprintf rx queue stats name, idx_qps: %u, idx_stats: %u\n",
 					  i, j);
 			p += ETH_GSTRING_LEN;
 			cnt++;
@@ -661,7 +693,8 @@ void hinic3_get_strings(struct net_device *netdev, u32 stringset, u8 *data)
 
 	switch (stringset) {
 	case ETH_SS_TEST:
-		memcpy(data, *g_hinic3_test_strings, sizeof(g_hinic3_test_strings));
+		memcpy(data, *g_hinic3_test_strings,
+		       sizeof(g_hinic3_test_strings));
 		return;
 	case ETH_SS_STATS:
 		offset = get_drv_dev_strings(nic_dev, p);
@@ -675,8 +708,8 @@ void hinic3_get_strings(struct net_device *netdev, u32 stringset, u8 *data)
 		       sizeof(g_hinic_priv_flags_strings));
 		return;
 	default:
-		nicif_err(nic_dev, drv, netdev,
-			  "Invalid string set %u.", stringset);
+		nicif_err(nic_dev, drv, netdev, "Invalid string set %u.",
+			  stringset);
 		return;
 	}
 }
@@ -820,52 +853,42 @@ static const struct hw2ethtool_link_mode
 
 /*lint -restore */
 
-#define GET_SUPPORTED_MODE	0
-#define GET_ADVERTISED_MODE	1
+#define GET_SUPPORTED_MODE 0
+#define GET_ADVERTISED_MODE 1
 
 struct cmd_link_settings {
 	__ETHTOOL_DECLARE_LINK_MODE_MASK(supported);
 	__ETHTOOL_DECLARE_LINK_MODE_MASK(advertising);
 
-	u32	speed;
-	u8	duplex;
-	u8	port;
-	u8	autoneg;
+	u32 speed;
+	u8 duplex;
+	u8 port;
+	u8 autoneg;
 };
 
-#define ETHTOOL_ADD_SUPPORTED_LINK_MODE(ecmd, mode)	\
-		set_bit(ETHTOOL_LINK_MODE_##mode##_BIT, (ecmd)->supported)
-#define ETHTOOL_ADD_ADVERTISED_LINK_MODE(ecmd, mode)	\
-		set_bit(ETHTOOL_LINK_MODE_##mode##_BIT, (ecmd)->advertising)
+#define ETHTOOL_ADD_SUPPORTED_LINK_MODE(ecmd, mode) \
+	set_bit(ETHTOOL_LINK_##mode##_BIT, (ecmd)->supported)
+#define ETHTOOL_ADD_ADVERTISED_LINK_MODE(ecmd, mode) \
+	set_bit(ETHTOOL_LINK_##mode##_BIT, (ecmd)->advertising)
 
-#define ETHTOOL_ADD_SUPPORTED_SPEED_LINK_MODE(ecmd, mode)	\
-do {								\
-	u32 i;							\
-	for (i = 0; i < hw2ethtool_link_mode_table[mode].arr_size; i++) { \
-		if (hw2ethtool_link_mode_table[mode].link_mode_bit_arr[i] >= \
-			__ETHTOOL_LINK_MODE_MASK_NBITS)		\
-			continue;				\
-		set_bit(hw2ethtool_link_mode_table[mode].link_mode_bit_arr[i], \
-			(ecmd)->supported);			\
-	}							\
-} while (0)
+static void ethtool_add_speed_link_mode(__ETHTOOL_DECLARE_LINK_MODE_MASK(bitmap), u32 mode)
+{
+	u32 i;
 
-#define ETHTOOL_ADD_ADVERTISED_SPEED_LINK_MODE(ecmd, mode)	\
-do {								\
-	u32 i;							\
-	for (i = 0; i < hw2ethtool_link_mode_table[mode].arr_size; i++) { \
-		if (hw2ethtool_link_mode_table[mode].link_mode_bit_arr[i] >= \
-			__ETHTOOL_LINK_MODE_MASK_NBITS)		\
-			continue;				\
-		set_bit(hw2ethtool_link_mode_table[mode].link_mode_bit_arr[i], \
-			(ecmd)->advertising);			\
-	}							\
-} while (0)
+	for (i = 0; i < hw2ethtool_link_mode_table[mode].arr_size; i++) {
+		if (hw2ethtool_link_mode_table[mode].link_mode_bit_arr[i] >=
+		    __ETHTOOL_LINK_MODE_MASK_NBITS)
+			continue;
+
+		set_bit(hw2ethtool_link_mode_table[mode].link_mode_bit_arr[i],
+			bitmap);
+	}
+}
 
 /* Related to enum mag_cmd_port_speed */
 static u32 hw_to_ethtool_speed[] = {
-	(u32)SPEED_UNKNOWN, SPEED_10, SPEED_100, SPEED_1000, SPEED_10000,
-	SPEED_25000, SPEED_40000, SPEED_50000, SPEED_100000, SPEED_200000
+	(u32)SPEED_UNKNOWN, SPEED_10,	 SPEED_100,   SPEED_1000,   SPEED_10000,
+	SPEED_25000,	    SPEED_40000, SPEED_50000, SPEED_100000, SPEED_200000
 };
 
 static int hinic3_ethtool_to_hw_speed_level(u32 speed)
@@ -880,19 +903,18 @@ static int hinic3_ethtool_to_hw_speed_level(u32 speed)
 	return i;
 }
 
-static void hinic3_add_ethtool_link_mode(struct cmd_link_settings *link_settings,
-					 u32 hw_link_mode, u32 name)
+static void
+hinic3_add_ethtool_link_mode(struct cmd_link_settings *link_settings,
+			     u32 hw_link_mode, u32 name)
 {
 	u32 link_mode;
 
 	for (link_mode = 0; link_mode < LINK_MODE_MAX_NUMBERS; link_mode++) {
 		if (hw_link_mode & BIT(link_mode)) {
 			if (name == GET_SUPPORTED_MODE)
-				ETHTOOL_ADD_SUPPORTED_SPEED_LINK_MODE
-					(link_settings, link_mode);
+				ethtool_add_speed_link_mode(link_settings->supported, link_mode);
 			else
-				ETHTOOL_ADD_ADVERTISED_SPEED_LINK_MODE
-					(link_settings, link_mode);
+				ethtool_add_speed_link_mode(link_settings->advertising, link_mode);
 		}
 	}
 }
@@ -917,8 +939,8 @@ static int hinic3_link_speed_set(struct hinic3_nic_dev *nic_dev,
 	if (!err && link_state) {
 		link_settings->speed =
 			port_info->speed < ARRAY_LEN(hw_to_ethtool_speed) ?
-			hw_to_ethtool_speed[port_info->speed] :
-			(u32)SPEED_UNKNOWN;
+				hw_to_ethtool_speed[port_info->speed] :
+				(u32)SPEED_UNKNOWN;
 
 		link_settings->duplex = port_info->duplex;
 	} else {
@@ -934,28 +956,28 @@ static void hinic3_link_port_type(struct cmd_link_settings *link_settings,
 {
 	switch (port_type) {
 	case MAG_CMD_WIRE_TYPE_ELECTRIC:
-		ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, TP);
-		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, TP);
+		ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, MODE_TP);
+		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, MODE_TP);
 		link_settings->port = PORT_TP;
 		break;
 
 	case MAG_CMD_WIRE_TYPE_AOC:
 	case MAG_CMD_WIRE_TYPE_MM:
 	case MAG_CMD_WIRE_TYPE_SM:
-		ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, FIBRE);
-		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, FIBRE);
+		ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, MODE_FIBRE);
+		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, MODE_FIBRE);
 		link_settings->port = PORT_FIBRE;
 		break;
 
 	case MAG_CMD_WIRE_TYPE_COPPER:
-		ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, FIBRE);
-		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, FIBRE);
+		ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, MODE_FIBRE);
+		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, MODE_FIBRE);
 		link_settings->port = PORT_DA;
 		break;
 
 	case MAG_CMD_WIRE_TYPE_BACKPLANE:
-		ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, Backplane);
-		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, Backplane);
+		ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, MODE_Backplane);
+		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, MODE_Backplane);
 		link_settings->port = PORT_NONE;
 		break;
 
@@ -968,7 +990,7 @@ static void hinic3_link_port_type(struct cmd_link_settings *link_settings,
 static int get_link_pause_settings(struct hinic3_nic_dev *nic_dev,
 				   struct cmd_link_settings *link_settings)
 {
-	struct nic_pause_config nic_pause = {0};
+	struct nic_pause_config nic_pause = { 0 };
 	int err;
 
 	err = hinic3_get_pause_info(nic_dev->hwdev, &nic_pause);
@@ -978,16 +1000,14 @@ static int get_link_pause_settings(struct hinic3_nic_dev *nic_dev,
 		return err;
 	}
 
-	ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, Pause);
+	ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, MODE_Pause);
 	if (nic_pause.rx_pause && nic_pause.tx_pause) {
-		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, Pause);
+		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, MODE_Pause);
 	} else if (nic_pause.tx_pause) {
-		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings,
-						 Asym_Pause);
+		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, MODE_Asym_Pause);
 	} else if (nic_pause.rx_pause) {
-		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, Pause);
-		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings,
-						 Asym_Pause);
+		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, MODE_Pause);
+		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, MODE_Asym_Pause);
 	}
 
 	return 0;
@@ -997,7 +1017,7 @@ static int get_link_settings(struct net_device *netdev,
 			     struct cmd_link_settings *link_settings)
 {
 	struct hinic3_nic_dev *nic_dev = netdev_priv(netdev);
-	struct nic_port_info port_info = {0};
+	struct nic_port_info port_info = { 0 };
 	int err;
 
 	err = hinic3_get_port_info(nic_dev->hwdev, &port_info,
@@ -1014,11 +1034,12 @@ static int get_link_settings(struct net_device *netdev,
 	hinic3_link_port_type(link_settings, port_info.port_type);
 
 	link_settings->autoneg = port_info.autoneg_state == PORT_CFG_AN_ON ?
-					AUTONEG_ENABLE : AUTONEG_DISABLE;
+					 AUTONEG_ENABLE :
+					 AUTONEG_DISABLE;
 	if (port_info.autoneg_cap)
-		ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, Autoneg);
+		ETHTOOL_ADD_SUPPORTED_LINK_MODE(link_settings, MODE_Autoneg);
 	if (port_info.autoneg_state == PORT_CFG_AN_ON)
-		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, Autoneg);
+		ETHTOOL_ADD_ADVERTISED_LINK_MODE(link_settings, MODE_Autoneg);
 
 	if (!HINIC3_FUNC_IS_VF(nic_dev->hwdev))
 		err = get_link_pause_settings(nic_dev, link_settings);
@@ -1080,31 +1101,33 @@ static int hinic3_is_speed_legal(struct hinic3_nic_dev *nic_dev,
 
 	if (port_info->supported_mode == LINK_MODE_UNKNOWN ||
 	    port_info->advertised_mode == LINK_MODE_UNKNOWN) {
-		nicif_err(nic_dev, drv, netdev, "Unknown supported link modes\n");
+		nicif_err(nic_dev, drv, netdev,
+			  "Unknown supported link modes\n");
 		return -EAGAIN;
 	}
 
 	speed_level = hinic3_ethtool_to_hw_speed_level(speed);
 	if (speed_level >= PORT_SPEED_UNKNOWN ||
 	    !hinic3_is_support_speed(port_info->supported_mode, speed)) {
-		nicif_err(nic_dev, drv, netdev,
-			  "Not supported speed: %u\n", speed);
+		nicif_err(nic_dev, drv, netdev, "Not supported speed: %u\n",
+			  speed);
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
-static int get_link_settings_type(struct hinic3_nic_dev *nic_dev,
-				  u8 autoneg, u32 speed, u32 *set_settings)
+static int get_link_settings_type(struct hinic3_nic_dev *nic_dev, u8 autoneg,
+				  u32 speed, u32 *set_settings)
 {
-	struct nic_port_info port_info = {0};
+	struct nic_port_info port_info = { 0 };
 	int err;
 
 	err = hinic3_get_port_info(nic_dev->hwdev, &port_info,
 				   HINIC3_CHANNEL_NIC);
 	if (err) {
-		nicif_err(nic_dev, drv, nic_dev->netdev, "Failed to get current settings\n");
+		nicif_err(nic_dev, drv, nic_dev->netdev,
+			  "Failed to get current settings\n");
 		return -EAGAIN;
 	}
 
@@ -1114,7 +1137,8 @@ static int get_link_settings_type(struct hinic3_nic_dev *nic_dev,
 
 	if (autoneg == AUTONEG_ENABLE) {
 		if (!port_info.autoneg_cap) {
-			nicif_err(nic_dev, drv, nic_dev->netdev, "Not support autoneg\n");
+			nicif_err(nic_dev, drv, nic_dev->netdev,
+				  "Not support autoneg\n");
 			return -EOPNOTSUPP;
 		}
 	} else if (speed != (u32)SPEED_UNKNOWN) {
@@ -1125,7 +1149,8 @@ static int get_link_settings_type(struct hinic3_nic_dev *nic_dev,
 
 		*set_settings |= HILINK_LINK_SET_SPEED;
 	} else {
-		nicif_err(nic_dev, drv, nic_dev->netdev, "Need to set speed when autoneg is off\n");
+		nicif_err(nic_dev, drv, nic_dev->netdev,
+			  "Need to set speed when autoneg is off\n");
 		return -EOPNOTSUPP;
 	}
 
@@ -1136,14 +1161,16 @@ static int hinic3_set_settings_to_hw(struct hinic3_nic_dev *nic_dev,
 				     u32 set_settings, u8 autoneg, u32 speed)
 {
 	struct net_device *netdev = nic_dev->netdev;
-	struct hinic3_link_ksettings settings = {0};
+	struct hinic3_link_ksettings settings = { 0 };
 	int speed_level = 0;
-	char set_link_str[128] = {0};
+	char set_link_str[128] = { 0 };
 	int err = 0;
 
 	err = snprintf(set_link_str, sizeof(set_link_str) - 1, "%s",
 		       (bool)(set_settings & HILINK_LINK_SET_AUTONEG) ?
-		       ((bool)autoneg ? "autong enable " : "autong disable ") : "");
+			       ((bool)autoneg ? "autong enable " :
+						"autong disable ") :
+			       "");
 	if (err < 0)
 		return -EINVAL;
 
@@ -1161,8 +1188,7 @@ static int hinic3_set_settings_to_hw(struct hinic3_nic_dev *nic_dev,
 
 	err = hinic3_set_link_settings(nic_dev->hwdev, &settings);
 	if (err)
-		nicif_err(nic_dev, drv, netdev, "Set %sfailed\n",
-			  set_link_str);
+		nicif_err(nic_dev, drv, netdev, "Set %sfailed\n", set_link_str);
 	else
 		nicif_info(nic_dev, drv, netdev, "Set %ssuccess\n",
 			   set_link_str);
@@ -1181,8 +1207,8 @@ static int set_link_settings(struct net_device *netdev, u8 autoneg, u32 speed)
 		return err;
 
 	if (set_settings)
-		err = hinic3_set_settings_to_hw(nic_dev, set_settings,
-						autoneg, speed);
+		err = hinic3_set_settings_to_hw(nic_dev, set_settings, autoneg,
+						speed);
 	else
 		nicif_info(nic_dev, drv, netdev, "Nothing changed, exiting without setting anything\n");
 

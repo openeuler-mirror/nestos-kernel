@@ -29,8 +29,7 @@
 #include <scsi/scsi_transport.h>
 #include <scsi/scsi_dbg.h>
 
-#include <linux/unaligned/be_byteshift.h>
-#include <linux/unaligned/le_byteshift.h>
+#include <asm/unaligned.h>
 #include <linux/once.h>
 #include <linux/sched/signal.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
@@ -580,20 +579,14 @@ static void sssraid_shost_init(struct sssraid_ioc *sdioc)
 	sdioc->shost->this_id = -1;
 	sdioc->shost->unique_id = (domain << 16) | (bus << 8) | dev_func;
 	sdioc->shost->max_cmd_len = MAX_CDB_LEN;
-	sdioc->shost->hostt->cmd_size = sssraid_cmd_size(sdioc);
 }
 
 static inline void sssraid_get_tag_from_scmd(struct scsi_cmnd *scmd, u16 *qidx, u16 *cid)
 {
-	u32 tag = blk_mq_unique_tag(scmd->request);
+	u32 tag = blk_mq_unique_tag(scsi_cmd_to_rq(scmd));
 
 	*qidx = blk_mq_unique_tag_to_hwq(tag) + 1;
 	*cid = blk_mq_unique_tag_to_tag(tag);
-}
-
-static inline uint32_t get_unaligned_be24(const uint8_t *const p)
-{
-	return get_unaligned_be32(p - 1) & 0xffffffU;
 }
 
 static int sssraid_setup_rw_cmd(struct sssraid_ioc *sdioc,
@@ -762,7 +755,6 @@ void sssraid_map_status(struct sssraid_iod *iod, struct scsi_cmnd *scmd,
 		if (scmd->result & SAM_STAT_CHECK_CONDITION) {
 			memset(scmd->sense_buffer, 0, SCSI_SENSE_BUFFERSIZE);
 			memcpy(scmd->sense_buffer, iod->sense, SCSI_SENSE_BUFFERSIZE);
-			scmd->result = (scmd->result & 0x00ffffff) | (DRIVER_SENSE << 24);
 		}
 		break;
 	case FW_STAT_ABORTED:
@@ -844,7 +836,7 @@ static int sssraid_rescan_device(struct sssraid_ioc *sdioc, struct sssraid_dev_i
 		return -ENODEV;
 	}
 
-	scsi_rescan_device(&sdev->sdev_gendev);
+	scsi_rescan_device(sdev);
 	scsi_device_put(sdev);
 	return 0;
 }
@@ -1413,7 +1405,7 @@ static void sssraid_back_fault_cqe(struct sssraid_squeue *sqinfo, struct sssraid
 	if (iod->nsge)
 		scsi_dma_unmap(scmd);
 	sssraid_free_iod_res(sdioc, iod);
-	scmd->scsi_done(scmd);
+	scsi_done(scmd);
 	ioc_warn(sdioc, "warn: back fault CQE, cid[%d] qidx[%d]\n",
 		 le16_to_cpu(cqe->cmd_id), sqinfo->qidx);
 }
@@ -1541,7 +1533,7 @@ static int sssraid_sysfs_host_reset(struct Scsi_Host *shost, int reset_type)
 	return ret;
 }
 
-static int sssraid_map_queues(struct Scsi_Host *shost)
+static void sssraid_map_queues(struct Scsi_Host *shost)
 {
 	struct sssraid_ioc *sdioc = shost_priv(shost);
 	struct pci_dev *pdev = sdioc->pdev;
@@ -1558,12 +1550,7 @@ static int sssraid_map_queues(struct Scsi_Host *shost)
 	u8 node_count = 0, i;
 	unsigned int node_id_array[100];
 
-	for_each_pci_msi_entry(entry, pdev) {
-		struct list_head *msi_list = &pdev->dev.msi_list;
-
-		if (list_is_last(msi_list, &entry->list))
-			goto get_next_numa_node;
-
+	msi_for_each_desc(entry, &pdev->dev, MSI_DESC_ALL) {
 		if (entry->irq) {
 			affinity = entry->affinity;
 			node_mask = &affinity->mask;
@@ -1601,7 +1588,6 @@ get_next_numa_node:
 		}
 	}
 
-	return 0;
 }
 
 /* queuecommand	call back */
@@ -1622,7 +1608,7 @@ static int sssraid_qcmd(struct Scsi_Host *shost,
 
 	if (unlikely(sdioc->state != SSSRAID_LIVE)) {
 		set_host_byte(scmd, DID_NO_CONNECT);
-		scmd->scsi_done(scmd);
+		scsi_done(scmd);
 		return 0;
 	}
 
@@ -1640,7 +1626,7 @@ static int sssraid_qcmd(struct Scsi_Host *shost,
 	retval = sssraid_setup_ioq_cmd(sdioc, &ioq_cmd, scmd);
 	if (unlikely(retval)) {
 		set_host_byte(scmd, DID_ERROR);
-		scmd->scsi_done(scmd);
+		scsi_done(scmd);
 		return 0;
 	}
 
@@ -1656,7 +1642,7 @@ static int sssraid_qcmd(struct Scsi_Host *shost,
 	if (unlikely(retval)) {
 		ioc_err(sdioc, "err: io map data fail.\n");
 		set_host_byte(scmd, DID_ERROR);
-		scmd->scsi_done(scmd);
+		scsi_done(scmd);
 		retval = 0;
 		goto deinit_iod;
 	}
@@ -1753,7 +1739,7 @@ static void sssraid_slave_destroy(struct scsi_device *sdev)
 }
 
 /* eh_timed_out call back */
-static enum blk_eh_timer_return sssraid_scmd_timeout(struct scsi_cmnd *scmd)
+static enum scsi_timeout_action sssraid_scmd_timeout(struct scsi_cmnd *scmd)
 {
 	struct sssraid_iod *iod = scsi_cmd_priv(scmd);
 	unsigned int timeout = scmd->device->request_queue->rq_timeout;
@@ -1764,11 +1750,11 @@ static enum blk_eh_timer_return sssraid_scmd_timeout(struct scsi_cmnd *scmd)
 	if (time_after(jiffies, scmd->jiffies_at_alloc + timeout)) {
 		if (cmpxchg(&iod->state, SSSRAID_CMDSTAT_FLIGHT, SSSRAID_CMDSTAT_TIMEOUT) ==
 		    SSSRAID_CMDSTAT_FLIGHT) {
-			return BLK_EH_DONE;
+			return SCSI_EH_DONE;
 		}
 	}
 out:
-	return BLK_EH_RESET_TIMER;
+	return SCSI_EH_RESET_TIMER;
 }
 
 /* eh_abort_handler call back */
@@ -1872,14 +1858,16 @@ static DEVICE_ATTR_RO(csts_cfs);
 static DEVICE_ATTR_RO(csts_rdy);
 static DEVICE_ATTR_RO(fw_version);
 
-static struct device_attribute *sssraid_host_attrs[] = {
-	&dev_attr_csts_pp,
-	&dev_attr_csts_shst,
-	&dev_attr_csts_cfs,
-	&dev_attr_csts_rdy,
-	&dev_attr_fw_version,
+static struct attribute *sssraid_host_attrs[] = {
+	&dev_attr_csts_pp.attr,
+	&dev_attr_csts_shst.attr,
+	&dev_attr_csts_cfs.attr,
+	&dev_attr_csts_rdy.attr,
+	&dev_attr_fw_version.attr,
 	NULL,
 };
+
+ATTRIBUTE_GROUPS(sssraid_host);
 
 static int sssraid_get_vd_info(struct sssraid_ioc *sdioc, struct sssraid_vd_info *vd_info, u16 vid)
 {
@@ -2045,12 +2033,14 @@ static DEVICE_ATTR_RO(raid_level);
 static DEVICE_ATTR_RO(raid_state);
 static DEVICE_ATTR_RO(raid_resync);
 
-static struct device_attribute *sssraid_dev_attrs[] = {
-	&dev_attr_raid_level,
-	&dev_attr_raid_state,
-	&dev_attr_raid_resync,
+static struct attribute *sssraid_dev_attrs[] = {
+	&dev_attr_raid_level.attr,
+	&dev_attr_raid_state.attr,
+	&dev_attr_raid_resync.attr,
 	NULL,
 };
+
+ATTRIBUTE_GROUPS(sssraid_dev);
 
 static struct scsi_host_template sssraid_driver_template = {
 	.module			= THIS_MODULE,
@@ -2070,10 +2060,10 @@ static struct scsi_host_template sssraid_driver_template = {
 	.change_queue_depth		= scsi_change_queue_depth,
 	.host_tagset			= 0,
 	.this_id			= -1,
-	.unchecked_isa_dma		= 0,
-	.shost_attrs			= sssraid_host_attrs,
-	.sdev_attrs			= sssraid_dev_attrs,
+	.shost_groups                   = sssraid_host_groups,
+	.sdev_groups                    = sssraid_dev_groups,
 	.host_reset			= sssraid_sysfs_host_reset,
+	.cmd_size                       = sizeof(struct sssraid_iod) + 8,
 };
 
 /**
@@ -2382,7 +2372,7 @@ static int __init sssraid_init(void)
 	pr_info("Loading %s version %s\n", SSSRAID_DRIVER_NAME,
 	    SSSRAID_DRIVER_VERSION);
 
-	sssraid_class = class_create(THIS_MODULE, "sssraid");
+	sssraid_class = class_create("sssraid");
 	if (IS_ERR(sssraid_class)) {
 		ret_val = PTR_ERR(sssraid_class);
 		return ret_val;

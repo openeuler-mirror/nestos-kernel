@@ -12,6 +12,8 @@
  * See Documentation/security/keys-crypto.txt
  */
 
+#ifdef CONFIG_PGP_PRELOAD
+
 #include <linux/module.h>
 #include <linux/key.h>
 #include <linux/pgplib.h>
@@ -117,3 +119,6 @@ int __init preload_pgp_keys(const u8 *pgpdata, size_t pgpdatalen,
 	}
 	return 0;
 }
+
+#endif /* CONFIG_PGP_PRELOAD */
+

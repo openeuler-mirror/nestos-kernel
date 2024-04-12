@@ -24,7 +24,7 @@ static inline int irq_canonicalize(int irq)
 }
 
 struct pt_regs;
-extern void (*perf_irq)(unsigned long, struct pt_regs *);
+extern void (*perf_irq)(unsigned long vector, struct pt_regs *regs);
 extern void fixup_irqs(void);
 extern void sw64_timer_interrupt(void);
 

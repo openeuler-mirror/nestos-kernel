@@ -1000,7 +1000,6 @@ static int api_chain_init(struct hinic3_api_cmd_chain *chain,
 
 	chain->cell_ctxt = kzalloc(cell_ctxt_size, GFP_KERNEL);
 	if (!chain->cell_ctxt) {
-		sdk_err(dev, "Failed to allocate cell contexts for a chain\n");
 		err = -ENOMEM;
 		goto alloc_cell_ctxt_err;
 	}

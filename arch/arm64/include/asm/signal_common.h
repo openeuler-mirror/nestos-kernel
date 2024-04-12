@@ -28,7 +28,7 @@
 #define SIGFRAME_MAXSZ SZ_64K
 
 struct rt_sigframe_user_layout {
-	void __user *sigframe;
+	struct rt_sigframe __user *sigframe;
 	struct frame_record __user *next_frame;
 
 	unsigned long size;	/* size of allocated sigframe data */
@@ -37,13 +37,24 @@ struct rt_sigframe_user_layout {
 	unsigned long fpsimd_offset;
 	unsigned long esr_offset;
 	unsigned long sve_offset;
+	unsigned long tpidr2_offset;
+	unsigned long za_offset;
+	unsigned long zt_offset;
 	unsigned long extra_offset;
 	unsigned long end_offset;
 };
 
 struct user_ctxs {
 	struct fpsimd_context __user *fpsimd;
+	u32 fpsimd_size;
 	struct sve_context __user *sve;
+	u32 sve_size;
+	struct tpidr2_context __user *tpidr2;
+	u32 tpidr2_size;
+	struct za_context __user *za;
+	u32 za_size;
+	struct zt_context __user *zt;
+	u32 zt_size;
 };
 
 struct frame_record {
@@ -64,7 +75,7 @@ int __parse_user_sigcontext(struct user_ctxs *user,
 	__parse_user_sigcontext(user, &(sf)->uc.uc_mcontext, sf)
 
 int preserve_fpsimd_context(struct fpsimd_context __user *ctx);
-int restore_fpsimd_context(struct fpsimd_context __user *ctx);
+int restore_fpsimd_context(struct user_ctxs *user);
 
 #ifdef CONFIG_ARM64_SVE
 int preserve_sve_context(struct sve_context __user *ctx);
@@ -77,6 +88,26 @@ extern int restore_sve_fpsimd_context(struct user_ctxs *user);
 
 #endif /* ! CONFIG_ARM64_SVE */
 
+
+#ifdef CONFIG_ARM64_SME
+int preserve_tpidr2_context(struct tpidr2_context __user *ctx);
+int restore_tpidr2_context(struct user_ctxs *user);
+int preserve_za_context(struct za_context __user *ctx);
+int restore_za_context(struct user_ctxs *user);
+int preserve_zt_context(struct zt_context __user *ctx);
+int restore_zt_context(struct user_ctxs *user);
+#else /* ! CONFIG_ARM64_SME */
+
+/* Turn any non-optimised out attempts to use these into a link error: */
+extern int preserve_tpidr2_context(void __user *ctx);
+extern int restore_tpidr2_context(struct user_ctxs *user);
+extern int preserve_za_context(void __user *ctx);
+extern int restore_za_context(struct user_ctxs *user);
+extern int preserve_zt_context(void __user *ctx);
+extern int restore_zt_context(struct user_ctxs *user);
+
+#endif /* ! CONFIG_ARM64_SME */
+
 int sigframe_alloc(struct rt_sigframe_user_layout *user,
 		   unsigned long *offset, size_t size);
 int sigframe_alloc_end(struct rt_sigframe_user_layout *user);
@@ -86,10 +117,13 @@ void __setup_return(struct pt_regs *regs, struct k_sigaction *ka,
 
 static void init_user_layout(struct rt_sigframe_user_layout *user)
 {
-	memset(user, 0, sizeof(*user));
-	user->size = RT_SIGFRAME_RESERVED_OFFSET;
+	const size_t reserved_size =
+		sizeof(user->sigframe->uc.uc_mcontext.__reserved);
 
-	user->limit = user->size + SIGCONTEXT_RESERVED_SIZE;
+	memset(user, 0, sizeof(*user));
+	user->size = offsetof(struct rt_sigframe, uc.uc_mcontext.__reserved);
+
+	user->limit = user->size + reserved_size;
 
 	user->limit -= TERMINATOR_SIZE;
 	user->limit -= EXTRA_CONTEXT_SIZE;
@@ -136,7 +170,7 @@ static int restore_sigframe(struct pt_regs *regs,
 	int i, err;
 	struct user_ctxs user;
 
-	err = get_sigset(&set, &sf->uc.uc_sigmask);
+	err = __copy_from_user(&set, &sf->uc.uc_sigmask, sizeof(set));
 	if (err == 0)
 		set_current_blocked(&set);
 
@@ -160,15 +194,20 @@ static int restore_sigframe(struct pt_regs *regs,
 		if (!user.fpsimd)
 			return -EINVAL;
 
-		if (user.sve) {
-			if (!system_supports_sve())
-				return -EINVAL;
-
+		if (user.sve)
 			err = restore_sve_fpsimd_context(&user);
-		} else {
-			err = restore_fpsimd_context(user.fpsimd);
-		}
+		else
+			err = restore_fpsimd_context(&user);
 	}
+
+	if (err == 0 && system_supports_tpidr2() && user.tpidr2)
+		err = restore_tpidr2_context(&user);
+
+	if (err == 0 && system_supports_sme() && user.za)
+		err = restore_za_context(&user);
+
+	if (err == 0 && system_supports_sme2() && user.zt)
+		err = restore_zt_context(&user);
 
 	return err;
 }
@@ -190,10 +229,9 @@ static int setup_sigframe(struct rt_sigframe_user_layout *user,
 	__put_user_error(regs->pc, &sf->uc.uc_mcontext.pc, err);
 	__put_user_error(regs->pstate, &sf->uc.uc_mcontext.pstate, err);
 
-	__put_user_error(current->thread.fault_address,
-			 &sf->uc.uc_mcontext.fault_address, err);
+	__put_user_error(current->thread.fault_address, &sf->uc.uc_mcontext.fault_address, err);
 
-	err |= put_sigset(set, &sf->uc.uc_sigmask);
+	err |= __copy_to_user(&sf->uc.uc_sigmask, set, sizeof(*set));
 
 	if (err == 0 && system_supports_fpsimd()) {
 		struct fpsimd_context __user *fpsimd_ctx =
@@ -208,21 +246,71 @@ static int setup_sigframe(struct rt_sigframe_user_layout *user,
 
 		__put_user_error(ESR_MAGIC, &esr_ctx->head.magic, err);
 		__put_user_error(sizeof(*esr_ctx), &esr_ctx->head.size, err);
-		__put_user_error(current->thread.fault_code,
-				 &esr_ctx->esr, err);
+		__put_user_error(current->thread.fault_code, &esr_ctx->esr, err);
 	}
 
-	/* Scalable Vector Extension state, if present */
-	if (system_supports_sve() && err == 0 && user->sve_offset) {
+	/* Scalable Vector Extension state (including streaming), if present */
+	if ((system_supports_sve() || system_supports_sme()) &&
+	    err == 0 && user->sve_offset) {
 		struct sve_context __user *sve_ctx =
 			apply_user_offset(user, user->sve_offset);
 		err |= preserve_sve_context(sve_ctx);
 	}
 
-	if (err == 0 && user->extra_offset)
-		setup_extra_context((char __user *)user->sigframe, user->size,
-				    (char __user *)apply_user_offset(user,
-						   user->extra_offset));
+	/* TPIDR2 if supported */
+	if (system_supports_tpidr2() && err == 0) {
+		struct tpidr2_context __user *tpidr2_ctx =
+			apply_user_offset(user, user->tpidr2_offset);
+		err |= preserve_tpidr2_context(tpidr2_ctx);
+	}
+
+	/* ZA state if present */
+	if (system_supports_sme() && err == 0 && user->za_offset) {
+		struct za_context __user *za_ctx =
+			apply_user_offset(user, user->za_offset);
+		err |= preserve_za_context(za_ctx);
+	}
+
+	/* ZT state if present */
+	if (system_supports_sme2() && err == 0 && user->zt_offset) {
+		struct zt_context __user *zt_ctx =
+			apply_user_offset(user, user->zt_offset);
+		err |= preserve_zt_context(zt_ctx);
+	}
+
+	if (err == 0 && user->extra_offset) {
+		char __user *sfp = (char __user *)user->sigframe;
+		char __user *userp =
+			apply_user_offset(user, user->extra_offset);
+
+		struct extra_context __user *extra;
+		struct _aarch64_ctx __user *end;
+		u64 extra_datap;
+		u32 extra_size;
+
+		extra = (struct extra_context __user *)userp;
+		userp += EXTRA_CONTEXT_SIZE;
+
+		end = (struct _aarch64_ctx __user *)userp;
+		userp += TERMINATOR_SIZE;
+
+		/*
+		 * extra_datap is just written to the signal frame.
+		 * The value gets cast back to a void __user *
+		 * during sigreturn.
+		 */
+		extra_datap = (__force u64)userp;
+		extra_size = sfp + round_up(user->size, 16) - userp;
+
+		__put_user_error(EXTRA_MAGIC, &extra->head.magic, err);
+		__put_user_error(EXTRA_CONTEXT_SIZE, &extra->head.size, err);
+		__put_user_error(extra_datap, &extra->datap, err);
+		__put_user_error(extra_size, &extra->size, err);
+
+		/* Add the terminator */
+		__put_user_error(0, &end->magic, err);
+		__put_user_error(0, &end->size, err);
+	}
 
 	/* set the "end" magic */
 	if (err == 0) {

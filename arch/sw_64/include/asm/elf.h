@@ -80,7 +80,8 @@ typedef struct user_fpsimd_state elf_fpregset_t;
 #define ELF_DATA		ELFDATA2LSB
 #define ELF_ARCH		EM_SW64
 
-#define ELF_EXEC_PAGESIZE	8192
+#define CORE_DUMP_USE_REGSET
+#define ELF_EXEC_PAGESIZE	PAGE_SIZE
 
 /*
  * This is the location that an ET_DYN program is loaded if exec'ed.  Typical
@@ -102,7 +103,7 @@ typedef struct user_fpsimd_state elf_fpregset_t;
  * such function.
  */
 
-#define ELF_PLAT_INIT(_r, load_addr)	(_r->r0 = 0)
+#define ELF_PLAT_INIT(_r, load_addr)	(_r->regs[0] = 0)
 
 /*
  * The registers are laid out in pt_regs for HMCODE and syscall
@@ -134,6 +135,7 @@ extern void sw64_elf_core_copy_regs(elf_greg_t *dest, struct pt_regs *pt);
  */
 
 #define ELF_PLATFORM	("sw_64")
+
 
 /* update AT_VECTOR_SIZE_ARCH if the number of NEW_AUX_ENT entries changes */
 #define ARCH_DLINFO						\

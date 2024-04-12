@@ -16,7 +16,6 @@ extern const struct amd_nb_bus_dev_range amd_nb_bus_dev_ranges[];
 
 extern bool early_is_amd_nb(u32 value);
 extern struct resource *amd_get_mmconfig_range(struct resource *res);
-extern int amd_cache_northbridges(void);
 extern void amd_flush_garts(void);
 extern int amd_numa_init(void);
 extern int amd_get_subcaches(int);
@@ -24,7 +23,6 @@ extern int amd_set_subcaches(int, unsigned long);
 
 extern int amd_smn_read(u16 node, u32 address, u32 *value);
 extern int amd_smn_write(u16 node, u32 address, u32 value);
-extern int amd_df_indirect_read(u16 node, u8 func, u16 reg, u8 instance_id, u32 *lo);
 
 struct amd_l3_cache {
 	unsigned indices;
@@ -84,6 +82,10 @@ u16 amd_nb_num(void);
 bool amd_nb_has_feature(unsigned int feature);
 struct amd_northbridge *node_to_amd_nb(int node);
 
+bool hygon_f18h_m4h(void);
+u16 hygon_nb_num(void);
+int get_df_id(struct pci_dev *misc, u8 *id);
+
 static inline u16 amd_pci_dev_to_node_id(struct pci_dev *pdev)
 {
 	struct pci_dev *misc;
@@ -120,6 +122,10 @@ static inline bool amd_gart_present(void)
 #define amd_nb_has_feature(x)	false
 #define node_to_amd_nb(x)	NULL
 #define amd_gart_present(x)	false
+
+#define hygon_f18h_m4h		false
+#define hygon_nb_num(x)	0
+#define get_df_id(x, y)	NULL
 
 #endif
 

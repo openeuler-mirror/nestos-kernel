@@ -2,7 +2,7 @@
 /*
  * HiSilicon SoC Hardware event counters support
  *
- * Copyright (C) 2017 Hisilicon Limited
+ * Copyright (C) 2017 HiSilicon Limited
  * Author: Anurup M <anurup.m@huawei.com>
  *         Shaokun Zhang <zhangshaokun@hisilicon.com>
  *
@@ -32,7 +32,7 @@ ssize_t hisi_format_sysfs_show(struct device *dev,
 
 	eattr = container_of(attr, struct dev_ext_attribute, attr);
 
-	return sprintf(buf, "%s\n", (char *)eattr->var);
+	return sysfs_emit(buf, "%s\n", (char *)eattr->var);
 }
 EXPORT_SYMBOL_GPL(hisi_format_sysfs_show);
 
@@ -46,7 +46,7 @@ ssize_t hisi_event_sysfs_show(struct device *dev,
 
 	eattr = container_of(attr, struct dev_ext_attribute, attr);
 
-	return sprintf(page, "config=0x%lx\n", (unsigned long)eattr->var);
+	return sysfs_emit(page, "config=0x%lx\n", (unsigned long)eattr->var);
 }
 EXPORT_SYMBOL_GPL(hisi_event_sysfs_show);
 
@@ -58,7 +58,7 @@ ssize_t hisi_cpumask_sysfs_show(struct device *dev,
 {
 	struct hisi_pmu *hisi_pmu = to_hisi_pmu(dev_get_drvdata(dev));
 
-	return sprintf(buf, "%d\n", hisi_pmu->on_cpu);
+	return sysfs_emit(buf, "%d\n", hisi_pmu->on_cpu);
 }
 EXPORT_SYMBOL_GPL(hisi_cpumask_sysfs_show);
 
@@ -118,7 +118,7 @@ ssize_t hisi_uncore_pmu_identifier_attr_show(struct device *dev,
 {
 	struct hisi_pmu *hisi_pmu = to_hisi_pmu(dev_get_drvdata(dev));
 
-	return snprintf(page, PAGE_SIZE, "0x%08x\n", hisi_pmu->identifier);
+	return sysfs_emit(page, "0x%08x\n", hisi_pmu->identifier);
 }
 EXPORT_SYMBOL_GPL(hisi_uncore_pmu_identifier_attr_show);
 
@@ -167,7 +167,7 @@ int hisi_uncore_pmu_init_irq(struct hisi_pmu *hisi_pmu,
 		return irq;
 
 	ret = devm_request_irq(&pdev->dev, irq, hisi_uncore_pmu_isr,
-			       IRQF_NOBALANCING | IRQF_NO_THREAD | IRQF_SHARED,
+			       IRQF_NOBALANCING | IRQF_NO_THREAD,
 			       dev_name(&pdev->dev), hisi_pmu);
 	if (ret < 0) {
 		dev_err(&pdev->dev,
@@ -225,9 +225,8 @@ int hisi_uncore_pmu_event_init(struct perf_event *event)
 	hwc->idx		= -1;
 	hwc->config_base	= event->attr.config;
 
-	if (hisi_pmu->ops->check_format)
-		if (hisi_pmu->ops->check_format(event))
-			return -EINVAL;
+	if (hisi_pmu->ops->check_filter && hisi_pmu->ops->check_filter(event))
+		return -EINVAL;
 
 	/* Enforce to use the same CPU for all events in this PMU */
 	event->cpu = hisi_pmu->on_cpu;
@@ -396,7 +395,7 @@ EXPORT_SYMBOL_GPL(hisi_uncore_pmu_read);
 void hisi_uncore_pmu_enable(struct pmu *pmu)
 {
 	struct hisi_pmu *hisi_pmu = to_hisi_pmu(pmu);
-	int enabled = bitmap_weight(hisi_pmu->pmu_events.used_mask,
+	bool enabled = !bitmap_empty(hisi_pmu->pmu_events.used_mask,
 				    hisi_pmu->num_counters);
 
 	if (!enabled)
@@ -437,18 +436,12 @@ static void hisi_read_sccl_and_ccl_id(int *scclp, int *cclp)
 	bool mt = mpidr & MPIDR_MT_BITMASK;
 	int sccl, ccl;
 
-	if (mt) {
-		switch (read_cpuid_part_number()) {
-		case HISI_CPU_PART_TSV110:
-		case ARM_CPU_PART_CORTEX_A55:
-			sccl = aff2 >> 3;
-			ccl = aff2 & 0x7;
-			break;
-		default:
-			sccl = aff3;
-			ccl = aff2;
-			break;
-		}
+	if (mt && read_cpuid_part_number() == HISI_CPU_PART_TSV110) {
+		sccl = aff2 >> 3;
+		ccl = aff2 & 0x7;
+	} else if (mt) {
+		sccl = aff3;
+		ccl = aff2;
 	} else {
 		sccl = aff2;
 		ccl = aff1;

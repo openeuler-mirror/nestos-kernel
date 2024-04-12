@@ -15,52 +15,42 @@
 #include <linux/kernel.h>
 #include <linux/export.h>
 #include <linux/io.h>
-#include <asm/pgalloc.h>
 #include <linux/kobject.h>
 #include <linux/memblock.h>
 #include <linux/reboot.h>
+#include <linux/screen_info.h>
 #include <linux/uaccess.h>
-#include <linux/initrd.h>
 
 #include <asm/early_ioremap.h>
 #include <asm/efi.h>
 #include <asm/tlb.h>
 #include <asm/loongson.h>
+#include <asm/pgalloc.h>
 #include "legacy_boot.h"
-
-static __initdata unsigned long screen_info_table = EFI_INVALID_TABLE_ADDR;
-static __initdata unsigned long new_memmap = EFI_INVALID_TABLE_ADDR;
-static __initdata unsigned long initrd = EFI_INVALID_TABLE_ADDR;
 
 static unsigned long efi_nr_tables;
 static unsigned long efi_config_table;
 
-static efi_system_table_t *efi_systab;
-static efi_config_table_type_t arch_tables[] __initdata = {
-	{LINUX_EFI_ARM_SCREEN_INFO_TABLE_GUID, &screen_info_table, NULL},
-	{LINUX_EFI_NEW_MEMMAP_GUID, &new_memmap, "NEWMEM"},
-	{LINUX_EFI_INITRD_MEDIA_GUID, &initrd, "INITRD"},
-	{},
-};
+static unsigned long __initdata boot_memmap = EFI_INVALID_TABLE_ADDR;
+static unsigned long __initdata fdt_pointer = EFI_INVALID_TABLE_ADDR;
 static __initdata pgd_t *pgd_efi;
 
-static void __init init_screen_info(void)
+static efi_system_table_t *efi_systab;
+static efi_config_table_type_t arch_tables[] __initdata = {
+	{LINUX_EFI_BOOT_MEMMAP_GUID,	&boot_memmap,	"MEMMAP" },
+	{DEVICE_TREE_GUID,		&fdt_pointer,	"FDTPTR" },
+	{},
+};
+
+void __init *efi_fdt_pointer(void)
 {
-	struct screen_info *si;
+	if (!efi_systab)
+		return NULL;
 
-	if (screen_info_table != EFI_INVALID_TABLE_ADDR) {
-		si = early_memremap_ro(screen_info_table, sizeof(*si));
-		if (!si) {
-			pr_err("Could not map screen_info config table\n");
-			return;
-		}
-		screen_info = *si;
-		memset(si, 0, sizeof(*si));
-		early_memunmap(si, sizeof(*si));
-	}
+	if (fdt_pointer == EFI_INVALID_TABLE_ADDR)
+		return NULL;
 
-	if (screen_info.orig_video_isVGA == VIDEO_TYPE_EFI)
-		memblock_reserve(screen_info.lfb_base, screen_info.lfb_size);
+	return early_memremap_ro(fdt_pointer, SZ_64K);
 }
 
 static int __init efimap_populate_hugepages(
@@ -78,6 +68,7 @@ static int __init efimap_populate_hugepages(
 		pud = pud_offset((p4d_t *)pgd_efi + pgd_index(addr), addr);
 		if (pud_none(*pud)) {
 			void *p = memblock_alloc_low(PAGE_SIZE, PAGE_SIZE);
+
 			if (!p)
 				return -1;
 			pmd_init(p);
@@ -138,7 +129,7 @@ static int __init efimap_free_pgt(unsigned long start, unsigned long end)
 		if (!pud_present(*pud))
 			continue;
 		pmd = pmd_offset(pud, addr);
-		memblock_free_early(virt_to_phys((void *)pmd), PAGE_SIZE);
+		memblock_free(pmd, PAGE_SIZE);
 		pud_clear(pud);
 	}
 	return 0;
@@ -159,11 +150,9 @@ static void __init efi_unmap_pgt(void)
 		efimap_free_pgt(start, end);
 	}
 
-	memblock_free_early(virt_to_phys((void *)pgd_efi), PAGE_SIZE);
+	memblock_free(pgd_efi, PAGE_SIZE);
 	csr_write64((long)invalid_pg_dir, LOONGARCH_CSR_PGDL);
 	local_flush_tlb_all();
-
-	return;
 }
 
 /*
@@ -223,7 +212,7 @@ void __init efi_runtime_init(void)
 {
 	efi_status_t status;
 
-	if (!efi_enabled(EFI_BOOT))
+	if (!efi_enabled(EFI_BOOT) || !efi_systab->runtime)
 		return;
 
 	if (efi_runtime_disabled()) {
@@ -231,65 +220,47 @@ void __init efi_runtime_init(void)
 		return;
 	}
 
-	if (!efi_systab->runtime)
-		return;
-
 	status = set_virtual_map();
 	if (status < 0)
 		return;
 
-	efi.runtime = (efi_runtime_services_t *)efi_systab->runtime;
+	efi.runtime = READ_ONCE(efi_systab->runtime);
 	efi.runtime_version = (unsigned int)efi.runtime->hdr.revision;
 
 	efi_native_runtime_setup();
 	set_bit(EFI_RUNTIME_SERVICES, &efi.flags);
 }
 
-static void __init get_initrd(void)
+unsigned long __initdata screen_info_table = EFI_INVALID_TABLE_ADDR;
+
+static void __init init_screen_info(void)
 {
-	if (IS_ENABLED(CONFIG_BLK_DEV_INITRD) &&
-		initrd != EFI_INVALID_TABLE_ADDR && phys_initrd_size == 0) {
-		struct linux_efi_initrd *tbl;
+	struct screen_info *si;
 
-		tbl = early_memremap(initrd, sizeof(*tbl));
-		if (tbl) {
-			phys_initrd_start = tbl->base;
-			phys_initrd_size = tbl->size;
-			early_memunmap(tbl, sizeof(*tbl));
-		}
-	}
-}
-
-static void __init init_new_memmap(void)
-{
-	struct efi_new_memmap *tbl;
-
-	if (new_memmap == EFI_INVALID_TABLE_ADDR)
+	if (screen_info_table == EFI_INVALID_TABLE_ADDR)
 		return;
 
-	tbl = early_memremap_ro(new_memmap, sizeof(*tbl));
-	if (tbl) {
-		struct efi_memory_map_data data;
-
-		data.phys_map           = new_memmap + sizeof(*tbl);
-		data.size               = tbl->map_size;
-		data.desc_size          = tbl->desc_size;
-		data.desc_version       = tbl->desc_ver;
-
-		if (efi_memmap_init_early(&data) < 0)
-			panic("Unable to map EFI memory map.\n");
-
-		early_memunmap(tbl, sizeof(*tbl));
+	si = early_memremap(screen_info_table, sizeof(*si));
+	if (!si) {
+		pr_err("Could not map screen_info config table\n");
+		return;
 	}
+	screen_info = *si;
+	memset(si, 0, sizeof(*si));
+	early_memunmap(si, sizeof(*si));
+
+	memblock_reserve(screen_info.lfb_base, screen_info.lfb_size);
 }
 
-void __init loongson_efi_init(void)
+void __init efi_init(void)
 {
 	int size;
 	void *config_tables;
+	struct efi_boot_memmap *tbl;
 
 	if (efi_system_table)
-		efi_systab = (efi_system_table_t *)early_memremap_ro(efi_system_table, sizeof(*efi_systab));
+		efi_systab = (efi_system_table_t *)early_memremap_ro(efi_system_table,
+						sizeof(*efi_systab));
 	else
 		efi_systab = (efi_system_table_t *)efi_bp->systemtable;
 
@@ -297,6 +268,8 @@ void __init loongson_efi_init(void)
 		pr_err("Can't find EFI system table.\n");
 		return;
 	}
+
+	efi_systab_report_header(&efi_systab->hdr, efi_systab->fw_vendor);
 
 	set_bit(EFI_64BIT, &efi.flags);
 	efi_nr_tables	 = efi_systab->nr_tables;
@@ -307,9 +280,25 @@ void __init loongson_efi_init(void)
 	efi_config_parse_tables(config_tables, efi_systab->nr_tables, arch_tables);
 	early_memunmap(config_tables, efi_nr_tables * size);
 
-	get_initrd();
-
-	init_new_memmap();
+	set_bit(EFI_CONFIG_TABLES, &efi.flags);
 
 	init_screen_info();
+
+	if (boot_memmap == EFI_INVALID_TABLE_ADDR)
+		return;
+
+	tbl = early_memremap_ro(boot_memmap, sizeof(*tbl));
+	if (tbl) {
+		struct efi_memory_map_data data;
+
+		data.phys_map		= boot_memmap + sizeof(*tbl);
+		data.size		= tbl->map_size;
+		data.desc_size		= tbl->desc_size;
+		data.desc_version	= tbl->desc_ver;
+
+		if (efi_memmap_init_early(&data) < 0)
+			panic("Unable to map EFI memory map.\n");
+
+		early_memunmap(tbl, sizeof(*tbl));
+	}
 }

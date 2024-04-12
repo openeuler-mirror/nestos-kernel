@@ -8,6 +8,7 @@
 #include <linux/acpi.h>
 #include <linux/bits.h>
 #include <linux/bitfield.h>
+#include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
@@ -17,6 +18,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
+#include <linux/units.h>
 
 #define HISI_I2C_FRAME_CTRL		0x0000
 #define   HISI_I2C_FRAME_CTRL_SPEED_MODE	GENMASK(1, 0)
@@ -57,6 +59,8 @@
 #define   HISI_I2C_FS_SPK_LEN_CNT	GENMASK(7, 0)
 #define HISI_I2C_HS_SPK_LEN		0x003c
 #define   HISI_I2C_HS_SPK_LEN_CNT	GENMASK(7, 0)
+#define HISI_I2C_TX_INT_CLR		0x0040
+#define   HISI_I2C_TX_AEMPTY_INT		BIT(0)
 #define HISI_I2C_INT_MSTAT		0x0044
 #define HISI_I2C_INT_CLR		0x0048
 #define HISI_I2C_INT_MASK		0x004C
@@ -82,8 +86,6 @@
 #define HISI_I2C_TX_F_AE_THRESH		1
 #define HISI_I2C_RX_F_AF_THRESH		60
 
-#define HZ_PER_KHZ	1000
-
 #define NSEC_TO_CYCLES(ns, clk_rate_khz) \
 	DIV_ROUND_UP_ULL((clk_rate_khz) * (ns), NSEC_PER_MSEC)
 
@@ -91,6 +93,7 @@ struct hisi_i2c_controller {
 	struct i2c_adapter adapter;
 	void __iomem *iobase;
 	struct device *dev;
+	struct clk *clk;
 	int irq;
 
 	/* Intermediates for recording the transfer process */
@@ -126,6 +129,11 @@ static void hisi_i2c_disable_int(struct hisi_i2c_controller *ctlr, u32 mask)
 static void hisi_i2c_clear_int(struct hisi_i2c_controller *ctlr, u32 mask)
 {
 	writel_relaxed(mask, ctlr->iobase + HISI_I2C_INT_CLR);
+}
+
+static void hisi_i2c_clear_tx_int(struct hisi_i2c_controller *ctlr, u32 mask)
+{
+	writel_relaxed(mask, ctlr->iobase + HISI_I2C_TX_INT_CLR);
 }
 
 static void hisi_i2c_handle_errors(struct hisi_i2c_controller *ctlr)
@@ -172,6 +180,7 @@ static int hisi_i2c_start_xfer(struct hisi_i2c_controller *ctlr)
 	writel(reg, ctlr->iobase + HISI_I2C_FIFO_CTRL);
 
 	hisi_i2c_clear_int(ctlr, HISI_I2C_INT_ALL);
+	hisi_i2c_clear_tx_int(ctlr, HISI_I2C_TX_AEMPTY_INT);
 	hisi_i2c_enable_int(ctlr, HISI_I2C_INT_ALL);
 
 	return 0;
@@ -270,7 +279,7 @@ static int hisi_i2c_read_rx_fifo(struct hisi_i2c_controller *ctlr)
 
 static void hisi_i2c_xfer_msg(struct hisi_i2c_controller *ctlr)
 {
-	int max_write = HISI_I2C_TX_FIFO_DEPTH;
+	int max_write = HISI_I2C_TX_FIFO_DEPTH - HISI_I2C_TX_F_AE_THRESH;
 	bool need_restart = false, last_msg;
 	struct i2c_msg *cur_msg;
 	u32 cmd, fifo_state;
@@ -327,6 +336,8 @@ static void hisi_i2c_xfer_msg(struct hisi_i2c_controller *ctlr)
 	 */
 	if (ctlr->msg_tx_idx == ctlr->msg_num)
 		hisi_i2c_disable_int(ctlr, HISI_I2C_INT_TX_EMPTY);
+
+	hisi_i2c_clear_tx_int(ctlr, HISI_I2C_TX_AEMPTY_INT);
 }
 
 static irqreturn_t hisi_i2c_irq(int irq, void *context)
@@ -337,7 +348,7 @@ static irqreturn_t hisi_i2c_irq(int irq, void *context)
 	/*
 	 * Don't handle the interrupt if cltr->completion is NULL. We may
 	 * reach here because the interrupt is spurious or the transfer is
-	 * started by another port rather than us.
+	 * started by another port (e.g. firmware) rather than us.
 	 */
 	if (!ctlr->completion)
 		return IRQ_NONE;
@@ -367,6 +378,7 @@ out:
 	if (int_stat & HISI_I2C_INT_TRANS_CPLT) {
 		hisi_i2c_disable_int(ctlr, HISI_I2C_INT_ALL);
 		hisi_i2c_clear_int(ctlr, HISI_I2C_INT_ALL);
+		hisi_i2c_clear_tx_int(ctlr, HISI_I2C_TX_AEMPTY_INT);
 		complete(ctlr->completion);
 	}
 
@@ -407,13 +419,10 @@ static void hisi_i2c_set_scl(struct hisi_i2c_controller *ctlr,
 
 static void hisi_i2c_configure_bus(struct hisi_i2c_controller *ctlr)
 {
-	u32 reg, sda_hold_cnt, speed_mode, digital_filter_width_ns;
+	u32 reg, sda_hold_cnt, speed_mode;
 
 	i2c_parse_fw_timings(ctlr->dev, &ctlr->t, true);
-	device_property_read_u32(ctlr->dev, "i2c-digital-filter-width-ns",
-				 &digital_filter_width_ns);
-	ctlr->spk_len = NSEC_TO_CYCLES(digital_filter_width_ns,
-				       ctlr->clk_rate_khz);
+	ctlr->spk_len = NSEC_TO_CYCLES(ctlr->t.digital_filter_width_ns, ctlr->clk_rate_khz);
 
 	switch (ctlr->t.bus_freq_hz) {
 	case I2C_MAX_FAST_MODE_FREQ:
@@ -498,7 +507,10 @@ static void hisi_i2c_init_recovery_info(struct hisi_i2c_controller *ctlr)
 	struct acpi_device *adev = ACPI_COMPANION(ctlr->dev);
 	struct gpio_desc *gpio;
 
-	if (!acpi_has_method(adev->handle, HISI_I2C_PIN_MUX_METHOD))
+	if (acpi_disabled)
+		return;
+
+	if (!adev || !acpi_has_method(adev->handle, HISI_I2C_PIN_MUX_METHOD))
 		return;
 
 	gpio = devm_gpiod_get_optional(ctlr->dev, "scl", GPIOD_OUT_HIGH);
@@ -527,7 +539,6 @@ static int hisi_i2c_probe(struct platform_device *pdev)
 	struct hisi_i2c_controller *ctlr;
 	struct device *dev = &pdev->dev;
 	struct i2c_adapter *adapter;
-	struct resource *res;
 	u64 clk_rate_hz;
 	u32 hw_version;
 	int ret;
@@ -536,8 +547,7 @@ static int hisi_i2c_probe(struct platform_device *pdev)
 	if (!ctlr)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	ctlr->iobase = devm_ioremap_resource(&pdev->dev, res);
+	ctlr->iobase = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(ctlr->iobase))
 		return PTR_ERR(ctlr->iobase);
 
@@ -550,15 +560,16 @@ static int hisi_i2c_probe(struct platform_device *pdev)
 	hisi_i2c_disable_int(ctlr, HISI_I2C_INT_ALL);
 
 	ret = devm_request_irq(dev, ctlr->irq, hisi_i2c_irq, 0, "hisi-i2c", ctlr);
-	if (ret) {
-		dev_err(dev, "failed to request irq handler, ret = %d\n", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to request irq handler\n");
 
-	ret = device_property_read_u64(dev, "clk_rate", &clk_rate_hz);
-	if (ret) {
-		dev_err(dev, "failed to get clock frequency, ret = %d\n", ret);
-		return ret;
+	ctlr->clk = devm_clk_get_optional_enabled(&pdev->dev, NULL);
+	if (IS_ERR_OR_NULL(ctlr->clk)) {
+		ret = device_property_read_u64(dev, "clk_rate", &clk_rate_hz);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to get clock frequency\n");
+	} else {
+		clk_rate_hz = clk_get_rate(ctlr->clk);
 	}
 
 	ctlr->clk_rate_khz = DIV_ROUND_UP_ULL(clk_rate_hz, HZ_PER_KHZ);
@@ -592,11 +603,18 @@ static const struct acpi_device_id hisi_i2c_acpi_ids[] = {
 };
 MODULE_DEVICE_TABLE(acpi, hisi_i2c_acpi_ids);
 
+static const struct of_device_id hisi_i2c_dts_ids[] = {
+	{ .compatible = "hisilicon,ascend910-i2c", },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, hisi_i2c_dts_ids);
+
 static struct platform_driver hisi_i2c_driver = {
 	.probe		= hisi_i2c_probe,
 	.driver		= {
 		.name	= "hisi-i2c",
 		.acpi_match_table = hisi_i2c_acpi_ids,
+		.of_match_table = hisi_i2c_dts_ids,
 	},
 };
 module_platform_driver(hisi_i2c_driver);

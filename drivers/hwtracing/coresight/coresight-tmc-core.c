@@ -31,7 +31,7 @@ DEFINE_CORESIGHT_DEVLIST(etb_devs, "tmc_etb");
 DEFINE_CORESIGHT_DEVLIST(etf_devs, "tmc_etf");
 DEFINE_CORESIGHT_DEVLIST(etr_devs, "tmc_etr");
 
-void tmc_wait_for_tmcready(struct tmc_drvdata *drvdata)
+int tmc_wait_for_tmcready(struct tmc_drvdata *drvdata)
 {
 	struct coresight_device *csdev = drvdata->csdev;
 	struct csdev_access *csa = &csdev->access;
@@ -40,7 +40,9 @@ void tmc_wait_for_tmcready(struct tmc_drvdata *drvdata)
 	if (coresight_timeout(csa, TMC_STS, TMC_STS_TMCREADY_BIT, 1)) {
 		dev_err(&csdev->dev,
 			"timeout while waiting for TMC to be Ready\n");
+		return -EBUSY;
 	}
+	return 0;
 }
 
 void tmc_flush_and_stop(struct tmc_drvdata *drvdata)
@@ -412,6 +414,21 @@ static u32 tmc_etr_get_default_buffer_size(struct device *dev)
 	return size;
 }
 
+static u32 tmc_etr_get_max_burst_size(struct device *dev)
+{
+	u32 burst_size;
+
+	if (fwnode_property_read_u32(dev->fwnode, "arm,max-burst-size",
+				     &burst_size))
+		return TMC_AXICTL_WR_BURST_16;
+
+	/* Only permissible values are 0 to 15 */
+	if (burst_size > 0xF)
+		burst_size = TMC_AXICTL_WR_BURST_16;
+
+	return burst_size;
+}
+
 static int tmc_probe(struct amba_device *adev, const struct amba_id *id)
 {
 	int ret = 0;
@@ -449,10 +466,12 @@ static int tmc_probe(struct amba_device *adev, const struct amba_id *id)
 	/* This device is not associated with a session */
 	drvdata->pid = -1;
 
-	if (drvdata->config_type == TMC_CONFIG_TYPE_ETR)
+	if (drvdata->config_type == TMC_CONFIG_TYPE_ETR) {
 		drvdata->size = tmc_etr_get_default_buffer_size(dev);
-	else
+		drvdata->max_burst_size = tmc_etr_get_max_burst_size(dev);
+	} else {
 		drvdata->size = readl_relaxed(drvdata->base + TMC_RSZ) * 4;
+	}
 
 	desc.dev = dev;
 	desc.groups = coresight_tmc_groups;

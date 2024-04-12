@@ -19,7 +19,7 @@ struct plt_entries {
 };
 
 struct mod_plt_sec {
-	struct elf32_shdr       *plt;
+	struct elf32_shdr	*plt;
 	struct plt_entries	*plt_ent;
 	int			plt_shndx;
 	int			plt_count;
@@ -39,6 +39,11 @@ struct mod_arch_specific {
 struct module;
 u32 get_module_plt(struct module *mod, Elf32_Shdr *sechdrs,
 		   unsigned long loc, Elf32_Addr val);
+#ifdef CONFIG_ARM_MODULE_PLTS
+bool in_module_plt(unsigned long loc);
+#else
+static inline bool in_module_plt(unsigned long loc) { return false; }
+#endif
 
 #ifdef CONFIG_THUMB2_KERNEL
 #define HAVE_ARCH_KALLSYMS_SYMBOL_VALUE

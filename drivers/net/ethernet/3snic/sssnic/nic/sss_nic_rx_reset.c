@@ -241,4 +241,3 @@ void sss_nic_rq_watchdog_handler(struct work_struct *work)
 free_rq_info:
 	kfree(check_info);
 }
-

@@ -93,6 +93,12 @@ static const unsigned long * const efi_tables[] = {
 #ifdef CONFIG_LOAD_UEFI_KEYS
 	&efi.mokvar_table,
 #endif
+#ifdef CONFIG_EFI_COCO_SECRET
+	&efi.coco_secret,
+#endif
+#ifdef CONFIG_UNACCEPTED_MEMORY
+	&efi.unaccepted,
+#endif
 };
 
 u64 efi_setup;		/* efi setup_data physical address */
@@ -166,7 +172,7 @@ static void __init do_add_efi_memmap(void)
 }
 
 /*
- * Given add_efi_memmap defaults to 0 and there there is no alternative
+ * Given add_efi_memmap defaults to 0 and there is no alternative
  * e820 mechanism for soft-reserved memory, import the full EFI memory
  * map if soft reservations are present and enabled. Otherwise, the
  * mechanism to disable the kernel's consideration of EFI_MEMORY_SP is
@@ -211,9 +217,11 @@ int __init efi_memblock_x86_reserve_range(void)
 	data.desc_size		= e->efi_memdesc_size;
 	data.desc_version	= e->efi_memdesc_version;
 
-	rv = efi_memmap_init_early(&data);
-	if (rv)
-		return rv;
+	if (!efi_enabled(EFI_PARAVIRT)) {
+		rv = efi_memmap_init_early(&data);
+		if (rv)
+			return rv;
+	}
 
 	if (add_efi_memmap || do_efi_soft_reserve())
 		do_add_efi_memmap();
@@ -300,6 +308,66 @@ static void __init efi_clean_memmap(void)
 	}
 }
 
+/*
+ * Firmware can use EfiMemoryMappedIO to request that MMIO regions be
+ * mapped by the OS so they can be accessed by EFI runtime services, but
+ * should have no other significance to the OS (UEFI r2.10, sec 7.2).
+ * However, most bootloaders and EFI stubs convert EfiMemoryMappedIO
+ * regions to E820_TYPE_RESERVED entries, which prevent Linux from
+ * allocating space from them (see remove_e820_regions()).
+ *
+ * Some platforms use EfiMemoryMappedIO entries for PCI MMCONFIG space and
+ * PCI host bridge windows, which means Linux can't allocate BAR space for
+ * hot-added devices.
+ *
+ * Remove large EfiMemoryMappedIO regions from the E820 map to avoid this
+ * problem.
+ *
+ * Retain small EfiMemoryMappedIO regions because on some platforms, these
+ * describe non-window space that's included in host bridge _CRS.  If we
+ * assign that space to PCI devices, they don't work.
+ */
+static void __init efi_remove_e820_mmio(void)
+{
+	efi_memory_desc_t *md;
+	u64 size, start, end;
+	int i = 0;
+
+	for_each_efi_memory_desc(md) {
+		if (md->type == EFI_MEMORY_MAPPED_IO) {
+			size = md->num_pages << EFI_PAGE_SHIFT;
+			start = md->phys_addr;
+			end = start + size - 1;
+			if (size >= 256*1024) {
+				pr_info("Remove mem%02u: MMIO range=[0x%08llx-0x%08llx] (%lluMB) from e820 map\n",
+					i, start, end, size >> 20);
+				e820__range_remove(start, size,
+						   E820_TYPE_RESERVED, 1);
+			} else {
+				pr_info("Not removing mem%02u: MMIO range=[0x%08llx-0x%08llx] (%lluKB) from e820 map\n",
+					i, start, end, size >> 10);
+			}
+		}
+		i++;
+	}
+}
+
+void __init efi_print_memmap(void)
+{
+	efi_memory_desc_t *md;
+	int i = 0;
+
+	for_each_efi_memory_desc(md) {
+		char buf[64];
+
+		pr_info("mem%02u: %s range=[0x%016llx-0x%016llx] (%lluMB)\n",
+			i++, efi_md_typeattr_format(buf, sizeof(buf), md),
+			md->phys_addr,
+			md->phys_addr + (md->num_pages << EFI_PAGE_SHIFT) - 1,
+			(md->num_pages >> (20 - EFI_PAGE_SHIFT)));
+	}
+}
+
 static int __init efi_systab_init(unsigned long phys)
 {
 	int size = efi_enabled(EFI_64BIT) ? sizeof(efi_system_table_64_t)
@@ -315,7 +383,7 @@ static int __init efi_systab_init(unsigned long phys)
 		return -ENOMEM;
 	}
 
-	ret = efi_systab_check_header(hdr, 1);
+	ret = efi_systab_check_header(hdr);
 	if (ret) {
 		early_memunmap(p, size);
 		return ret;
@@ -429,7 +497,7 @@ void __init efi_init(void)
 	 */
 
 	if (!efi_runtime_supported())
-		pr_info("No EFI runtime due to 32/64-bit mismatch with kernel\n");
+		pr_err("No EFI runtime due to 32/64-bit mismatch with kernel\n");
 
 	if (!efi_runtime_supported() || efi_runtime_disabled()) {
 		efi_memmap_unmap();
@@ -454,6 +522,8 @@ void __init efi_init(void)
 
 	set_bit(EFI_RUNTIME_SERVICES, &efi.flags);
 	efi_clean_memmap();
+
+	efi_remove_e820_mmio();
 
 	if (efi_enabled(EFI_DBG))
 		efi_print_memmap();

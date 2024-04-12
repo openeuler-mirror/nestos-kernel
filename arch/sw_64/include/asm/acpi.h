@@ -6,6 +6,7 @@
 #include <asm/processor.h>
 #include <asm/mmu.h>
 #include <asm/numa.h>
+#include <asm/early_ioremap.h>
 
 #ifdef CONFIG_ACPI
 extern int acpi_noirq;
@@ -42,7 +43,15 @@ extern int acpi_pci_disabled;
 					ACPI_PDC_C_C1_FFH  | \
 					ACPI_PDC_C_C2C3_FFH)
 
-#define ACPI_TABLE_UPGRADE_MAX_PHYS (max_low_pfn_mapped << PAGE_SHIFT)
+#define ACPI_TABLE_UPGRADE_MAX_PHYS MEMBLOCK_ALLOC_ACCESSIBLE
+
+/**
+ * Use the number 64 is just because this number is the most
+ * frequently used number in other architectures. Actually,
+ * SW64 does not have fixmap area in memory layout.
+ */
+#define NR_FIX_BTMAPS 64
+
 static inline void disable_acpi(void)
 {
 	acpi_disabled = 1;
@@ -50,7 +59,18 @@ static inline void disable_acpi(void)
 	acpi_noirq = 1;
 }
 
-static inline void acpi_noirq_set(void) { acpi_noirq = 1; }
+static inline void enable_acpi(void)
+{
+	acpi_disabled = 0;
+	acpi_pci_disabled = 0;
+	acpi_noirq = 0;
+}
+
+static inline void acpi_noirq_set(void)
+{
+	acpi_noirq = 1;
+}
+
 static inline void acpi_disable_pci(void)
 {
 	acpi_pci_disabled = 1;

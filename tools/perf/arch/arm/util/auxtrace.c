@@ -12,8 +12,9 @@
 
 #include "../../../util/auxtrace.h"
 #include "../../../util/debug.h"
-#include "../../util/evlist.h"
+#include "../../../util/evlist.h"
 #include "../../../util/pmu.h"
+#include "../../../util/pmus.h"
 #include "cs-etm.h"
 #include "arm-spe.h"
 #include "hisi-ptt.h"
@@ -40,7 +41,7 @@ static struct perf_pmu **find_all_arm_spe_pmus(int *nr_spes, int *err)
 			return NULL;
 		}
 
-		arm_spe_pmus[*nr_spes] = perf_pmu__find(arm_spe_pmu_name);
+		arm_spe_pmus[*nr_spes] = perf_pmus__find(arm_spe_pmu_name);
 		if (arm_spe_pmus[*nr_spes]) {
 			pr_debug2("%s %d: arm_spe_pmu %d type %d name %s\n",
 				 __func__, __LINE__, *nr_spes,
@@ -55,17 +56,16 @@ static struct perf_pmu **find_all_arm_spe_pmus(int *nr_spes, int *err)
 
 static struct perf_pmu **find_all_hisi_ptt_pmus(int *nr_ptts, int *err)
 {
-	const char *sysfs = sysfs__mountpoint();
 	struct perf_pmu **hisi_ptt_pmus = NULL;
 	struct dirent *dent;
 	char path[PATH_MAX];
 	DIR *dir = NULL;
 	int idx = 0;
 
-	snprintf(path, PATH_MAX, "%s" EVENT_SOURCE_DEVICE_PATH, sysfs);
+	perf_pmu__event_source_devices_scnprintf(path, sizeof(path));
 	dir = opendir(path);
 	if (!dir) {
-		pr_err("can't read directory '%s'\n", EVENT_SOURCE_DEVICE_PATH);
+		pr_err("can't read directory '%s'\n", path);
 		*err = -EINVAL;
 		return NULL;
 	}
@@ -88,7 +88,7 @@ static struct perf_pmu **find_all_hisi_ptt_pmus(int *nr_ptts, int *err)
 	rewinddir(dir);
 	while ((dent = readdir(dir))) {
 		if (strstr(dent->d_name, HISI_PTT_PMU_NAME) && idx < *nr_ptts) {
-			hisi_ptt_pmus[idx] = perf_pmu__find(dent->d_name);
+			hisi_ptt_pmus[idx] = perf_pmus__find(dent->d_name);
 			if (hisi_ptt_pmus[idx])
 				idx++;
 		}
@@ -132,7 +132,7 @@ struct auxtrace_record
 	if (!evlist)
 		return NULL;
 
-	cs_etm_pmu = perf_pmu__find(CORESIGHT_ETM_PMU_NAME);
+	cs_etm_pmu = perf_pmus__find(CORESIGHT_ETM_PMU_NAME);
 	arm_spe_pmus = find_all_arm_spe_pmus(&nr_spes, err);
 	hisi_ptt_pmus = find_all_hisi_ptt_pmus(&nr_ptts, err);
 
@@ -185,3 +185,35 @@ struct auxtrace_record
 	*err = 0;
 	return NULL;
 }
+
+#if defined(__arm__)
+u64 compat_auxtrace_mmap__read_head(struct auxtrace_mmap *mm)
+{
+	struct perf_event_mmap_page *pc = mm->userpg;
+	u64 result;
+
+	__asm__ __volatile__(
+"	ldrd    %0, %H0, [%1]"
+	: "=&r" (result)
+	: "r" (&pc->aux_head), "Qo" (pc->aux_head)
+	);
+
+	return result;
+}
+
+int compat_auxtrace_mmap__write_tail(struct auxtrace_mmap *mm, u64 tail)
+{
+	struct perf_event_mmap_page *pc = mm->userpg;
+
+	/* Ensure all reads are done before we write the tail out */
+	smp_mb();
+
+	__asm__ __volatile__(
+"	strd    %2, %H2, [%1]"
+	: "=Qo" (pc->aux_tail)
+	: "r" (&pc->aux_tail), "r" (tail)
+	);
+
+	return 0;
+}
+#endif

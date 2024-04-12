@@ -19,6 +19,7 @@
 #include <linux/list.h>
 #include <linux/proc_fs.h>
 #include <linux/acpi.h> /* For acpi_handle */
+#include <linux/kabi.h>
 
 struct module;
 struct device;
@@ -70,7 +71,13 @@ struct ipmi_recv_msg {
 	 * the size or existence of this, since it may change.
 	 */
 	unsigned char   msg_data[IPMI_MAX_MSG_LENGTH];
+	KABI_RESERVE(0)
 };
+
+#define INIT_IPMI_RECV_MSG(done_handler) \
+{					\
+	.done = done_handler		\
+}
 
 /* Allocate and free the receive message. */
 void ipmi_free_recv_msg(struct ipmi_recv_msg *msg);
@@ -334,5 +341,8 @@ struct ipmi_smi_info {
 extern int ipmi_get_smi_info(int if_num, struct ipmi_smi_info *data);
 
 #define GET_DEVICE_ID_MAX_RETRY		5
+
+/* Helper function for computing the IPMB checksum of some data. */
+unsigned char ipmb_checksum(unsigned char *data, int size);
 
 #endif /* __LINUX_IPMI_H */

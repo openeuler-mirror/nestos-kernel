@@ -26,6 +26,9 @@
  *		_G	- parts with extra graphics on
  *		_X	- regular server parts
  *		_D	- micro server parts
+ *		_N,_P	- other mobile parts
+ *		_H	- premium mobile parts
+ *		_S	- other client parts
  *
  *		Historical OPTDIFFs:
  *
@@ -33,7 +36,7 @@
  *		_EX	- 4+ socket server parts
  *
  * The #define line may optionally include a comment including platform or core
- * names. An exception is made for kabylake where steppings seem to have gotten
+ * names. An exception is made for skylake/kabylake where steppings seem to have gotten
  * their own names :-(
  */
 
@@ -74,6 +77,8 @@
 #define INTEL_FAM6_SKYLAKE_L		0x4E	/* Sky Lake             */
 #define INTEL_FAM6_SKYLAKE		0x5E	/* Sky Lake             */
 #define INTEL_FAM6_SKYLAKE_X		0x55	/* Sky Lake             */
+/*                 CASCADELAKE_X	0x55	   Sky Lake -- s: 7     */
+/*                 COOPERLAKE_X		0x55	   Sky Lake -- s: 11    */
 
 #define INTEL_FAM6_KABYLAKE_L		0x8E	/* Sky Lake             */
 /*                 AMBERLAKE_L		0x8E	   Sky Lake -- s: 9     */
@@ -94,8 +99,6 @@
 #define INTEL_FAM6_ICELAKE_L		0x7E	/* Sunny Cove */
 #define INTEL_FAM6_ICELAKE_NNPI		0x9D	/* Sunny Cove */
 
-#define INTEL_FAM6_LAKEFIELD		0x8A	/* Sunny Cove / Tremont */
-
 #define INTEL_FAM6_ROCKETLAKE		0xA7	/* Cypress Cove */
 
 #define INTEL_FAM6_TIGERLAKE_L		0x8C	/* Willow Cove */
@@ -108,8 +111,24 @@
 #define INTEL_FAM6_GRANITERAPIDS_X	0xAD
 #define INTEL_FAM6_GRANITERAPIDS_D	0xAE
 
+/* "Hybrid" Processors (P-Core/E-Core) */
+
+#define INTEL_FAM6_LAKEFIELD		0x8A	/* Sunny Cove / Tremont */
+
 #define INTEL_FAM6_ALDERLAKE		0x97	/* Golden Cove / Gracemont */
 #define INTEL_FAM6_ALDERLAKE_L		0x9A	/* Golden Cove / Gracemont */
+
+#define INTEL_FAM6_RAPTORLAKE		0xB7	/* Raptor Cove / Enhanced Gracemont */
+#define INTEL_FAM6_RAPTORLAKE_P		0xBA
+#define INTEL_FAM6_RAPTORLAKE_S		0xBF
+
+#define INTEL_FAM6_METEORLAKE		0xAC
+#define INTEL_FAM6_METEORLAKE_L		0xAA
+
+#define INTEL_FAM6_ARROWLAKE_H		0xC5
+#define INTEL_FAM6_ARROWLAKE		0xC6
+
+#define INTEL_FAM6_LUNARLAKE_M		0xBD
 
 /* "Small Core" Processors (Atom/E-Core) */
 
@@ -138,9 +157,10 @@
 #define INTEL_FAM6_ATOM_TREMONT		0x96 /* Elkhart Lake */
 #define INTEL_FAM6_ATOM_TREMONT_L	0x9C /* Jasper Lake */
 
-#define INTEL_FAM6_SIERRAFOREST_X	0xAF
+#define INTEL_FAM6_ATOM_GRACEMONT	0xBE /* Alderlake N */
 
-#define INTEL_FAM6_GRANDRIDGE		0xB6
+#define INTEL_FAM6_ATOM_CRESTMONT_X	0xAF /* Sierra Forest */
+#define INTEL_FAM6_ATOM_CRESTMONT	0xB6 /* Grand Ridge */
 
 /* Xeon Phi */
 

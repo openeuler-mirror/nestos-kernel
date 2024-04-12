@@ -15,6 +15,7 @@
 #include "sss_hwdev_api.h"
 #include "sss_hwif_api.h"
 
+#ifdef CONFIG_PCI_IOV
 static int sss_init_vf_hw(void *hwdev, u16 vf_num)
 {
 	int ret;
@@ -48,7 +49,6 @@ static void sss_deinit_vf_hw(void *hwdev, u16 vf_num)
 	}
 }
 
-#ifdef CONFIG_PCI_IOV
 static void sss_notify_sriov_state_change(void *hwdev, u16 vf_num)
 {
 	struct sss_event_info event = {0};

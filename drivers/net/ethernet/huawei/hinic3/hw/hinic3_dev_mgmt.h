@@ -72,7 +72,7 @@ struct hinic3_pcidev {
 
 	atomic_t uld_ref_cnt[SERVICE_T_MAX];
 	unsigned long uld_state;
-	spinlock_t uld_lock;
+	spinlock_t uld_lock;    /* uld_state lock */
 
 	u16 probe_fault_level;
 	u16	rsvd2;

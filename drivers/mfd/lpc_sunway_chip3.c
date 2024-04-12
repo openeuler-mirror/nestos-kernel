@@ -25,13 +25,6 @@
 #include <linux/sizes.h>
 #include <linux/mtd/physmap.h>
 
-#define DEBUG_LPC 0
-#if DEBUG_LPC
-#define DBG_LPC(x...)  printk(x)
-#else
-#define DBG_LPC(x...)
-#endif
-
 enum features {
 	LPC_USE_MSI = (1 << 0),
 	LPC_USE_INTX = (1 << 1),
@@ -246,7 +239,7 @@ static int lpc_chip3_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id chip3_lpc_of_match[] = {
-	{ .compatible = "sunway,chip3_lpc", },
+	{.compatible = "sunway,chip3_lpc",},
 	{ /* end of table */ }
 };
 

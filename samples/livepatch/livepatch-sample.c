@@ -10,7 +10,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/livepatch.h>
-#ifdef CONFIG_PPC64
+#if defined(CONFIG_LIVEPATCH_WO_FTRACE) && defined(CONFIG_PPC64)
 #include <asm/code-patching.h>
 #endif
 
@@ -34,15 +34,15 @@
 
 #include <linux/seq_file.h>
 
-#ifdef CONFIG_LIVEPATCH_STOP_MACHINE_CONSISTENCY
+#ifdef CONFIG_LIVEPATCH_WO_FTRACE
 void load_hook(void)
 {
-	pr_info("load_hook\n");
+	pr_info("loading\n");
 }
 
 void unload_hook(void)
 {
-	pr_info("unload_hook\n");
+	pr_info("unloading\n");
 }
 
 static struct klp_hook hooks_load[] = {
@@ -56,7 +56,7 @@ static struct klp_hook hooks_unload[] = {
 		.hook = unload_hook
 	}, { }
 };
-#endif
+#endif /* CONFIG_LIVEPATCH_WO_FTRACE */
 
 static int livepatch_cmdline_proc_show(struct seq_file *m, void *v)
 {
@@ -66,7 +66,7 @@ static int livepatch_cmdline_proc_show(struct seq_file *m, void *v)
 
 static struct klp_func funcs[] = {
 	{
-#ifdef CONFIG_PPC64
+#if defined(CONFIG_LIVEPATCH_WO_FTRACE) && defined(CONFIG_PPC64)
 		.old_name = ".cmdline_proc_show",
 #else
 		.old_name = "cmdline_proc_show",
@@ -79,7 +79,7 @@ static struct klp_object objs[] = {
 	{
 		/* name being NULL means vmlinux */
 		.funcs = funcs,
-#ifdef CONFIG_LIVEPATCH_STOP_MACHINE_CONSISTENCY
+#ifdef CONFIG_LIVEPATCH_WO_FTRACE
 		.hooks_load = hooks_load,
 		.hooks_unload = hooks_unload,
 #endif
@@ -93,21 +93,20 @@ static struct klp_patch patch = {
 
 static int livepatch_init(void)
 {
+#ifdef CONFIG_LIVEPATCH_WO_FTRACE
 #ifdef CONFIG_PPC64
 	patch.objs[0].funcs[0].new_func =
 		(void *)ppc_function_entry((void *)livepatch_cmdline_proc_show);
-#endif
-
-#ifdef CONFIG_LIVEPATCH_PER_TASK_CONSISTENCY
-	return klp_enable_patch(&patch);
-#elif defined(CONFIG_LIVEPATCH_STOP_MACHINE_CONSISTENCY)
+#endif /* CONFIG_PPC64 */
 	return klp_register_patch(&patch);
+#else
+	return klp_enable_patch(&patch);
 #endif
 }
 
 static void livepatch_exit(void)
 {
-#ifdef CONFIG_LIVEPATCH_STOP_MACHINE_CONSISTENCY
+#ifdef CONFIG_LIVEPATCH_WO_FTRACE
 	WARN_ON(klp_unregister_patch(&patch));
 #endif
 }

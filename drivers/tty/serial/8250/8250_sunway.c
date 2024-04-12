@@ -120,9 +120,10 @@ static void sunway8250_check_lcr(struct uart_port *p, int value)
 		sunway8250_force_idle(p);
 
 #ifdef CONFIG_64BIT
-		if (p->type == PORT_OCTEON)
+		if (p->type == PORT_OCTEON) {
 			__raw_writeq(value & 0xff, offset);
-		else
+			continue;
+		}
 #endif
 		if (p->iotype == UPIO_MEM32)
 			writel(value, offset);
@@ -305,7 +306,7 @@ sunway8250_do_pm(struct uart_port *port, unsigned int state, unsigned int old)
 }
 
 static void sunway8250_set_termios(struct uart_port *p, struct ktermios *termios,
-			       struct ktermios *old)
+			       const struct ktermios *old)
 {
 	unsigned int baud = tty_termios_baud_rate(termios);
 	struct sunway8250_data *d = p->private_data;

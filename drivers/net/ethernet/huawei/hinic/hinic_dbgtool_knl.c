@@ -185,10 +185,8 @@ static long dbgtool_knl_api_cmd_read(struct dbgtool_param *para,
 		return -EINVAL;
 	}
 	cmd = kzalloc((unsigned long long)size, GFP_KERNEL);
-	if (!cmd) {
-		pr_err("Alloc read cmd mem fail\n");
+	if (!cmd)
 		return -ENOMEM;
-	}
 
 	ack_size = para->param.api_rd.ack_size;
 	if (para->param.api_rd.ack_size == 0) {
@@ -199,7 +197,6 @@ static long dbgtool_knl_api_cmd_read(struct dbgtool_param *para,
 
 	ack = kzalloc((unsigned long long)ack_size, GFP_KERNEL);
 	if (!ack) {
-		pr_err("Alloc read ack mem fail\n");
 		ret = -ENOMEM;
 		goto alloc_ack_mem_fail;
 	}
@@ -266,10 +263,8 @@ static long dbgtool_knl_api_cmd_write(struct dbgtool_param *para,
 		return -EINVAL;
 	}
 	cmd = kzalloc((unsigned long long)size, GFP_KERNEL);
-	if (!cmd) {
-		pr_err("Alloc write cmd mem fail\n");
+	if (!cmd)
 		return -ENOMEM;
-	}
 
 	/* cmd content copied from user-mode */
 	if (copy_from_user(cmd, para->param.api_wr.cmd, (unsigned long)size)) {
@@ -451,14 +446,11 @@ static long dbgtool_knl_msg_to_up(struct dbgtool_param *para,
 
 	/* alloc buf_in and buf_out memory, apply for 2K */
 	buf_in = kzalloc(DBGTOOL_MSG_MAX_SIZE, GFP_KERNEL);
-	if (!buf_in) {
-		pr_err("Alloc buf_in mem fail\n");
+	if (!buf_in)
 		return -ENOMEM;
-	}
 
 	buf_out = kzalloc(DBGTOOL_MSG_MAX_SIZE, 0);
 	if (!buf_out) {
-		pr_err("Alloc buf_out mem fail\n");
 		ret = -ENOMEM;
 		goto alloc_buf_out_mem_fail;
 	}
@@ -650,7 +642,7 @@ static void ffm_intr_msg_record(void *handle, void *buf_in, u16 in_size,
 	}
 
 	if (i == MAX_CARD_NUM || !card_info) {
-		pr_err("Id(%d) cant find this card\n", i);
+		pr_err("Id(%d) can't find this card\n", i);
 		return;
 	}
 
@@ -797,7 +789,7 @@ int hinic_dbgtool_knl_init(void *vhwdev, void *chip_node)
 	}
 
 	/*lint -save -e160*/
-	dbgtool_d_class = class_create(THIS_MODULE, CLASS_DBGTOOL);
+	dbgtool_d_class = class_create(CLASS_DBGTOOL);
 	/*lint -restore*/
 	if (IS_ERR(dbgtool_d_class)) {
 		pr_err("Create dgbtool class fail\n");

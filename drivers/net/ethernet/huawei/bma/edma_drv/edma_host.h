@@ -91,9 +91,6 @@
 #define VM_GROWSUP	VM_NONE
 #endif
 
-/* Bits set in the VMA until the stack is in its final location */
-#define VM_STACK_INCOMPLETE_SETUP	(VM_RAND_READ | VM_SEQ_READ)
-
 #ifndef VM_STACK_DEFAULT_FLAGS	/* arch can override this */
 #define VM_STACK_DEFAULT_FLAGS VM_DATA_DEFAULT_FLAGS
 #endif
@@ -195,7 +192,7 @@ struct edma_mbx_hdr_s {
 struct edma_recv_msg_s {
 	struct list_head link;
 	u32 msg_len;
-	unsigned char msg_data[0];
+	unsigned char msg_data[];
 };
 
 struct edma_dma_addr_s {
@@ -211,7 +208,7 @@ struct edma_msg_hdr_s {
 	u8 dma_flag;
 	u8 reserve1[2];
 	u32 datalen;
-	u8 data[0];
+	u8 data[];
 };
 
 #define SIZE_OF_MSG_HDR (sizeof(struct edma_msg_hdr_s))

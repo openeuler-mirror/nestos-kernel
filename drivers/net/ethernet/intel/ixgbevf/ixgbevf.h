@@ -432,6 +432,7 @@ extern const struct ixgbevf_info ixgbevf_X540_vf_info;
 extern const struct ixgbevf_info ixgbevf_X550_vf_info;
 extern const struct ixgbevf_info ixgbevf_X550EM_x_vf_info;
 extern const struct ixgbe_mbx_operations ixgbevf_mbx_ops;
+extern const struct ixgbe_mbx_operations ixgbevf_mbx_ops_legacy;
 extern const struct ixgbevf_info ixgbevf_x550em_a_vf_info;
 
 extern const struct ixgbevf_info ixgbevf_82599_vf_hv_info;
@@ -485,12 +486,13 @@ static inline int ixgbevf_ipsec_tx(struct ixgbevf_ring *tx_ring,
 { return 0; }
 #endif /* CONFIG_IXGBEVF_IPSEC */
 
-void ixgbe_napi_add_all(struct ixgbevf_adapter *adapter);
-void ixgbe_napi_del_all(struct ixgbevf_adapter *adapter);
-
 #define ixgbevf_hw_to_netdev(hw) \
 	(((struct ixgbevf_adapter *)(hw)->back)->netdev)
 
 #define hw_dbg(hw, format, arg...) \
 	netdev_dbg(ixgbevf_hw_to_netdev(hw), format, ## arg)
+
+s32 ixgbevf_poll_mbx(struct ixgbe_hw *hw, u32 *msg, u16 size);
+s32 ixgbevf_write_mbx(struct ixgbe_hw *hw, u32 *msg, u16 size);
+
 #endif /* _IXGBEVF_H_ */

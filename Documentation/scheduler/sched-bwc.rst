@@ -2,8 +2,9 @@
 CFS Bandwidth Control
 =====================
 
-[ This document only discusses CPU bandwidth control for SCHED_NORMAL.
-  The SCHED_RT case is covered in Documentation/scheduler/sched-rt-group.rst ]
+.. note::
+   This document only discusses CPU bandwidth control for SCHED_NORMAL.
+   The SCHED_RT case is covered in Documentation/scheduler/sched-rt-group.rst
 
 CFS bandwidth control is a CONFIG_FAIR_GROUP_SCHED extension which allows the
 specification of the maximum CPU bandwidth available to a group or hierarchy.
@@ -68,10 +69,15 @@ Management
 ----------
 Quota, period and burst are managed within the cpu subsystem via cgroupfs.
 
-cpu.cfs_quota_us: run-time replenished within a period (in microseconds)
-cpu.cfs_period_us: the length of a period (in microseconds)
-cpu.stat: exports throttling statistics [explained further below]
-cpu.cfs_burst_us: the maximum accumulated run-time (in microseconds)
+.. note::
+   The cgroupfs files described in this section are only applicable
+   to cgroup v1. For cgroup v2, see
+   :ref:`Documentation/admin-guide/cgroup-v2.rst <cgroup-v2-cpu>`.
+
+- cpu.cfs_quota_us: run-time replenished within a period (in microseconds)
+- cpu.cfs_period_us: the length of a period (in microseconds)
+- cpu.stat: exports throttling statistics [explained further below]
+- cpu.cfs_burst_us: the maximum accumulated run-time (in microseconds)
 
 The default values are::
 
@@ -128,7 +134,7 @@ cpu.stat:
   of the group have been throttled.
 - nr_bursts: Number of periods burst occurs.
 - burst_time: Cumulative wall-time (in nanoseconds) that any CPUs has used
-  above quota in respective periods
+  above quota in respective periods.
 
 This interface is read-only.
 
@@ -180,7 +186,7 @@ average usage, albeit over a longer time window than a single period.  This
 also limits the burst ability to no more than 1ms per cpu.  This provides
 better more predictable user experience for highly threaded applications with
 small quota limits on high core count machines. It also eliminates the
-propensity to throttle these applications while simultanously using less than
+propensity to throttle these applications while simultaneously using less than
 quota amounts of cpu. Another way to say this, is that by allowing the unused
 portion of a slice to remain valid across periods we have decreased the
 possibility of wastefully expiring quota on cpu-local silos that don't need a
@@ -231,7 +237,7 @@ Examples
    additionally, in case accumulation has been done.
 
    With 50ms period, 20ms quota will be equivalent to 40% of 1 CPU.
-   And 10ms burst will be equivalent to 20% of 1 CPU.
+   And 10ms burst will be equivalent to 20% of 1 CPU::
 
 	# echo 20000 > cpu.cfs_quota_us /* quota = 20ms */
 	# echo 50000 > cpu.cfs_period_us /* period = 50ms */

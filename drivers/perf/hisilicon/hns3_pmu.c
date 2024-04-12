@@ -25,9 +25,6 @@
 #include <linux/perf_event.h>
 #include <linux/smp.h>
 
-/* Dynamic CPU hotplug state used by HNS3 PMU */
-static enum cpuhp_state hns3_pmu_online;
-
 /* registers offset address */
 #define HNS3_PMU_REG_GLOBAL_CTRL		0x0000
 #define HNS3_PMU_REG_CLOCK_FREQ			0x0020
@@ -223,8 +220,6 @@ static enum cpuhp_state hns3_pmu_online;
 /* interrupt rate events */
 #define HNS3_PMU_EVT_PPS_MSIX_NIC_INTR_NUM		0x00300
 #define HNS3_PMU_EVT_PPS_MSIX_NIC_TIME			0x10300
-#define HNS3_PMU_EVT_PPS_MSIX_ROH_INTR_NUM		0x00301
-#define HNS3_PMU_EVT_PPS_MSIX_ROH_TIME			0x10301
 
 /* filter mode supported by each bandwidth event */
 #define HNS3_PMU_FILTER_BW_SSU_EGU		0x07
@@ -288,7 +283,6 @@ static enum cpuhp_state hns3_pmu_online;
 
 /* filter mode supported by each interrupt rate event */
 #define HNS3_PMU_FILTER_INTR_MSIX_NIC		0x01
-#define HNS3_PMU_FILTER_INTR_MSIX_ROH		0x01
 
 enum hns3_pmu_hw_filter_mode {
 	HNS3_PMU_HW_FILTER_GLOBAL,
@@ -583,7 +577,6 @@ static struct attribute *hns3_pmu_events_attr[] = {
 
 	/* interrupt rate events */
 	HNS3_PMU_INTR_EVT_PAIR(pps_intr_msix_nic, MSIX_NIC),
-	HNS3_PMU_INTR_EVT_PAIR(pps_intr_msix_roh, MSIX_ROH),
 
 	NULL
 };
@@ -651,7 +644,6 @@ static struct attribute *hns3_pmu_filter_mode_attr[] = {
 
 	/* interrupt rate events */
 	HNS3_PMU_INTR_FLT_MODE_PAIR(pps_intr_msix_nic, MSIX_NIC),
-	HNS3_PMU_INTR_FLT_MODE_PAIR(pps_intr_msix_roh, MSIX_ROH),
 
 	NULL
 };
@@ -804,11 +796,9 @@ static int hns3_pmu_find_related_event_idx(struct hns3_pmu *hns3_pmu,
 		if (!hns3_pmu_cmp_event(sibling, event))
 			continue;
 
-		/* Related events is used in group, else we use index 0 event as related event */
+		/* Related events is used in group */
 		if (sibling->group_leader == event->group_leader)
 			return idx;
-		else
-			return 0;
 	}
 
 	/* No related event and all hardware events are used up */
@@ -1008,13 +998,12 @@ static bool
 hns3_pmu_is_enabled_port_tc_mode(struct perf_event *event,
 				 struct hns3_pmu_event_attr *pmu_event)
 {
-	u16 bdf = hns3_pmu_get_bdf(event);
 	u8 tc_id = hns3_pmu_get_tc(event);
 
 	if (!(pmu_event->filter_support & HNS3_PMU_FILTER_SUPPORT_PORT_TC))
 		return false;
 
-	return (tc_id != HNS3_PMU_FILTER_ALL_TC) && (!bdf);
+	return tc_id != HNS3_PMU_FILTER_ALL_TC;
 }
 
 static bool
@@ -1557,7 +1546,8 @@ static int hns3_pmu_init_pmu(struct pci_dev *pdev, struct hns3_pmu *hns3_pmu)
 	if (ret)
 		return ret;
 
-	ret = cpuhp_state_add_instance(hns3_pmu_online, &hns3_pmu->node);
+	ret = cpuhp_state_add_instance(CPUHP_AP_PERF_ARM_HNS3_PMU_ONLINE,
+				       &hns3_pmu->node);
 	if (ret) {
 		pci_err(pdev, "failed to register hotplug, ret = %d.\n", ret);
 		return ret;
@@ -1566,7 +1556,8 @@ static int hns3_pmu_init_pmu(struct pci_dev *pdev, struct hns3_pmu *hns3_pmu)
 	ret = perf_pmu_register(&hns3_pmu->pmu, hns3_pmu->pmu.name, -1);
 	if (ret) {
 		pci_err(pdev, "failed to register perf PMU, ret = %d.\n", ret);
-		cpuhp_state_remove_instance(hns3_pmu_online, &hns3_pmu->node);
+		cpuhp_state_remove_instance_nocalls(CPUHP_AP_PERF_ARM_HNS3_PMU_ONLINE,
+						    &hns3_pmu->node);
 	}
 
 	return ret;
@@ -1577,7 +1568,8 @@ static void hns3_pmu_uninit_pmu(struct pci_dev *pdev)
 	struct hns3_pmu *hns3_pmu = pci_get_drvdata(pdev);
 
 	perf_pmu_unregister(&hns3_pmu->pmu);
-	cpuhp_state_remove_instance(hns3_pmu_online, &hns3_pmu->node);
+	cpuhp_state_remove_instance_nocalls(CPUHP_AP_PERF_ARM_HNS3_PMU_ONLINE,
+					    &hns3_pmu->node);
 }
 
 static int hns3_pmu_init_dev(struct pci_dev *pdev)
@@ -1649,20 +1641,19 @@ static int __init hns3_pmu_module_init(void)
 {
 	int ret;
 
-	ret = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN,
-				      "perf/hns3_pmu/pmcg:online",
+	ret = cpuhp_setup_state_multi(CPUHP_AP_PERF_ARM_HNS3_PMU_ONLINE,
+				      "AP_PERF_ARM_HNS3_PMU_ONLINE",
 				      hns3_pmu_online_cpu,
 				      hns3_pmu_offline_cpu);
-	if (ret < 0) {
+	if (ret) {
 		pr_err("failed to setup HNS3 PMU hotplug, ret = %d.\n", ret);
 		return ret;
 	}
-	hns3_pmu_online = ret;
 
 	ret = pci_register_driver(&hns3_pmu_driver);
 	if (ret) {
 		pr_err("failed to register pci driver, ret = %d.\n", ret);
-		cpuhp_remove_multi_state(hns3_pmu_online);
+		cpuhp_remove_multi_state(CPUHP_AP_PERF_ARM_HNS3_PMU_ONLINE);
 	}
 
 	return ret;
@@ -1672,7 +1663,7 @@ module_init(hns3_pmu_module_init);
 static void __exit hns3_pmu_module_exit(void)
 {
 	pci_unregister_driver(&hns3_pmu_driver);
-	cpuhp_remove_multi_state(hns3_pmu_online);
+	cpuhp_remove_multi_state(CPUHP_AP_PERF_ARM_HNS3_PMU_ONLINE);
 }
 module_exit(hns3_pmu_module_exit);
 

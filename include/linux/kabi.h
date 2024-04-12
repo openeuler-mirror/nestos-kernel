@@ -145,7 +145,7 @@
  *
  * KABI_AUX_EMBED
  * KABI_AUX_PTR
- *   Adds an extenstion of a struct in the form of "auxiliary structure".
+ *   Adds an extension of a struct in the form of "auxiliary structure".
  *   This is done prior to kABI freeze for structs that cannot be expanded
  *   later using KABI_EXTEND.  See also KABI_RESERVED, these two
  *   approaches can (and often are) combined.

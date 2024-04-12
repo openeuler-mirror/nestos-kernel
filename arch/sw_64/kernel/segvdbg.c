@@ -16,15 +16,11 @@ extern bool segv_debug_enabled;
 
 static int __init segv_debug_init(void)
 {
-	struct dentry *segvdbg;
-
 	if (!sw64_debugfs_dir)
 		return -ENODEV;
 
-	segvdbg = debugfs_create_bool("segv_debug", 0644,
+	debugfs_create_bool("segv_debug", 0644,
 			sw64_debugfs_dir, &segv_debug_enabled);
-	if (!segvdbg)
-		return -ENOMEM;
 	return 0;
 }
 late_initcall(segv_debug_init);

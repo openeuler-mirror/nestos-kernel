@@ -72,8 +72,16 @@
 #define MADV_COLD	20		/* deactivate these pages */
 #define MADV_PAGEOUT	21		/* reclaim these pages */
 
-#define MADV_SWAPFLAG   203		/* for memory to be swap out */
-#define MADV_SWAPFLAG_REMOVE 204
+#define MADV_POPULATE_READ	22	/* populate (prefault) page tables readable */
+#define MADV_POPULATE_WRITE	23	/* populate (prefault) page tables writable */
+
+#define MADV_DONTNEED_LOCKED	24	/* like DONTNEED, but drop locked pages too */
+
+#define MADV_COLLAPSE	25		/* Synchronous hugepage collapse */
+
+#define MADV_ETMEM_BASE		0x1100
+#define MADV_SWAPFLAG		MADV_ETMEM_BASE /* for memory to be swap out */
+#define MADV_SWAPFLAG_REMOVE	(MADV_SWAPFLAG + 1)
 
 /* compatibility flags */
 #define MAP_FILE	0

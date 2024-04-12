@@ -137,7 +137,7 @@ static int sss_alloc_eq_dma_page(struct sss_eq *eq, u16 id)
 	ret = sss_dma_zalloc_coherent_align(SSS_TO_HWDEV(eq)->dev_hdl, eq->page_size,
 					    SSS_MIN_EQ_PAGE_SIZE, GFP_KERNEL, &eq->page_array[id]);
 	if (ret != 0) {
-		sdk_err(SSS_TO_HWDEV(eq)->dev_hdl, "Alloc eq page fail, pg index: %hu\n", id);
+		sdk_err(SSS_TO_HWDEV(eq)->dev_hdl, "Alloc eq page fail, pg index: %u\n", id);
 		return ret;
 	}
 

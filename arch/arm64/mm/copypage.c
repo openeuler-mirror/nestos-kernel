@@ -14,15 +14,23 @@
 #include <asm/cpufeature.h>
 #include <asm/mte.h>
 
-static void do_mte(struct page *to, struct page *from, void *kto, void *kfrom, bool mc)
+static int do_mte(struct page *to, struct page *from, void *kto, void *kfrom, bool mc)
 {
-	if (system_supports_mte() && test_bit(PG_mte_tagged, &from->flags)) {
-		set_bit(PG_mte_tagged, &to->flags);
+	int ret = 0;
+
+	if (system_supports_mte() && page_mte_tagged(from)) {
+		/* It's a new page, shouldn't have been tagged yet */
+		WARN_ON_ONCE(!try_page_mte_tagging(to));
 		if (mc)
-			mte_copy_page_tags_mc(kto, kfrom);
+			ret = mte_copy_mc_page_tags(kto, kfrom);
 		else
 			mte_copy_page_tags(kto, kfrom);
+
+		if (!ret)
+			set_page_mte_tagged(to);
 	}
+
+	return ret;
 }
 
 void copy_highpage(struct page *to, struct page *from)
@@ -31,6 +39,10 @@ void copy_highpage(struct page *to, struct page *from)
 	void *kfrom = page_address(from);
 
 	copy_page(kto, kfrom);
+
+	if (kasan_hw_tags_enabled())
+		page_kasan_tag_reset(to);
+
 	do_mte(to, from, kto, kfrom, false);
 }
 EXPORT_SYMBOL(copy_highpage);
@@ -44,21 +56,41 @@ void copy_user_highpage(struct page *to, struct page *from,
 EXPORT_SYMBOL_GPL(copy_user_highpage);
 
 #ifdef CONFIG_ARCH_HAS_COPY_MC
-void copy_highpage_mc(struct page *to, struct page *from)
+/*
+ * Return -EFAULT if anything goes wrong while copying page or mte.
+ */
+int copy_mc_highpage(struct page *to, struct page *from)
 {
 	void *kto = page_address(to);
 	void *kfrom = page_address(from);
+	int ret;
 
-	copy_page_mc(kto, kfrom);
-	do_mte(to, from, kto, kfrom, true);
+	ret = copy_mc_page(kto, kfrom);
+	if (ret)
+		return -EFAULT;
+
+	if (kasan_hw_tags_enabled())
+		page_kasan_tag_reset(to);
+
+	ret = do_mte(to, from, kto, kfrom, true);
+	if (ret)
+		return -EFAULT;
+
+	return 0;
 }
-EXPORT_SYMBOL(copy_highpage_mc);
+EXPORT_SYMBOL(copy_mc_highpage);
 
-void copy_user_highpage_mc(struct page *to, struct page *from,
+int copy_mc_user_highpage(struct page *to, struct page *from,
 			unsigned long vaddr, struct vm_area_struct *vma)
 {
-	copy_highpage_mc(to, from);
-	flush_dcache_page(to);
+	int ret;
+
+	ret = copy_mc_highpage(to, from);
+
+	if (!ret)
+		flush_dcache_page(to);
+
+	return ret;
 }
-EXPORT_SYMBOL_GPL(copy_user_highpage_mc);
+EXPORT_SYMBOL_GPL(copy_mc_user_highpage);
 #endif

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
+ * linux/drivers/mfd/sunway_ast2400.c
+ *
  * Copyright (C) 20014 - 2015 JN
  * Author: Weiqiang Su <David.suwq@gmail.com>
  *
@@ -217,4 +219,5 @@ module_exit(superio_nuvoton_ast2400_exit);
 
 MODULE_DESCRIPTION("NUVOTON AST2400 Super I/O DRIVER");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:" DRIVER_NAME);
 MODULE_AUTHOR("Weiqiang Su");

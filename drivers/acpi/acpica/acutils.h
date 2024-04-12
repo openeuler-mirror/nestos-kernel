@@ -3,7 +3,7 @@
  *
  * Name: acutils.h -- prototypes for the common (subsystem-wide) procedures
  *
- * Copyright (C) 2000 - 2020, Intel Corp.
+ * Copyright (C) 2000 - 2023, Intel Corp.
  *
  *****************************************************************************/
 
@@ -28,6 +28,7 @@ extern const char *acpi_gbl_max_decode[];
 extern const char *acpi_gbl_mem_decode[];
 extern const char *acpi_gbl_min_decode[];
 extern const char *acpi_gbl_mtp_decode[];
+extern const char *acpi_gbl_phy_decode[];
 extern const char *acpi_gbl_rng_decode[];
 extern const char *acpi_gbl_rw_decode[];
 extern const char *acpi_gbl_shr_decode[];
@@ -52,6 +53,8 @@ extern const char *acpi_gbl_sb_decode[];
 extern const char *acpi_gbl_fc_decode[];
 extern const char *acpi_gbl_pt_decode[];
 extern const char *acpi_gbl_ptyp_decode[];
+extern const char *acpi_gbl_clock_input_mode[];
+extern const char *acpi_gbl_clock_input_scale[];
 #endif
 
 /*
@@ -156,6 +159,19 @@ u8 acpi_ut_valid_nameseg(char *signature);
 u8 acpi_ut_valid_name_char(char character, u32 position);
 
 void acpi_ut_check_and_repair_ascii(u8 *name, char *repaired_name, u32 count);
+
+/*
+ * utcksum - Checksum utilities
+ */
+u8 acpi_ut_generate_checksum(void *table, u32 length, u8 original_checksum);
+
+u8 acpi_ut_checksum(u8 *buffer, u32 length);
+
+acpi_status
+acpi_ut_verify_cdat_checksum(struct acpi_table_cdat *cdat_table, u32 length);
+
+acpi_status
+acpi_ut_verify_checksum(struct acpi_table_header *table, u32 length);
 
 /*
  * utnonansi - Non-ANSI C library functions

@@ -785,6 +785,7 @@ static void hclge_tm_tc_info_init(struct hclge_dev *hdev)
 static void hclge_tm_pg_info_init(struct hclge_dev *hdev)
 {
 #define BW_PERCENT	100
+#define DEFAULT_BW_WEIGHT	1
 
 	u8 i;
 
@@ -806,7 +807,7 @@ static void hclge_tm_pg_info_init(struct hclge_dev *hdev)
 		for (k = 0; k < hdev->tm_info.num_tc; k++)
 			hdev->tm_info.pg_info[i].tc_dwrr[k] = BW_PERCENT;
 		for (; k < HNAE3_MAX_TC; k++)
-			hdev->tm_info.pg_info[i].tc_dwrr[k] = 0;
+			hdev->tm_info.pg_info[i].tc_dwrr[k] = DEFAULT_BW_WEIGHT;
 	}
 }
 
@@ -1293,7 +1294,7 @@ static int hclge_tm_pri_dwrr_cfg(struct hclge_dev *hdev)
 		ret = hclge_tm_ets_tc_dwrr_cfg(hdev);
 		if (ret == -EOPNOTSUPP) {
 			dev_warn(&hdev->pdev->dev,
-				 "fw %08x does't support ets tc weight cmd\n",
+				 "fw %08x doesn't support ets tc weight cmd\n",
 				 hdev->fw_version);
 			ret = 0;
 		}
@@ -1667,8 +1668,58 @@ void hclge_tm_schd_info_update(struct hclge_dev *hdev, u8 num_tc)
 	hclge_tm_schd_info_init(hdev);
 }
 
+static int hclge_tc_rate_limit_cfg(struct hclge_dev *hdev, u32 speed, u8 tc)
+{
+	struct hclge_tc_rate_limit_cmd *tc_rate_limit_cmd;
+	struct hclge_desc desc;
+	int ret;
+
+	hclge_cmd_setup_basic_desc(&desc, HCLGE_OPC_TM_TC_RATE_LIMIT_CFG,
+				   false);
+
+	tc_rate_limit_cmd = (struct hclge_tc_rate_limit_cmd *)desc.data;
+	tc_rate_limit_cmd->speed = cpu_to_le32(speed);
+	tc_rate_limit_cmd->tc_id = tc;
+
+	ret = hclge_cmd_send(&hdev->hw, &desc, 1);
+	if (ret)
+		dev_err(&hdev->pdev->dev,
+			"failed to config tc(%u) rate limit, ret = %d\n",
+			tc, ret);
+
+	return ret;
+}
+
+int hclge_tm_set_tc_rate_limit(struct hclge_dev *hdev,
+			       struct hnae3_tc_info *tc_info)
+{
+	u32 speed;
+	int ret;
+	int i;
+
+	for (i = 0; i < tc_info->num_tc; i++) {
+		/* mac speed unit is Mbps, tc max_rate is Bps */
+		speed = hclge_tm_rate_2_port_rate(tc_info->max_rate[i]);
+		if (!speed)
+			speed = hdev->hw.mac.max_speed;
+
+		ret = hclge_tc_rate_limit_cfg(hdev, speed, i);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+u32 hclge_tm_rate_2_port_rate(u64 rate)
+{
+	do_div(rate, TM_RATE_PORT_RATE_SCALE);
+	return rate > U32_MAX ? U32_MAX : (u32)rate;
+}
+
 int hclge_tm_init_hw(struct hclge_dev *hdev, bool init)
 {
+	struct hnae3_tc_info *tc_info = &hdev->vport[0].nic.kinfo.tc_info;
 	int ret;
 
 	if ((hdev->tx_sch_mode != HCLGE_FLAG_TC_BASE_SCH_MODE) &&
@@ -1682,6 +1733,9 @@ int hclge_tm_init_hw(struct hclge_dev *hdev, bool init)
 	ret = hclge_pause_setup_hw(hdev, init);
 	if (ret)
 		return ret;
+
+	if (hnae3_dev_roh_supported(hdev))
+		return hclge_tm_set_tc_rate_limit(hdev, tc_info);
 
 	return 0;
 }
@@ -2142,4 +2196,20 @@ int hclge_tm_flush_cfg(struct hclge_dev *hdev, bool enable)
 		msleep(HCLGE_TM_FLUSH_TIME_MS);
 
 	return ret;
+}
+
+void hclge_reset_tc_config(struct hclge_dev *hdev)
+{
+	struct hclge_vport *vport = &hdev->vport[0];
+	struct hnae3_knic_private_info *kinfo;
+
+	kinfo = &vport->nic.kinfo;
+
+	if (!kinfo->tc_info.mqprio_destroy)
+		return;
+
+	/* clear tc info, including mqprio_destroy and mqprio_active */
+	memset(&kinfo->tc_info, 0, sizeof(kinfo->tc_info));
+	hclge_tm_schd_info_update(hdev, 0);
+	hclge_comm_rss_indir_init_cfg(hdev->ae_dev, &hdev->rss_cfg);
 }

@@ -57,6 +57,9 @@ struct hpre_ctx;
 #define HPRE_DRV_ECDH_MASK_CAP		BIT(2)
 #define HPRE_DRV_X25519_MASK_CAP	BIT(5)
 
+static DEFINE_MUTEX(hpre_algs_lock);
+static unsigned int hpre_available_devs;
+
 typedef void (*hpre_cb)(struct hpre_ctx *ctx, void *sqe);
 
 struct hpre_rsa_ctx {
@@ -146,6 +149,16 @@ struct hpre_asym_request {
 	hpre_cb cb;
 	struct timespec64 req_time;
 };
+
+static inline unsigned int hpre_align_sz(void)
+{
+	return ((crypto_dma_align() - 1) | (HPRE_ALIGN_SZ - 1)) + 1;
+}
+
+static inline unsigned int hpre_align_pd(void)
+{
+	return (hpre_align_sz() - 1) & ~(crypto_tfm_ctx_alignment() - 1);
+}
 
 static int hpre_alloc_req_id(struct hpre_ctx *ctx)
 {
@@ -517,7 +530,7 @@ static int hpre_msg_request_set(struct hpre_ctx *ctx, void *req, bool is_rsa)
 		}
 
 		tmp = akcipher_request_ctx(akreq);
-		h_req = PTR_ALIGN(tmp, HPRE_ALIGN_SZ);
+		h_req = PTR_ALIGN(tmp, hpre_align_sz());
 		h_req->cb = hpre_rsa_cb;
 		h_req->areq.rsa = akreq;
 		msg = &h_req->req;
@@ -531,7 +544,7 @@ static int hpre_msg_request_set(struct hpre_ctx *ctx, void *req, bool is_rsa)
 		}
 
 		tmp = kpp_request_ctx(kreq);
-		h_req = PTR_ALIGN(tmp, HPRE_ALIGN_SZ);
+		h_req = PTR_ALIGN(tmp, hpre_align_sz());
 		h_req->cb = hpre_dh_cb;
 		h_req->areq.dh = kreq;
 		msg = &h_req->req;
@@ -582,7 +595,7 @@ static int hpre_dh_compute_value(struct kpp_request *req)
 	struct crypto_kpp *tfm = crypto_kpp_reqtfm(req);
 	struct hpre_ctx *ctx = kpp_tfm_ctx(tfm);
 	void *tmp = kpp_request_ctx(req);
-	struct hpre_asym_request *hpre_req = PTR_ALIGN(tmp, HPRE_ALIGN_SZ);
+	struct hpre_asym_request *hpre_req = PTR_ALIGN(tmp, hpre_align_sz());
 	struct hpre_sqe *msg = &hpre_req->req;
 	int ret;
 
@@ -740,7 +753,7 @@ static int hpre_dh_init_tfm(struct crypto_kpp *tfm)
 {
 	struct hpre_ctx *ctx = kpp_tfm_ctx(tfm);
 
-	kpp_set_reqsize(tfm, sizeof(struct hpre_asym_request) + HPRE_ALIGN_SZ);
+	kpp_set_reqsize(tfm, sizeof(struct hpre_asym_request) + hpre_align_pd());
 
 	return hpre_ctx_init(ctx, HPRE_V2_ALG_TYPE);
 }
@@ -785,7 +798,7 @@ static int hpre_rsa_enc(struct akcipher_request *req)
 	struct crypto_akcipher *tfm = crypto_akcipher_reqtfm(req);
 	struct hpre_ctx *ctx = akcipher_tfm_ctx(tfm);
 	void *tmp = akcipher_request_ctx(req);
-	struct hpre_asym_request *hpre_req = PTR_ALIGN(tmp, HPRE_ALIGN_SZ);
+	struct hpre_asym_request *hpre_req = PTR_ALIGN(tmp, hpre_align_sz());
 	struct hpre_sqe *msg = &hpre_req->req;
 	int ret;
 
@@ -833,7 +846,7 @@ static int hpre_rsa_dec(struct akcipher_request *req)
 	struct crypto_akcipher *tfm = crypto_akcipher_reqtfm(req);
 	struct hpre_ctx *ctx = akcipher_tfm_ctx(tfm);
 	void *tmp = akcipher_request_ctx(req);
-	struct hpre_asym_request *hpre_req = PTR_ALIGN(tmp, HPRE_ALIGN_SZ);
+	struct hpre_asym_request *hpre_req = PTR_ALIGN(tmp, hpre_align_sz());
 	struct hpre_sqe *msg = &hpre_req->req;
 	int ret;
 
@@ -1168,7 +1181,7 @@ static int hpre_rsa_init_tfm(struct crypto_akcipher *tfm)
 	}
 
 	akcipher_set_reqsize(tfm, sizeof(struct hpre_asym_request) +
-				  HPRE_ALIGN_SZ);
+				  hpre_align_pd());
 
 	ret = hpre_ctx_init(ctx, HPRE_V2_ALG_TYPE);
 	if (ret)
@@ -1496,7 +1509,7 @@ static int hpre_ecdh_msg_request_set(struct hpre_ctx *ctx,
 	}
 
 	tmp = kpp_request_ctx(req);
-	h_req = PTR_ALIGN(tmp, HPRE_ALIGN_SZ);
+	h_req = PTR_ALIGN(tmp, hpre_align_sz());
 	h_req->cb = hpre_ecdh_cb;
 	h_req->areq.ecdh = req;
 	msg = &h_req->req;
@@ -1577,7 +1590,7 @@ static int hpre_ecdh_compute_value(struct kpp_request *req)
 	struct hpre_ctx *ctx = kpp_tfm_ctx(tfm);
 	struct device *dev = ctx->dev;
 	void *tmp = kpp_request_ctx(req);
-	struct hpre_asym_request *hpre_req = PTR_ALIGN(tmp, HPRE_ALIGN_SZ);
+	struct hpre_asym_request *hpre_req = PTR_ALIGN(tmp, hpre_align_sz());
 	struct hpre_sqe *msg = &hpre_req->req;
 	int ret;
 
@@ -1628,7 +1641,7 @@ static int hpre_ecdh_nist_p192_init_tfm(struct crypto_kpp *tfm)
 
 	ctx->curve_id = ECC_CURVE_NIST_P192;
 
-	kpp_set_reqsize(tfm, sizeof(struct hpre_asym_request) + HPRE_ALIGN_SZ);
+	kpp_set_reqsize(tfm, sizeof(struct hpre_asym_request) + hpre_align_pd());
 
 	return hpre_ctx_init(ctx, HPRE_V3_ECC_ALG_TYPE);
 }
@@ -1639,7 +1652,7 @@ static int hpre_ecdh_nist_p256_init_tfm(struct crypto_kpp *tfm)
 
 	ctx->curve_id = ECC_CURVE_NIST_P256;
 
-	kpp_set_reqsize(tfm, sizeof(struct hpre_asym_request) + HPRE_ALIGN_SZ);
+	kpp_set_reqsize(tfm, sizeof(struct hpre_asym_request) + hpre_align_pd());
 
 	return hpre_ctx_init(ctx, HPRE_V3_ECC_ALG_TYPE);
 }
@@ -1650,7 +1663,7 @@ static int hpre_ecdh_nist_p384_init_tfm(struct crypto_kpp *tfm)
 
 	ctx->curve_id = ECC_CURVE_NIST_P384;
 
-	kpp_set_reqsize(tfm, sizeof(struct hpre_asym_request) + HPRE_ALIGN_SZ);
+	kpp_set_reqsize(tfm, sizeof(struct hpre_asym_request) + hpre_align_pd());
 
 	return hpre_ctx_init(ctx, HPRE_V3_ECC_ALG_TYPE);
 }
@@ -1808,7 +1821,7 @@ static int hpre_curve25519_msg_request_set(struct hpre_ctx *ctx,
 	}
 
 	tmp = kpp_request_ctx(req);
-	h_req = PTR_ALIGN(tmp, HPRE_ALIGN_SZ);
+	h_req = PTR_ALIGN(tmp, hpre_align_sz());
 	h_req->cb = hpre_curve25519_cb;
 	h_req->areq.curve25519 = req;
 	msg = &h_req->req;
@@ -1929,7 +1942,7 @@ static int hpre_curve25519_compute_value(struct kpp_request *req)
 	struct hpre_ctx *ctx = kpp_tfm_ctx(tfm);
 	struct device *dev = ctx->dev;
 	void *tmp = kpp_request_ctx(req);
-	struct hpre_asym_request *hpre_req = PTR_ALIGN(tmp, HPRE_ALIGN_SZ);
+	struct hpre_asym_request *hpre_req = PTR_ALIGN(tmp, hpre_align_sz());
 	struct hpre_sqe *msg = &hpre_req->req;
 	int ret;
 
@@ -1978,7 +1991,7 @@ static int hpre_curve25519_init_tfm(struct crypto_kpp *tfm)
 {
 	struct hpre_ctx *ctx = kpp_tfm_ctx(tfm);
 
-	kpp_set_reqsize(tfm, sizeof(struct hpre_asym_request) + HPRE_ALIGN_SZ);
+	kpp_set_reqsize(tfm, sizeof(struct hpre_asym_request) + hpre_align_pd());
 
 	return hpre_ctx_init(ctx, HPRE_V3_ECC_ALG_TYPE);
 }
@@ -2192,11 +2205,17 @@ static void hpre_unregister_x25519(struct hisi_qm *qm)
 
 int hpre_algs_register(struct hisi_qm *qm)
 {
-	int ret;
+	int ret = 0;
+
+	mutex_lock(&hpre_algs_lock);
+	if (hpre_available_devs) {
+		hpre_available_devs++;
+		goto unlock;
+	}
 
 	ret = hpre_register_rsa(qm);
 	if (ret)
-		return ret;
+		goto unlock;
 
 	ret = hpre_register_dh(qm);
 	if (ret)
@@ -2210,6 +2229,9 @@ int hpre_algs_register(struct hisi_qm *qm)
 	if (ret)
 		goto unreg_ecdh;
 
+	hpre_available_devs++;
+	mutex_unlock(&hpre_algs_lock);
+
 	return ret;
 
 unreg_ecdh:
@@ -2218,13 +2240,22 @@ unreg_dh:
 	hpre_unregister_dh(qm);
 unreg_rsa:
 	hpre_unregister_rsa(qm);
+unlock:
+	mutex_unlock(&hpre_algs_lock);
 	return ret;
 }
 
 void hpre_algs_unregister(struct hisi_qm *qm)
 {
+	mutex_lock(&hpre_algs_lock);
+	if (--hpre_available_devs)
+		goto unlock;
+
 	hpre_unregister_x25519(qm);
 	hpre_unregister_ecdh(qm);
 	hpre_unregister_dh(qm);
 	hpre_unregister_rsa(qm);
+
+unlock:
+	mutex_unlock(&hpre_algs_lock);
 }

@@ -819,7 +819,7 @@ struct sssraid_iod {
 	void *sense;
 	dma_addr_t sense_dma;
 	struct scatterlist *sg;
-	void *list[0];
+	void *list[];
 };
 
 /*

@@ -18,27 +18,22 @@
 #include <linux/reboot.h>
 #include <linux/slab.h>
 #include <linux/types.h>
+#include <linux/static_call.h>
 
 #include <asm/paravirt.h>
 #include <asm/pvclock-abi.h>
 #include <asm/pvsched-abi.h>
-#include <asm/qspinlock_paravirt.h>
 #include <asm/smp_plat.h>
-
-#define CREATE_TRACE_POINTS
-#include "trace-paravirt.h"
 
 struct static_key paravirt_steal_enabled;
 struct static_key paravirt_steal_rq_enabled;
 
-struct paravirt_patch_template pv_ops = {
-#ifdef CONFIG_PARAVIRT_SPINLOCKS
-	.lock.queued_spin_lock_slowpath	= native_queued_spin_lock_slowpath,
-	.lock.queued_spin_unlock		= native_queued_spin_unlock,
-#endif
-	.lock.vcpu_is_preempted		= __native_vcpu_is_preempted,
-};
-EXPORT_SYMBOL(pv_ops);
+static u64 native_steal_clock(int cpu)
+{
+	return 0;
+}
+
+DEFINE_STATIC_CALL(pv_steal_clock, native_steal_clock);
 
 struct pv_time_stolen_time_region {
 	struct pvclock_vcpu_stolen_time __rcu *kaddr;
@@ -56,7 +51,7 @@ static int __init parse_no_stealacc(char *arg)
 early_param("no-steal-acc", parse_no_stealacc);
 
 /* return stolen time in ns by asking the hypervisor */
-static u64 pv_steal_clock(int cpu)
+static u64 para_steal_clock(int cpu)
 {
 	struct pvclock_vcpu_stolen_time *kaddr = NULL;
 	struct pv_time_stolen_time_region *reg;
@@ -147,10 +142,6 @@ static bool __init has_pv_steal_clock(void)
 {
 	struct arm_smccc_res res;
 
-	/* To detect the presence of PV time support we require SMCCC 1.1+ */
-	if (arm_smccc_1_1_get_conduit() == SMCCC_CONDUIT_NONE)
-		return false;
-
 	arm_smccc_1_1_invoke(ARM_SMCCC_ARCH_FEATURES_FUNC_ID,
 			     ARM_SMCCC_HV_PV_TIME_FEATURES, &res);
 
@@ -174,7 +165,7 @@ int __init pv_time_init(void)
 	if (ret)
 		return ret;
 
-	pv_ops.time.steal_clock = pv_steal_clock;
+	static_call_update(pv_steal_clock, para_steal_clock);
 
 	static_key_slow_inc(&paravirt_steal_enabled);
 	if (steal_acc)
@@ -185,7 +176,7 @@ int __init pv_time_init(void)
 	return 0;
 }
 
-
+#ifdef CONFIG_PARAVIRT_SCHED
 DEFINE_PER_CPU(struct pvsched_vcpu_state, pvsched_vcpu_region) __aligned(64);
 EXPORT_PER_CPU_SYMBOL(pvsched_vcpu_region);
 
@@ -268,66 +259,6 @@ static bool has_kvm_pvsched(void)
 	return (res.a0 == SMCCC_RET_SUCCESS);
 }
 
-#ifdef CONFIG_PARAVIRT_SPINLOCKS
-static bool arm_pvspin = false;
-
-/* Kick a cpu by its cpuid. Used to wake up a halted vcpu */
-static void kvm_kick_cpu(int cpu)
-{
-	struct arm_smccc_res res;
-
-	arm_smccc_1_1_invoke(ARM_SMCCC_HV_PV_SCHED_KICK_CPU, cpu, &res);
-
-	trace_kvm_kick_cpu("kvm kick cpu", smp_processor_id(), cpu);
-}
-
-static void kvm_wait(u8 *ptr, u8 val)
-{
-	unsigned long flags;
-
-	if (in_nmi())
-		return;
-
-	local_irq_save(flags);
-
-	if (READ_ONCE(*ptr) != val)
-		goto out;
-
-	dsb(sy);
-	wfi();
-	trace_kvm_wait("kvm wait wfi", smp_processor_id());
-
-out:
-	local_irq_restore(flags);
-}
-
-void __init pv_qspinlock_init(void)
-{
-	/* Don't use the PV qspinlock code if there is only 1 vCPU. */
-	if (num_possible_cpus() == 1)
-		arm_pvspin = false;
-
-	if (!arm_pvspin) {
-		pr_info("PV qspinlocks disabled\n");
-		return;
-	}
-	pr_info("PV qspinlocks enabled\n");
-
-	__pv_init_lock_hash();
-	pv_ops.lock.queued_spin_lock_slowpath = __pv_queued_spin_lock_slowpath;
-	pv_ops.lock.queued_spin_unlock = __pv_queued_spin_unlock;
-	pv_ops.lock.wait = kvm_wait;
-	pv_ops.lock.kick = kvm_kick_cpu;
-}
-
-static __init int arm_parse_pvspin(char *arg)
-{
-	arm_pvspin = true;
-	return 0;
-}
-early_param("arm_pvspin", arm_parse_pvspin);
-#endif  /* CONFIG_PARAVIRT_SPINLOCKS */
-
 int __init pv_sched_init(void)
 {
 	int ret;
@@ -344,11 +275,10 @@ int __init pv_sched_init(void)
 	if (ret)
 		return ret;
 
-	pv_ops.lock.vcpu_is_preempted = kvm_vcpu_is_preempted;
+	static_call_update(pv_vcpu_preempted, kvm_vcpu_is_preempted);
 	pr_info("using PV sched preempted\n");
-
-	pv_qspinlock_init();
 
 	return 0;
 }
 early_initcall(pv_sched_init);
+#endif /* CONFIG_PARAVIRT_SCHED */

@@ -3,14 +3,24 @@
 #include <linux/init.h>
 #include <linux/acpi.h>
 #include <linux/irqdomain.h>
+#include <linux/memblock.h>
 
 #include <asm/early_ioremap.h>
 
+#ifdef CONFIG_ACPI_HOTPLUG_CPU
+#include <acpi/processor.h>
+#endif
+
 int acpi_disabled = 1;
 EXPORT_SYMBOL(acpi_disabled);
-int acpi_noirq;				/* skip ACPI IRQ initialization */
-int acpi_pci_disabled;		/* skip ACPI PCI scan and IRQ initialization */
+
+int acpi_noirq = 1;		/* skip ACPI IRQ initialization */
+int acpi_pci_disabled = 1;	/* skip ACPI PCI scan and IRQ initialization */
 EXPORT_SYMBOL(acpi_pci_disabled);
+
+static bool param_acpi_on  __initdata;
+static bool param_acpi_off __initdata;
+
 int acpi_strict;
 u64 arch_acpi_wakeup_start;
 u64 acpi_saved_sp_s3;
@@ -79,12 +89,11 @@ void acpi_unregister_gsi(u32 gsi)
 
 }
 EXPORT_SYMBOL_GPL(acpi_unregister_gsi);
+
 /*
  *  ACPI based hotplug support for CPU
  */
 #ifdef CONFIG_ACPI_HOTPLUG_CPU
-#include <acpi/processor.h>
-
 /* wrapper to silence section mismatch warning */
 int __ref acpi_map_lsapic(acpi_handle handle, int physid, int *pcpu)
 {
@@ -115,13 +124,14 @@ static int __init parse_acpi(char *arg)
 	if (!arg)
 		return -EINVAL;
 
-	/* "acpi=off" disables both ACPI table parsing and interpreter */
-	if (strcmp(arg, "off") == 0) {
-		disable_acpi();
-	} else {
-		/* Core will printk when we return error. */
-		return -EINVAL;
-	}
+	/* disable both ACPI table parsing and interpreter */
+	if (strcmp(arg, "off") == 0)
+		param_acpi_off = true;
+	else if (strcmp(arg, "on") == 0) /* prefer ACPI over device tree */
+		param_acpi_on = true;
+	else
+		return -EINVAL; /* Core will printk when we return error. */
+
 	return 0;
 }
 early_param("acpi", parse_acpi);
@@ -144,68 +154,25 @@ int __acpi_release_global_lock(unsigned int *lock)
 }
 
 #ifdef CONFIG_ACPI_NUMA
-static __init int setup_node(int pxm)
+static int rcid_to_cpu(int physical_id)
 {
-	return acpi_map_pxm_to_node(pxm);
-}
+	int i;
 
-/*
- * Callback for SLIT parsing.  pxm_to_node() returns NUMA_NO_NODE for
- * I/O localities since SRAT does not list them.  I/O localities are
- * not supported at this point.
- */
-extern unsigned char __node_distances[MAX_NUMNODES][MAX_NUMNODES];
-unsigned int numa_distance_cnt;
-
-static inline unsigned int get_numa_distances_cnt(struct acpi_table_slit *slit)
-{
-	return slit->locality_count;
-}
-
-void __init numa_set_distance(int from, int to, int distance)
-{
-	unsigned char *numa_distance = (unsigned char *)__node_distances;
-
-	if ((u8)distance != distance ||
-			(from == to && distance != LOCAL_DISTANCE)) {
-		pr_warn_once("Warning: invalid distance parameter, from=%d to=%d distance=%d\n",
-				from, to, distance);
-		return;
+	for (i = 0; i < NR_CPUS; ++i) {
+		if (__cpu_to_rcid[i] == physical_id)
+			return i;
 	}
 
-	numa_distance[from * numa_distance_cnt + to] = distance;
+	/* physical id not found */
+	return -1;
 }
 
-void __init acpi_numa_slit_init(struct acpi_table_slit *slit)
-{
-	int i, j;
-
-	numa_distance_cnt = get_numa_distances_cnt(slit);
-
-	for (i = 0; i < slit->locality_count; i++) {
-		const int from_node = pxm_to_node(i);
-
-		if (from_node == NUMA_NO_NODE)
-			continue;
-
-		for (j = 0; j < slit->locality_count; j++) {
-			const int to_node = pxm_to_node(j);
-
-			if (to_node == NUMA_NO_NODE)
-				continue;
-
-			numa_set_distance(from_node, to_node,
-					slit->entry[slit->locality_count * i + j]);
-		}
-	}
-}
-
-extern cpumask_t possible_cpu_per_node;
 /* Callback for Proximity Domain -> CPUID mapping */
 void __init
 acpi_numa_processor_affinity_init(struct acpi_srat_cpu_affinity *pa)
 {
 	int pxm, node;
+	int cpu; // logical core id
 
 	if (srat_disabled())
 		return;
@@ -221,7 +188,8 @@ acpi_numa_processor_affinity_init(struct acpi_srat_cpu_affinity *pa)
 		pxm |= (pa->proximity_domain_hi[1] << 16);
 		pxm |= (pa->proximity_domain_hi[2] << 24);
 	}
-	node = setup_node(pxm);
+
+	node = acpi_map_pxm_to_node(pxm);
 	if (node < 0) {
 		pr_err("SRAT: Too many proximity domains %x\n", pxm);
 		bad_srat();
@@ -233,16 +201,17 @@ acpi_numa_processor_affinity_init(struct acpi_srat_cpu_affinity *pa)
 		return;
 	}
 
-	if (!cpu_guestmode)
-		numa_add_cpu(__cpu_number_map[pa->apic_id], node);
-	else
-		numa_add_cpu(pa->apic_id, node);
+	/* Record the mapping from logical core id to node id */
+	cpu = rcid_to_cpu(pa->apic_id);
+	if (cpu < 0) {
+		pr_err("SRAT: Can not find the logical id for physical Core 0x%02x\n", pa->apic_id);
+		return;
+	}
 
-	set_cpuid_to_node(pa->apic_id, node);
+	early_map_cpu_to_node(cpu, node);
+
 	node_set(node, numa_nodes_parsed);
-	acpi_numa = 1;
-	pr_err("SRAT: PXM %u -> CPU 0x%02x -> Node %u\n",
-		pxm, pa->apic_id, node);
+	pr_info("SRAT: PXM %u -> CPU 0x%02x -> Node %u\n", pxm, pa->apic_id, node);
 }
 
 #ifdef CONFIG_MEMORY_HOTPLUG
@@ -251,65 +220,13 @@ static inline int save_add_info(void) { return 1; }
 static inline int save_add_info(void) { return 0; }
 #endif
 
-/* Callback for parsing of the Proximity Domain <-> Memory Area mappings */
-int __init
-acpi_numa_memory_affinity_init(struct acpi_srat_mem_affinity *ma)
-{
-	u64 start, end;
-	u32 hotpluggable;
-	int node, pxm;
-
-	if (srat_disabled())
-		goto out_err;
-	if (ma->header.length != sizeof(struct acpi_srat_mem_affinity))
-		goto out_err_bad_srat;
-	if ((ma->flags & ACPI_SRAT_MEM_ENABLED) == 0)
-		goto out_err;
-	hotpluggable = ma->flags & ACPI_SRAT_MEM_HOT_PLUGGABLE;
-	if (hotpluggable && !save_add_info())
-		goto out_err;
-
-	start = ma->base_address;
-	end = start + ma->length;
-	pxm = ma->proximity_domain;
-	if (acpi_srat_revision <= 1)
-		pxm &= 0xff;
-
-	node = setup_node(pxm);
-	if (node < 0) {
-		pr_err("SRAT: Too many proximity domains.\n");
-		goto out_err_bad_srat;
-	}
-	if (numa_add_memblk(node, start, end) < 0)
-		goto out_err_bad_srat;
-
-	node_set(node, numa_nodes_parsed);
-
-	pr_info("SRAT: Node %u PXM %u [mem %#010Lx-%#010Lx]%s%s\n",
-		node, pxm,
-		(unsigned long long) start, (unsigned long long) end - 1,
-		hotpluggable ? " hotplug" : "",
-		ma->flags & ACPI_SRAT_MEM_NON_VOLATILE ? " non-volatile" : "");
-
-	/* Mark hotplug range in memblock. */
-	if (hotpluggable && memblock_mark_hotplug(start, ma->length))
-		pr_warn("SRAT: Failed to mark hotplug range [mem %#010Lx-%#010Lx] in memblock\n",
-			(unsigned long long)start, (unsigned long long)end - 1);
-
-	max_possible_pfn = max(max_possible_pfn, PFN_UP(end - 1));
-
-	return 0;
-out_err_bad_srat:
-	bad_srat();
-out_err:
-	return -1;
-}
-
-void __init acpi_numa_arch_fixup(void) {}
 #endif
 
+void __init arch_reserve_mem_area(acpi_physical_address addr, size_t size)
+{
+}
+
 #ifdef CONFIG_ACPI_HOTPLUG_CPU
-#include <acpi/processor.h>
 static int acpi_map_cpu2node(acpi_handle handle, int cpu, int physid)
 {
 #ifdef CONFIG_ACPI_NUMA
@@ -364,16 +281,24 @@ EXPORT_SYMBOL(acpi_unmap_cpu);
 #endif /* CONFIG_ACPI_HOTPLUG_CPU */
 
 void __init acpi_boot_table_init(void)
-
 {
+	/**
+	 * ACPI is disabled by default.
+	 * ACPI is only enabled when firmware passes ACPI table
+	 * and sets boot parameter "acpi=on".
+	 */
+	if (param_acpi_on)
+		enable_acpi();
+
 	/*
 	 * If acpi_disabled, bail out
 	 */
 	if (!acpi_disabled) {
+		pr_warn("Currently, ACPI is an experimental feature!\n");
 		if (acpi_table_init()) {
 			pr_err("Failed to init ACPI tables\n");
 			disable_acpi();
-		}
-		pr_info("Enable ACPI support\n");
+		} else
+			pr_info("Successfully parsed ACPI table\n");
 	}
 }
